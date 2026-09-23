@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Scratch/session output — has previously held real secrets (DB password,
+# session secret) in plain text and must never be committed.
+Claude outputs/
+
+# Build outputs
+dist/
+build/
+.next/
+out/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Uploaded files (created at runtime — see backend/src/main.ts)
+uploads/
+
+# Editor
+.vscode/*
+!.vscode/extensions.json

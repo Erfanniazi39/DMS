@@ -1,0 +1,542 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum DepartmentStatus {
+  active
+  inactive
+}
+
+enum EmployeeStatus {
+  active
+  on_leave
+  terminated
+}
+
+enum EducationLevel {
+  under_diploma
+  diploma
+  associate
+  bachelor
+  master
+  phd
+}
+
+enum MaritalStatus {
+  single
+  married
+}
+
+enum Gender {
+  male
+  female
+}
+
+enum SalaryPeriod {
+  monthly
+  weekly
+  daily
+}
+
+enum ContractType {
+  permanent
+  temporary
+  fixed_task
+}
+
+enum UserStatus {
+  ACTIVE
+  DISABLED
+  LOCKED
+}
+
+enum SupplierStatus {
+  active
+  inactive
+  blacklisted
+}
+
+enum PurchaseStatus {
+  DRAFT
+  CONFIRMED
+  RECEIVED
+  CLOSED
+  CANCELLED
+}
+
+enum PurchasePaymentStatus {
+  UNPAID
+  PARTIAL
+  PAID
+}
+
+// Shared with Sales once that module exists — see database_plan.txt
+// ("PAYMENT_METHOD and PAYMENT_STATUS are reused from Purchases rather than
+// redefined"). Left unprefixed for that reason.
+enum PaymentMethod {
+  CASH
+  BANK_TRANSFER
+  CHECK
+  CARD
+}
+
+enum PaymentStatus {
+  PENDING
+  COMPLETED
+  CANCELLED
+}
+
+// Shared with Sales once that module exists — same reasoning as PaymentMethod.
+enum DocumentType {
+  INVOICE
+  CONTRACT
+  DELIVERY_NOTE
+  WARRANTY
+  RECEIPT
+  OTHER
+}
+
+// Distinguishes purchases entered as they happen from old paper records
+// being digitized after the fact — both live in the same Purchase table
+// (never a separate HistoricalPurchase table) so reporting/analytics can
+// span all years. See PurchasesService for what HISTORICAL_IMPORT relaxes.
+enum PurchaseSourceType {
+  OPERATIONAL
+  HISTORICAL_IMPORT
+}
+
+// Deliberately simple — no multi-level approval chain. APPROVED/REJECTED
+// are set the same way Purchase.status is: an edit, not a dedicated
+// approve/reject workflow endpoint.
+//
+// PARTIALLY_PURCHASED/COMPLETED are the exception — those two are never set
+// by a user edit. They are recomputed automatically by
+// PurchaseRequestsService.recomputeStatus() whenever a linked Purchase is
+// created, edited, or removed (see PurchasesService), based on how much of
+// each requested item has actually been purchased. A request still in
+// DRAFT/SUBMITTED, or already REJECTED/CANCELLED, is never touched by that
+// recompute — only APPROVED ⇄ PARTIALLY_PURCHASED ⇄ COMPLETED.
+enum PurchaseRequestStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  PARTIALLY_PURCHASED
+  REJECTED
+  CANCELLED
+  COMPLETED
+}
+
+enum PurchaseRequestPriority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
+model Department {
+  id                 Int              @id @default(autoincrement())
+  code               String           @unique
+  name               String
+  status             DepartmentStatus @default(active)
+  note               String?
+  employees          Employee[]
+  // Purchases this department requested (Purchase.requesterDepartment) —
+  // see the Purchase model for why there is no separate requester-employee
+  // relation.
+  requestedPurchases Purchase[]
+  // Purchase Requests this department raised (PurchaseRequest.requesterDepartment).
+  purchaseRequests   PurchaseRequest[]
+
+  @@map("departments")
+}
+
+model Employee {
+  id            Int            @id @default(autoincrement())
+  code          String         @unique
+  firstName     String         @map("first_name")
+  lastName      String         @map("last_name")
+  departmentId  Int            @map("department_id")
+  department    Department     @relation(fields: [departmentId], references: [id])
+  position      String?
+  nationalId    String?        @unique @map("national_id")
+  mobilePhone   String?        @map("mobile_phone")
+  landlinePhone String?        @map("landline_phone")
+  birthDate     DateTime?      @map("birth_date")
+  hireDate      DateTime?      @map("hire_date")
+  email         String?
+  status        EmployeeStatus @default(active)
+  note          String?
+  photoPath     String?        @map("photo_path")
+
+  // --- اطلاعات هویتی و خانوادگی (identity & family — all optional) ---
+  fatherName              String?         @map("father_name")
+  birthCertificateNumber  String?         @map("birth_certificate_number")
+  maritalStatus           MaritalStatus?  @map("marital_status")
+  childrenCount           Int?            @map("children_count")
+  gender                  Gender?
+
+  // --- تحصیلات (education) ---
+  educationLevel          EducationLevel? @map("education_level")
+  // Only meaningful when educationLevel = under_diploma ("زیر دیپلم") —
+  // which class/grade the employee completed, and what field/trade they
+  // studied. Neither is enforced as an independent column rule — see
+  // employee.dto.ts for the cross-field requirement.
+  belowDiplomaGrade       String?         @map("below_diploma_grade")
+  fieldOfStudy            String?         @map("field_of_study")
+
+  // --- اطلاعات استخدام و قرارداد (employment & contract) ---
+  workLocation            String?         @map("work_location")
+  workingHours            String?         @map("working_hours")
+  contractType            ContractType?   @map("contract_type")
+  contractStartDate       DateTime?       @map("contract_start_date")
+  contractEndDate         DateTime?       @map("contract_end_date")
+  // Money — stored as a fixed-point Decimal, never a float. The pay period
+  // (ماهانه/هفتگی/روزانه) is a separate column, not baked into the field
+  // name, since the company pays some roles by the day or week.
+  salaryAmount            Decimal?        @map("salary_amount") @db.Decimal(12, 2)
+  salaryPeriod            SalaryPeriod?   @map("salary_period")
+  // Free text — covers a plain account number, a card number, or a Sheba/IBAN,
+  // whichever the company collects. Not validated against a specific format.
+  bankAccountNumber       String?         @map("bank_account_number")
+  // A scanned/photographed contract document (PDF or image), stored on disk
+  // the same way photoPath is — only the relative URL is kept here, set
+  // through its own upload endpoint, not through create/update.
+  contractDocumentPath    String?         @map("contract_document_path")
+
+  // --- اطلاعات تماس و سایر (contact & other) ---
+  address                 String?
+
+  // Purchases this employee bought (Purchase.buyerEmployee).
+  purchasesAsBuyer Purchase[]
+  // Purchase Requests this employee personally raised (PurchaseRequest.requestedByEmployee) — optional, distinct from purchasesAsBuyer.
+  purchaseRequestsAsRequester PurchaseRequest[]
+
+  @@map("employees")
+}
+
+// Master data: a company the business buys from.
+model Supplier {
+  id         Int            @id @default(autoincrement())
+  code       String         @unique
+  name       String
+  // شناسه ملی — the supplier's national/legal registration id. Optional
+  // (not every supplier record will have it on hand yet) but unique when
+  // provided, same treatment as Employee.nationalId.
+  nationalId String?        @unique @map("national_id")
+  phone      String?
+  email      String?
+  address    String?
+  // --- اطلاعات بانکی (bank details — three separate fields, not one blob) ---
+  bankName          String? @map("bank_name")
+  bankAccountNumber String? @map("bank_account_number")
+  bankShebaNumber   String? @map("bank_sheba_number")
+  status     SupplierStatus @default(active)
+  note       String?
+  purchases  Purchase[]
+
+  @@map("suppliers")
+}
+
+// Master data shared by Purchase Item (and, later, Sales Item) — see
+// database_plan.txt's Unit section.
+model Unit {
+  id                   Int                   @id @default(autoincrement())
+  code                 String                @unique
+  nameEn               String                @map("name_en")
+  nameFa               String                @map("name_fa")
+  isActive             Boolean               @default(true) @map("is_active")
+  sortOrder            Int                   @default(0) @map("sort_order")
+  purchaseItems        PurchaseItem[]
+  purchaseRequestItems PurchaseRequestItem[]
+
+  @@map("units")
+}
+
+// Master data — see database_plan.txt's Purchase Type section for the seed
+// list (raw_material, food_ingredient, packaging, ...).
+model PurchaseType {
+  id        Int        @id @default(autoincrement())
+  code      String     @unique
+  nameEn    String     @map("name_en")
+  nameFa    String     @map("name_fa")
+  isActive  Boolean    @default(true) @map("is_active")
+  sortOrder Int        @default(0) @map("sort_order")
+  purchases Purchase[]
+
+  @@map("purchase_types")
+}
+
+// Optional business event preceding a Purchase — "optional" is the whole
+// point (see the Purchase module architecture note): plenty of purchases
+// are urgent, direct, or recurring and never go through a formal request.
+// No multi-level approval chain — status is a plain edit, same as Purchase.
+model PurchaseRequest {
+  id            Int      @id @default(autoincrement())
+  // System-generated — "REQ-000001" — same placeholder-then-fix pattern as
+  // Purchase.purchaseNumber.
+  requestNumber String   @unique @map("request_number")
+  requestDate   DateTime @map("request_date")
+
+  requesterDepartmentId Int        @map("requester_department_id")
+  requesterDepartment   Department @relation(fields: [requesterDepartmentId], references: [id])
+  // The specific person who asked for it, if known — optional because a
+  // request can also just come from a department in general.
+  requestedByEmployeeId Int?       @map("requested_by_employee_id")
+  requestedByEmployee   Employee?  @relation(fields: [requestedByEmployeeId], references: [id])
+
+  status   PurchaseRequestStatus   @default(DRAFT)
+  priority PurchaseRequestPriority @default(NORMAL)
+  note     String?
+
+  // Which system account entered this record — data-entry provenance, not
+  // "who asked for it" (that's requestedByEmployee).
+  createdByUserId Int?     @map("created_by_user_id")
+  createdByUser   User?    @relation(fields: [createdByUserId], references: [id])
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  items     PurchaseRequestItem[]
+  // Zero or more Purchases may originate from this request — kept
+  // one-to-many (not one-to-one) so a request can later be split across
+  // partial/consolidated purchases without a schema change.
+  purchases Purchase[]
+
+  @@map("purchase_requests")
+}
+
+model PurchaseRequestItem {
+  id                Int             @id @default(autoincrement())
+  purchaseRequestId Int             @map("purchase_request_id")
+  purchaseRequest   PurchaseRequest @relation(fields: [purchaseRequestId], references: [id], onDelete: Cascade)
+  // Plain text, same reasoning as PurchaseItem.name — not linked to an Item record.
+  name              String
+  quantity          Decimal         @db.Decimal(12, 2)
+  unitId            Int             @map("unit_id")
+  unit              Unit            @relation(fields: [unitId], references: [id])
+  requiredDate      DateTime?       @map("required_date")
+  note              String?
+
+  // Zero or more PurchaseItem rows created to (partially or fully) fulfill
+  // this requested item — see PurchaseItem.purchaseRequestItem. Purchased /
+  // remaining quantity is always derived from these at read time
+  // (PurchaseRequestsService), never stored on this row.
+  purchaseItems PurchaseItem[]
+
+  @@map("purchase_request_items")
+}
+
+model Purchase {
+  id             Int          @id @default(autoincrement())
+  // System-generated sequential number — "PUR-000001" — assigned right after
+  // the row is created (see PurchasesService.create(), same
+  // placeholder-then-fix pattern used for Employee.code). Never entered by
+  // the user, and not the same thing as a supplier's own invoice/document
+  // number — that's recorded per-document on PurchaseDocument instead.
+  purchaseNumber String       @unique @map("purchase_number")
+  purchaseDate   DateTime     @map("purchase_date")
+  purchaseTypeId Int          @map("purchase_type_id")
+  purchaseType   PurchaseType @relation(fields: [purchaseTypeId], references: [id])
+
+  // The optional Purchase Request this purchase originated from — most
+  // purchases (urgent, direct, recurring) will have none at all.
+  purchaseRequestId Int?             @map("purchase_request_id")
+  purchaseRequest   PurchaseRequest? @relation(fields: [purchaseRequestId], references: [id])
+
+  // Distinguishes a purchase entered as it happens from an old paper
+  // record being digitized after the fact. Both rows live in this same
+  // table — see PurchaseSourceType.
+  sourceType PurchaseSourceType @default(OPERATIONAL) @map("source_type")
+
+  // Requester Department only. database_plan.txt originally modeled the
+  // requester as two nullable FKs (Employee OR Department, exactly one
+  // set) — this was explicitly simplified to Department-only for this
+  // implementation; Requester Employee is intentionally not modeled.
+  // Nullable — not every historical paper record names a department, and
+  // PurchasesService refuses to fabricate one just to satisfy this column
+  // (see the HISTORICAL_IMPORT handling there). Still required for a new
+  // OPERATIONAL purchase — enforced in purchase.dto.ts, not here.
+  requesterDepartmentId Int?        @map("requester_department_id")
+  requesterDepartment   Department? @relation(fields: [requesterDepartmentId], references: [id])
+  // The employee who actually made the purchase — distinct from the
+  // requester department above. Nullable for the same historical-import
+  // reason as requesterDepartmentId.
+  buyerEmployeeId       Int?        @map("buyer_employee_id")
+  buyerEmployee         Employee?   @relation(fields: [buyerEmployeeId], references: [id])
+  supplierId            Int         @map("supplier_id")
+  supplier              Supplier    @relation(fields: [supplierId], references: [id])
+
+  status        PurchaseStatus        @default(DRAFT)
+  // paymentStatus, totalAmount and paidAmount are all derived — never set
+  // directly by the client — and recomputed by PurchasesService whenever
+  // items or payments change. Persisted (not computed on every read) so the
+  // purchase list can filter/sort/display them without re-summing items and
+  // payments on every request.
+  paymentStatus PurchasePaymentStatus @default(UNPAID) @map("payment_status")
+  totalAmount   Decimal               @default(0) @map("total_amount") @db.Decimal(15, 0)
+  paidAmount    Decimal               @default(0) @map("paid_amount") @db.Decimal(15, 0)
+  note          String?
+  createdAt     DateTime              @default(now()) @map("created_at")
+
+  items     PurchaseItem[]
+  payments  PurchasePayment[]
+  documents PurchaseDocument[]
+
+  @@map("purchases")
+}
+
+model PurchaseItem {
+  id         Int      @id @default(autoincrement())
+  purchaseId Int      @map("purchase_id")
+  purchase   Purchase @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+  // Plain text by explicit instruction — NOT a link to an Item record. A
+  // company can buy things (machinery, office supplies, ...) that aren't
+  // among the products it produces/sells. See database_plan.txt.
+  name       String
+  quantity   Decimal  @db.Decimal(12, 2)
+  unitId     Int      @map("unit_id")
+  unit       Unit     @relation(fields: [unitId], references: [id])
+  // Optional — some purchases (exceptions, gifts, items priced only as a
+  // lump sum) don't have a meaningful per-unit price. Total Price below is
+  // what's actually billed and is always required.
+  unitPrice  Decimal? @map("unit_price") @db.Decimal(15, 0)
+  // Stored independently — NOT derived or enforced as quantity × unitPrice.
+  totalPrice Decimal  @map("total_price") @db.Decimal(15, 0)
+
+  // The specific Purchase Request item this line fulfills, if any — most
+  // Purchase items have none (a purchase created without an originating
+  // request, or a free-form extra item added beyond what was requested).
+  // This is the missing link that lets purchased/remaining quantity be
+  // computed per request item, not just per whole request (see
+  // Purchase.purchaseRequestId, which only links the request as a whole).
+  purchaseRequestItemId Int?                 @map("purchase_request_item_id")
+  purchaseRequestItem   PurchaseRequestItem? @relation(fields: [purchaseRequestItemId], references: [id])
+
+  @@map("purchase_items")
+}
+
+model PurchasePayment {
+  id              Int           @id @default(autoincrement())
+  purchaseId      Int           @map("purchase_id")
+  purchase        Purchase      @relation(fields: [purchaseId], references: [id], onDelete: Restrict)
+  amount          Decimal       @db.Decimal(15, 0)
+  paymentDate     DateTime      @map("payment_date")
+  method          PaymentMethod
+  referenceNumber String?       @map("reference_number")
+  status          PaymentStatus @default(PENDING)
+  note            String?
+
+  @@map("purchase_payments")
+}
+
+model PurchaseDocument {
+  id             Int          @id @default(autoincrement())
+  purchaseId     Int          @map("purchase_id")
+  purchase       Purchase     @relation(fields: [purchaseId], references: [id], onDelete: Restrict)
+  // The supplier's own document number (invoice #, etc.) — distinct from
+  // Purchase.purchaseNumber, which is this system's internal id.
+  documentNumber String?      @map("document_number")
+  documentType   DocumentType @map("document_type")
+  date           DateTime
+  // Uploaded separately from the create/update JSON body, same pattern as
+  // Employee.photoPath / contractDocumentPath — set through its own upload
+  // endpoint, null until a file is attached.
+  filePath       String?      @map("file_path")
+  note           String?
+
+  @@map("purchase_documents")
+}
+
+model Role {
+  id          Int              @id @default(autoincrement())
+  name        String           @unique
+  users       User[]
+  permissions RolePermission[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id    Int              @id @default(autoincrement())
+  name  String           @unique
+  roles RolePermission[]
+  users UserPermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       Int        @map("role_id")
+  permissionId Int        @map("permission_id")
+  role         Role       @relation(fields: [roleId], references: [id])
+  permission   Permission @relation(fields: [permissionId], references: [id])
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+// USER is an independent system-login account. It is NOT linked to EMPLOYEE.
+// A person's Employee record (Master Data) and their User account (if any)
+// are separate, unrelated entities — see database_plan.txt at the project root.
+model User {
+  id           Int              @id @default(autoincrement())
+  username     String           @unique
+  passwordHash String           @map("password_hash")
+  email        String?
+  phone        String?
+  roleId       Int              @map("role_id")
+  role         Role             @relation(fields: [roleId], references: [id])
+  status       UserStatus       @default(ACTIVE)
+  createdAt    DateTime         @default(now()) @map("created_at")
+  lastLoginAt  DateTime?        @map("last_login_at")
+  auditLogs    AuditLog[]
+  permissions  UserPermission[]
+  // Purchase Requests this account entered (PurchaseRequest.createdByUser) — data-entry
+  // provenance, distinct from requestedByEmployee (who actually asked for it).
+  createdPurchaseRequests PurchaseRequest[]
+
+  @@map("users")
+}
+
+model UserPermission {
+  userId       Int        @map("user_id")
+  permissionId Int        @map("permission_id")
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Restrict)
+
+  @@id([userId, permissionId])
+  @@map("user_permissions")
+}
+
+model AuditLog {
+  id         Int      @id @default(autoincrement())
+  userId     Int?     @map("user_id")
+  user       User?    @relation(fields: [userId], references: [id])
+  action     String
+  entityType String?  @map("entity_type")
+  entityId   String?  @map("entity_id")
+  createdAt  DateTime @default(now()) @map("created_at")
+  details    String?
+  ipAddress  String?  @map("ip_address")
+
+  @@map("audit_logs")
+}
+
+/// Managed entirely by connect-pg-simple (the express-session Postgres
+/// store) at runtime — never created or altered by a Prisma migration.
+/// Declared here, with @@ignore, only so Prisma recognizes the table and
+/// stops reporting it as drift; no Prisma Client methods are generated
+/// for it. The "baseline_user_sessions" migration records that it
+/// already exists rather than trying to (re)create it.
+model user_sessions {
+  sid    String   @id(map: "session_pkey") @db.VarChar
+  sess   Json     @db.Json
+  expire DateTime @db.Timestamp(6)
+
+  @@index([expire], map: "IDX_session_expire")
+  @@ignore
+}

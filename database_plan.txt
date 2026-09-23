@@ -1,0 +1,384 @@
+# Business System — Data Model
+
+Internal reference for Alish Automation's Business System schema: what tables exist, what fields they carry, and how they relate. This document mirrors the [interactive diagram](https://claude.ai/artifact/GaJCEU3MsXCyatuKD5aC3Z) field-for-field — treat the diagram as the visual companion to this file, not a separate source of truth.
+
+The system is organized into four parts:
+
+- **Master Data** — reusable entities that get referenced, not created fresh each time (Supplier, Employee, Department, Customer, Unit, Item, Item Category).
+- **Transaction** — the business events themselves, split into **Purchases** and **Sales**.
+- **Users & Access** — who can log in, what they're allowed to do, and what they did.
+- **Inventory** — stock levels and the movements that changed them.
+
+Field types, choice lists, and FK delete rules are proposed to match the codebase's existing conventions (Persian UI labels, Decimal money fields, Jalali-display dates stored as Gregorian, `PROTECT`/`CASCADE`/`SET_NULL` conventions). Table and field names given directly by you are kept as specified — nothing renamed or redesigned beyond what's noted below.
+
+---
+
+## Master Data — داده‌های پایه
+
+### Supplier — تأمین‌کننده
+
+| Field | Type / Notes |
+|---|---|
+| `id` | AutoField |
+| `code` | Unique — Supplier ID |
+| `name` | نام |
+| `phone` | تلفن |
+| `email` | ایمیل — blank allowed |
+| `address` | آدرس — TextField, blank |
+| `bank_info` | اطلاعات بانکی — TextField for now |
+| `status` | active / inactive / blacklisted |
+| `note` | یادداشت‌ها — blank allowed |
+| `created_by` / `created_at` | auto_now_add |
+
+### Employee — کارمند
+
+Employee is an independent Master Data record. It is **not** linked to User in any way — see the Users & Access section below.
+
+| Field | Type / Notes |
+|---|---|
+| `id` | AutoField |
+| `code` | Unique — Employee ID |
+| `first_name` | نام |
+| `last_name` | نام خانوادگی |
+| `department` | FK → Department, `PROTECT` |
+| `position` | سمت |
+| `phone` / `email` | تلفن / ایمیل |
+| `hire_date` | تاریخ استخدام — DateField |
+| `status` | active / on_leave / terminated |
+| `note` | یادداشت‌ها — blank allowed |
+
+### Department — واحد / بخش
+
+| Field | Type / Notes |
+|---|---|
+| `id` | AutoField |
+| `code` | Unique — Department ID |
+| `name` | |
+| `status` | active / inactive |
+| `note` | یادداشت‌ها — blank allowed |
+
+Department belongs to Employee only (`Employee.department` → `Department`). It never belongs to User, and a department can't be deleted while any Employee still references it.
+
+### Customer — مشتری
+
+| Field | Type / Notes |
+|---|---|
+| `id` | AutoField |
+| `code` | Unique — Customer ID |
+| `name` | نام |
+| `customer_type` | retail / wholesale / distributor / other — proposed, confirm the list |
+| `phone` | تلفن |
+| `email` | ایمیل — blank allowed |
+| `address` | آدرس — TextField, blank |
+| `note` | یادداشت‌ها — blank allowed |
+
+No Status or Bank Information yet — held back by request until a later update.
+
+### Unit — واحد
+
+| Field | Type / Notes |
+|---|---|
+| `id` | AutoField |
+| `code` | Unique — e.g. `kg`, `liter` |
+| `name_en` / `name_fa` | English and Persian labels |
+| `is_active` | BooleanField, default=True |
+| `sort_order` | IntegerField |
+
+Shared by Purchase Item and Sales Item — lives in Master Data rather than under either module.
+
+### Item — کالا
+
+| Field | Type / Notes |
+|---|---|
+| `id` | AutoField |
+| `code` | Unique — Item ID |
+| `name` | |
+| `category` | FK → Item Category, `PROTECT` |
+| `unit` | FK → Unit, `PROTECT` |
+| `description` | TextField, blank allowed |
+| `status` | proposed: active / inactive |
+| `note` | Blank allowed |
+
+Referenced by Sales Item. Purchase Item does **not** reference Item — see the note under Purchases.
+
+### Item Category — دسته‌بندی کالا
+
+| Field | Type / Notes |
+|---|---|
+| `id` | AutoField |
+| `code` | Unique — e.g. `dairy_raw` |
+| `name_en` / `name_fa` | English and Persian labels |
+| `is_active` | BooleanField, default=True |
+| `sort_order` | IntegerField |
+
+---
+
+## Transaction · Purchases — خرید
+
+### Purchase Type — نوع خرید
+
+| Field | Type / Notes |
+|---|---|
+| `id` | AutoField |
+| `code` | CharField(30), unique — e.g. `raw_material` |
+| `name_en` / `name_fa` | English and Persian labels |
+| `is_active` | BooleanField, default=True |
+| `sort_order` | IntegerField |
+
+Seed rows: `raw_material`, `food_ingredient`, `packaging`, `machinery`, `spare_parts`, `tools`, `accessories`, `transportation`, `office_supplies`, `maintenance`, `other`.
+
+### Purchase — خرید
+
+| Field | Type / Notes |
+|---|---|
+| `id` | AutoField |
+| `purchase_date` | JalaliDateField, stored Gregorian |
+| `purchase_type` | FK → Purchase Type, `PROTECT` |
+| `requester_employee` | FK → Employee, `PROTECT`, nullable — one of two requester fields |
+| `requester_department` | FK → Department, `PROTECT`, nullable — the other requester field |
+| `buyer` | FK → Employee, `PROTECT` |
+| `supplier` | FK → Supplier, `PROTECT` |
+| `status` | FK/choices → PURCHASE_STATUS |
+| `payment_status` | FK/choices → PURCHASE_PAYMENT_STATUS |
+| `note` | TextField, blank allowed |
+
+**Requester** can't be a single column pointing at two different tables in a normal relational schema, so it's implemented as two nullable foreign keys — `requester_employee` and `requester_department` — with exactly one expected to be set per purchase.
+
+### Purchase Item — آیتم خرید
+
+| Field | Type / Notes |
+|---|---|
+| `id` | AutoField |
+| `purchase` | FK → Purchase, `CASCADE`, related_name=`items` |
+| `name` | CharField(150) — plain text, **not** a link to Item, by request |
+| `quantity` | DecimalField(12,2) |
+| `unit` | FK → Unit, `PROTECT` (Master Data) |
+| `unit_price` | DecimalField(15,0), Rial |
+| `total_price` | DecimalField(15,0), stored — entered independently, **not** assumed to be quantity × unit price |
+
+Sales Item, by contrast, does link to Item — this asymmetry is intentional per your instruction, not an oversight.
+
+### Purchase Payment — پرداخت
+
+| Field | Type / Notes |
+|---|---|
+| `id` | AutoField |
+| `purchase` | FK → Purchase, `PROTECT`, related_name=`payments` |
+| `amount` | DecimalField(15,0), Rial |
+| `payment_date` | DateField |
+| `method` | FK/choices → PAYMENT_METHOD |
+| `reference_number` | CharField(60), bank/check reference, blank allowed |
+| `status` | FK/choices → PAYMENT_STATUS |
+| `note` | TextField, blank allowed |
+
+### Purchase Document — سند / مدرک خرید
+
+| Field | Type / Notes |
+|---|---|
+| `id` | AutoField |
+| `purchase` | FK → Purchase, `PROTECT`, related_name=`documents` |
+| `document_number` | CharField(40) — the document's own filing number |
+| `document_type` | FK/choices → DOCUMENT_TYPE |
+| `date` | DateField |
+| `file` | FileField — the scan/attachment |
+| `note` | TextField, blank allowed |
+
+### Enums
+
+| Enum | Values |
+|---|---|
+| `PURCHASE_STATUS` | DRAFT, CONFIRMED, RECEIVED, CLOSED, CANCELLED |
+| `PURCHASE_PAYMENT_STATUS` | UNPAID, PARTIAL, PAID |
+| `PAYMENT_METHOD` | CASH, BANK_TRANSFER, CHECK, CARD |
+| `PAYMENT_STATUS` | PENDING, COMPLETED, CANCELLED |
+| `DOCUMENT_TYPE` | INVOICE, CONTRACT, DELIVERY_NOTE, WARRANTY, RECEIPT, OTHER |
+
+---
+
+## Transaction · Sales — فروش
+
+Mirrors Purchases on the sell side — Customer and Seller (an Employee) replace Supplier and Buyer. `PAYMENT_METHOD` and `PAYMENT_STATUS` are reused from Purchases rather than redefined.
+
+### Sales — فروش
+
+| Field | Type / Notes |
+|---|---|
+| `id` | AutoField |
+| `sales_date` | JalaliDateField, stored Gregorian |
+| `customer` | FK → Customer, `PROTECT` |
+| `seller` | FK → Employee, `PROTECT` |
+| `status` | FK/choices → SALES_STATUS |
+| `payment_status` | FK/choices → SALES_PAYMENT_STATUS |
+| `note` | TextField, blank allowed |
+
+### Sales Item — آیتم فروش
+
+| Field | Type / Notes |
+|---|---|
+| `id` | AutoField |
+| `sale` | FK → Sales, `CASCADE`, related_name=`items` |
+| `item` | FK → Item, `PROTECT` (Master Data) |
+| `quantity` | DecimalField(12,2) |
+| `unit` | FK → Unit, `PROTECT` (Master Data, shared with Purchases) |
+| `unit_price` | DecimalField(15,0), Rial |
+| `total_price` | DecimalField(15,0), stored |
+
+### Sales Payment — پرداخت فروش
+
+| Field | Type / Notes |
+|---|---|
+| `id` | AutoField |
+| `sale` | FK → Sales, `PROTECT`, related_name=`payments` |
+| `amount` | DecimalField(15,0), Rial |
+| `payment_date` | DateField |
+| `method` | FK/choices → PAYMENT_METHOD (shared with Purchases) |
+| `reference_number` | CharField(60), blank allowed |
+| `status` | FK/choices → PAYMENT_STATUS (shared with Purchases) |
+| `note` | TextField, blank allowed |
+
+### Sales Document — سند / مدرک فروش
+
+| Field | Type / Notes |
+|---|---|
+| `id` | AutoField |
+| `sale` | FK → Sales, `PROTECT`, related_name=`documents` |
+| `document_number` | CharField(40) |
+| `document_type` | FK/choices → DOCUMENT_TYPE — **assumed** shared with Purchases; not explicit in the original spec |
+| `date` | DateField |
+| `file` | FileField |
+| `note` | TextField, blank allowed |
+
+### Enums
+
+| Enum | Values |
+|---|---|
+| `SALES_STATUS` | DRAFT, CONFIRMED, DELIVERED, CLOSED, CANCELLED |
+| `SALES_PAYMENT_STATUS` | UNPAID, PARTIAL, PAID |
+
+---
+
+## Users & Access — کاربران و دسترسی
+
+`status` is pulled out as an enum; roles and permissions are real tables joined through `Role_Permission` rather than a fixed list on the role itself, so one permission can belong to several roles without duplicating rows.
+
+**User and Employee are independent entities. There is no relationship between them — no `User.employee` field, no `Employee.user` field, nothing joining the two tables.** A User is a login account for the system (username, password, role, status, email, phone). An Employee is a Master Data business record for a person who works at the company (name, department, position, hire date, etc.). Creating one never creates or requires the other: an Employee can exist with no User account, and a User can exist with no corresponding Employee record. This was previously implemented as a required 1:1 `User → Employee` link; that link has been removed by request and must not be reintroduced without an explicit new instruction.
+
+### Role — نقش
+
+| Field | Type / Notes |
+|---|---|
+| `id` | AutoField |
+| `name` | |
+
+### Permission — مجوز
+
+| Field | Type / Notes |
+|---|---|
+| `id` | AutoField |
+| `name` | |
+
+### Role_Permission — نقش–مجوز
+
+| Field | Type / Notes |
+|---|---|
+| `role_id` | PK/FK → Role |
+| `permission_id` | PK/FK → Permission |
+
+### User — کاربر
+
+| Field | Type / Notes |
+|---|---|
+| `id` | AutoField |
+| `username` | |
+| `password_hash` | |
+| `email` | ایمیل — optional, own field on User, independent of any Employee's email |
+| `phone` | شماره تلفن — optional, own field on User, independent of any Employee's phone |
+| `role` | FK → Role |
+| `status` | FK/choices → USER_STATUS |
+| `created_at` | |
+| `last_login_at` | |
+
+### Audit_Log — گزارش رویداد
+
+| Field | Type / Notes |
+|---|---|
+| `id` | AutoField |
+| `user` | FK → User |
+| `action` | **open** — defined once the Purchases/Sales/Document workflow settles |
+| `entity_type` | **open** |
+| `entity_id` | |
+| `created_at` | |
+| `details` | **open** |
+| `ip_address` | |
+
+### USER_STATUS enum
+
+`ACTIVE`, `DISABLED`, `LOCKED`
+
+### Initial roles
+
+`ADMIN`, `DATA_OPERATOR`, `PURCHASE_MANAGER`, `SALES_MANAGER`, `VIEWER`
+
+### Initial permissions
+
+`users.create`, `users.disable`, `suppliers.manage`, `employees.manage`, `purchases.manage`, `purchases.edit`, `sales.manage`, `sales.edit`, `documents.upload`, `reports.view`
+
+---
+
+## Inventory — انبار / موجودی
+
+Stock holds a running balance per item/location; Stock Movement is the ledger of everything that changed it. Both key off Item and Location rather than owning their own copies of that data.
+
+### Stock — موجودی
+
+| Field | Type / Notes |
+|---|---|
+| `id` | AutoField |
+| `item` | FK → Item, `PROTECT` (Master Data) |
+| `location` | FK → Inventory Location, `PROTECT` |
+| `quantity` | DecimalField(12,2) — running balance for this item/location pair |
+
+### Stock Movement — گردش موجودی
+
+| Field | Type / Notes |
+|---|---|
+| `id` | AutoField |
+| `item` | FK → Item, `PROTECT` (Master Data) |
+| `location` | FK → Inventory Location, `PROTECT` |
+| `movement_type` | FK/choices → STOCK_MOVEMENT_TYPE |
+| `quantity` | DecimalField(12,2) |
+| `movement_date` | DateField |
+| `reference_type` | CharField(30) — **open**, not a real FK yet |
+| `reference_id` | IntegerField — **open**, not a real FK yet |
+| `note` | TextField, blank allowed |
+
+**Open:** `reference_type` / `reference_id` read like a generic pointer back to whatever caused the movement (a Purchase Item, a Sales Item, a manual adjustment). Left as a plain type/id pair rather than real foreign keys, since a single column can't target more than one table and the valid types haven't been specified yet.
+
+### Inventory Location — مکان انبار
+
+| Field | Type / Notes |
+|---|---|
+| `id` | AutoField |
+| `code` | CharField(30), unique |
+| `name` | |
+| `description` | TextField, blank allowed |
+| `is_active` | BooleanField, default=True |
+| `note` | TextField, blank allowed |
+
+### STOCK_MOVEMENT_TYPE enum
+
+`IN`, `OUT`, `TRANSFER_IN`, `TRANSFER_OUT`, `ADJUSTMENT_IN`, `ADJUSTMENT_OUT`
+
+---
+
+## Open items to resolve
+
+- **Stock Movement's `reference_type` / `reference_id`** — not yet real foreign keys; needs the valid reference types settled.
+- **Audit_Log's `action`, `entity_type`, `details`** — intentionally left open until the Purchases/Sales/Document workflow is finalized.
+- **Purchase Item vs. Sales Item** — Purchase Item stores its item as free text (`name`); Sales Item links to the Item table. Confirm whether Purchase Item should also link to Item.
+- **Sales Document's `document_type`** — assumed to reuse Purchases' `DOCUMENT_TYPE` enum; not explicit in the original spec.
+- **Customer** — no Status or Bank Information fields yet, held back for a later update.
+
+## Resolved items
+
+- **User ↔ Employee** — resolved: intentionally independent, no relationship. See the Users & Access section above.
