@@ -32,9 +32,11 @@ export class EmployeesController {
   constructor(private readonly employeesService: EmployeesService) {}
 
   @Get()
+  @RequirePermissions('employees.view')
   list() { return this.employeesService.list(); }
 
   @Get(':id')
+  @RequirePermissions('employees.view')
   get(@Param('id', ParseIntPipe) id: number) { return this.employeesService.get(id); }
 
   @Post()

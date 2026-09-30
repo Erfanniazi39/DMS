@@ -1,8 +1,8 @@
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { ConflictException } from '@nestjs/common';
+import { ConflictException, NotFoundException } from '@nestjs/common';
 import { PurchasesService } from './purchases.service';
-import type { CreatePurchaseDto, UpdatePurchaseDto } from './dto/purchase.dto';
+import type { CreatePurchaseDto, CreatePurchaseReturnDto, UpdatePurchaseDto } from './dto/purchase.dto';
 
 // Covers the "Professionalize the Purchase module" architecture task —
 // Purchase Request is optional, historical imports never fabricate a
@@ -11,8 +11,8 @@ import type { CreatePurchaseDto, UpdatePurchaseDto } from './dto/purchase.dto';
 
 function createPrismaMock() {
   const mock = {
-    purchase: { findMany: jest.fn(), findUnique: jest.fn(), create: jest.fn(), update: jest.fn(), delete: jest.fn() },
-    purchaseItem: { deleteMany: jest.fn() },
+    purchase: { findMany: jest.fn(), count: jest.fn(), findUnique: jest.fn(), create: jest.fn(), update: jest.fn(), delete: jest.fn() },
+    purchaseItem: { deleteMany: jest.fn(), findMany: jest.fn() },
     purchaseType: { findUnique: jest.fn() },
     department: { findUnique: jest.fn() },
     employee: { findUnique: jest.fn() },
@@ -22,6 +22,18 @@ function createPrismaMock() {
     unit: { count: jest.fn() },
     purchasePayment: { create: jest.fn(), findFirst: jest.fn(), findMany: jest.fn(), delete: jest.fn() },
     purchaseDocument: { create: jest.fn(), findFirst: jest.fn(), delete: jest.fn() },
+    purchaseReturn: {
+      create: jest.fn(),
+      update: jest.fn(),
+      findFirst: jest.fn(),
+      findMany: jest.fn(),
+      delete: jest.fn(),
+      count: jest.fn().mockResolvedValue(0),
+    },
+    purchaseReturnItem: { groupBy: jest.fn() },
+    // Row lock taken on the parent Purchase inside createReturn()'s
+    // transaction — the mock just reports whether that row exists.
+    $queryRaw: jest.fn(),
     auditLog: { create: jest.fn() },
   };
   // create()/update() run inside a $transaction — the mock just invokes the
@@ -478,6 +490,207 @@ describe('PurchasesService', () => {
     );
   });
 
+  // --- Return to Vendor (RTV) ----------------------------------------------
+
+  const returnDto = (items: CreatePurchaseReturnDto['items']): CreatePurchaseReturnDto =>
+    ({ returnDate: new Date('2026-09-30'), reason: 'کالای معیوب', note: undefined, items }) as never;
+
+  function setUpReturnablePurchase(prisma: ReturnType<typeof createPrismaMock>, alreadyReturned: number | null) {
+    prisma.$queryRaw.mockResolvedValue([{ id: 8 }]);
+    prisma.purchaseItem.findMany.mockResolvedValue([{ id: 21, name: 'روغن موتور', quantity: 10 }]);
+    prisma.purchaseReturnItem.groupBy.mockResolvedValue(
+      alreadyReturned === null ? [] : [{ purchaseItemId: 21, _sum: { quantity: alreadyReturned } }],
+    );
+  }
+
+  it('creates a valid return against a purchase item, generating an RTN- number and logging PURCHASE_RETURN_CREATED', async () => {
+    const prisma = createPrismaMock();
+    const service = new PurchasesService(prisma as never, createPurchaseRequestsServiceMock() as never);
+    setUpReturnablePurchase(prisma, 3);
+    prisma.purchaseReturn.create.mockResolvedValue({ id: 12 });
+    prisma.purchaseReturn.update.mockImplementation(({ data }: { data: { returnNumber: string } }) =>
+      Promise.resolve({ id: 12, purchaseId: 8, returnNumber: data.returnNumber, items: [] }),
+    );
+
+    const result = await service.createReturn(8, returnDto([{ purchaseItemId: 21, quantity: 4, creditAmount: 4000 } as never]), 9, '127.0.0.1');
+
+    // Only items belonging to *this* purchase are considered.
+    expect(prisma.purchaseItem.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { id: { in: [21] }, purchaseId: 8 } }));
+    const createData = prisma.purchaseReturn.create.mock.calls[0][0].data;
+    expect(createData.returnNumber).toMatch(/^PENDING-/);
+    expect(createData.purchaseId).toBe(8);
+    expect(createData.createdByUserId).toBe(9);
+    expect(createData.items.create).toEqual([{ purchaseItemId: 21, quantity: 4, creditAmount: 4000 }]);
+    expect(result.returnNumber).toBe('RTN-000012');
+    expect(prisma.auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ action: 'PURCHASE_RETURN_CREATED', entityType: 'Purchase', entityId: '8', details: 'RTN-000012' }),
+      }),
+    );
+  });
+
+  it('generates the return number from the new row id, zero-padded to six digits (RTN-000123)', async () => {
+    const prisma = createPrismaMock();
+    const service = new PurchasesService(prisma as never, createPurchaseRequestsServiceMock() as never);
+    setUpReturnablePurchase(prisma, null);
+    prisma.purchaseReturn.create.mockResolvedValue({ id: 123 });
+    prisma.purchaseReturn.update.mockResolvedValue({ id: 123, returnNumber: 'RTN-000123' });
+
+    await service.createReturn(8, returnDto([{ purchaseItemId: 21, quantity: 1, creditAmount: 0 } as never]), 9, undefined);
+
+    expect(prisma.purchaseReturn.update).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 123 }, data: { returnNumber: 'RTN-000123' } }),
+    );
+  });
+
+  it('allows returning exactly the remaining returnable quantity', async () => {
+    const prisma = createPrismaMock();
+    const service = new PurchasesService(prisma as never, createPurchaseRequestsServiceMock() as never);
+    setUpReturnablePurchase(prisma, 7);
+    prisma.purchaseReturn.create.mockResolvedValue({ id: 13 });
+    prisma.purchaseReturn.update.mockResolvedValue({ id: 13, returnNumber: 'RTN-000013' });
+
+    await expect(
+      service.createReturn(8, returnDto([{ purchaseItemId: 21, quantity: 3, creditAmount: 3000 } as never]), 9, undefined),
+    ).resolves.toEqual(expect.objectContaining({ returnNumber: 'RTN-000013' }));
+  });
+
+  it('rejects a return whose quantity exceeds the original quantity minus what was already returned', async () => {
+    const prisma = createPrismaMock();
+    const service = new PurchasesService(prisma as never, createPurchaseRequestsServiceMock() as never);
+    // 10 bought, 7 already returned → only 3 left; asking for 4.
+    setUpReturnablePurchase(prisma, 7);
+
+    await expect(
+      service.createReturn(8, returnDto([{ purchaseItemId: 21, quantity: 4, creditAmount: 4000 } as never]), 9, undefined),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(prisma.purchaseReturnItem.groupBy).toHaveBeenCalledWith(
+      expect.objectContaining({ by: ['purchaseItemId'], where: { purchaseItemId: { in: [21] } } }),
+    );
+    expect(prisma.purchaseReturn.create).not.toHaveBeenCalled();
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it('sums several lines for the same purchase item within one return before checking the limit', async () => {
+    const prisma = createPrismaMock();
+    const service = new PurchasesService(prisma as never, createPurchaseRequestsServiceMock() as never);
+    setUpReturnablePurchase(prisma, null);
+
+    await expect(
+      service.createReturn(
+        8,
+        returnDto([
+          { purchaseItemId: 21, quantity: 6, creditAmount: 6000 } as never,
+          { purchaseItemId: 21, quantity: 5, creditAmount: 5000 } as never,
+        ]),
+        9,
+        undefined,
+      ),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(prisma.purchaseReturn.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects a return against a purchase item that does not exist on this purchase', async () => {
+    const prisma = createPrismaMock();
+    const service = new PurchasesService(prisma as never, createPurchaseRequestsServiceMock() as never);
+    prisma.$queryRaw.mockResolvedValue([{ id: 8 }]);
+    prisma.purchaseItem.findMany.mockResolvedValue([]);
+
+    await expect(
+      service.createReturn(8, returnDto([{ purchaseItemId: 999, quantity: 1, creditAmount: 100 } as never]), 9, undefined),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(prisma.purchaseReturnItem.groupBy).not.toHaveBeenCalled();
+    expect(prisma.purchaseReturn.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects a return against a purchase that does not exist', async () => {
+    const prisma = createPrismaMock();
+    const service = new PurchasesService(prisma as never, createPurchaseRequestsServiceMock() as never);
+    prisma.$queryRaw.mockResolvedValue([]);
+
+    await expect(
+      service.createReturn(404, returnDto([{ purchaseItemId: 21, quantity: 1, creditAmount: 100 } as never]), 9, undefined),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(prisma.purchaseReturn.create).not.toHaveBeenCalled();
+  });
+
+  it('never changes Purchase.totalAmount, paidAmount or paymentStatus when a return is created or deleted', async () => {
+    const prisma = createPrismaMock();
+    const service = new PurchasesService(prisma as never, createPurchaseRequestsServiceMock() as never);
+    setUpReturnablePurchase(prisma, null);
+    prisma.purchaseReturn.create.mockResolvedValue({ id: 14 });
+    prisma.purchaseReturn.update.mockResolvedValue({ id: 14, returnNumber: 'RTN-000014' });
+
+    await service.createReturn(8, returnDto([{ purchaseItemId: 21, quantity: 10, creditAmount: 10000 } as never]), 9, undefined);
+
+    prisma.purchaseReturn.findFirst.mockResolvedValue({ id: 14, purchaseId: 8, returnNumber: 'RTN-000014' });
+    await service.removeReturn(8, 14, 9, undefined);
+
+    // No write to the Purchase row at all — its derived money fields keep
+    // meaning "what was originally billed / paid".
+    expect(prisma.purchase.update).not.toHaveBeenCalled();
+    expect(prisma.purchase.create).not.toHaveBeenCalled();
+    expect(prisma.purchasePayment.create).not.toHaveBeenCalled();
+    expect(prisma.purchasePayment.findMany).not.toHaveBeenCalled();
+    // And nothing the return itself wrote smuggles those fields in.
+    for (const call of [...prisma.purchaseReturn.create.mock.calls, ...prisma.purchaseReturn.update.mock.calls]) {
+      expect(call[0].data).not.toHaveProperty('totalAmount');
+      expect(call[0].data).not.toHaveProperty('paidAmount');
+      expect(call[0].data).not.toHaveProperty('paymentStatus');
+    }
+  });
+
+  it('deletes a return and logs PURCHASE_RETURN_DELETED; an unknown return id is a 404', async () => {
+    const prisma = createPrismaMock();
+    const service = new PurchasesService(prisma as never, createPurchaseRequestsServiceMock() as never);
+    prisma.purchaseReturn.findFirst.mockResolvedValueOnce({ id: 14, purchaseId: 8, returnNumber: 'RTN-000014' });
+
+    await expect(service.removeReturn(8, 14, 9, '127.0.0.1')).resolves.toEqual({ success: true });
+    expect(prisma.purchaseReturn.findFirst).toHaveBeenCalledWith({ where: { id: 14, purchaseId: 8 } });
+    expect(prisma.purchaseReturn.delete).toHaveBeenCalledWith({ where: { id: 14 } });
+    expect(prisma.auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ action: 'PURCHASE_RETURN_DELETED', entityId: '8', details: 'RTN-000014' }) }),
+    );
+
+    prisma.purchaseReturn.findFirst.mockResolvedValueOnce(null);
+    await expect(service.removeReturn(8, 99, 9, undefined)).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('refuses to edit a Purchase that has returns (its items would be recreated out from under them)', async () => {
+    const prisma = createPrismaMock();
+    const service = new PurchasesService(prisma as never, createPurchaseRequestsServiceMock() as never);
+    prisma.purchase.findUnique.mockResolvedValue({ id: 8, status: 'CONFIRMED', paidAmount: 0, purchaseRequest: null });
+    prisma.purchaseReturn.count.mockResolvedValue(1);
+
+    const dto: UpdatePurchaseDto = {
+      purchaseDate: new Date('2026-01-01') as never,
+      purchaseTypeId: 1,
+      sourceType: 'OPERATIONAL' as never,
+      supplierId: 4,
+      status: 'CLOSED' as never,
+      note: undefined,
+      items: baseItems,
+    } as never;
+
+    await expect(service.update(8, dto, 9, undefined)).rejects.toBeInstanceOf(ConflictException);
+    expect(prisma.purchaseItem.deleteMany).not.toHaveBeenCalled();
+    expect(prisma.purchase.update).not.toHaveBeenCalled();
+  });
+
+  it('refuses to delete a Purchase that has returns', async () => {
+    const prisma = createPrismaMock();
+    const service = new PurchasesService(prisma as never, createPurchaseRequestsServiceMock() as never);
+    prisma.purchase.findUnique.mockResolvedValue({
+      id: 8,
+      purchaseNumber: 'PUR-000008',
+      purchaseRequestId: null,
+      _count: { payments: 0, documents: 0, returns: 1 },
+    });
+
+    await expect(service.remove(8, 9, undefined)).rejects.toBeInstanceOf(ConflictException);
+    expect(prisma.purchase.delete).not.toHaveBeenCalled();
+  });
+
   // --- 13 & 14. Reporting across historical + operational purchases -------
 
   it('lists both operational and historical purchases together when no sourceType filter is given (single Purchase table)', async () => {
@@ -502,6 +715,41 @@ describe('PurchasesService', () => {
 
     const whereArg = prisma.purchase.findMany.mock.calls[0][0].where;
     expect(whereArg.sourceType).toBe('HISTORICAL_IMPORT');
+  });
+
+  // --- Pagination (opt-in; plain array stays the default) -----------------
+
+  it('returns one page of purchases plus the total matching count, keeping order and filters', async () => {
+    const prisma = createPrismaMock();
+    const service = new PurchasesService(prisma as never, createPurchaseRequestsServiceMock() as never);
+    const pageRows = [{ id: 30 }, { id: 29 }];
+    prisma.purchase.findMany.mockResolvedValue(pageRows);
+    prisma.purchase.count.mockResolvedValue(42);
+
+    await expect(service.list({ status: 'DRAFT' }, { page: 2, pageSize: 20 })).resolves.toEqual({
+      items: pageRows,
+      total: 42,
+      page: 2,
+      pageSize: 20,
+    });
+
+    const findArgs = prisma.purchase.findMany.mock.calls[0][0];
+    expect(findArgs).toMatchObject({ skip: 20, take: 20, orderBy: [{ purchaseDate: 'desc' }, { id: 'desc' }] });
+    expect(findArgs.where.status).toBe('DRAFT');
+    // Total is counted over the same filter, not the whole table.
+    expect(prisma.purchase.count).toHaveBeenCalledWith({ where: findArgs.where });
+  });
+
+  it('returns the full plain array (no skip/take, no count) when pagination is not requested', async () => {
+    const prisma = createPrismaMock();
+    const service = new PurchasesService(prisma as never, createPurchaseRequestsServiceMock() as never);
+    prisma.purchase.findMany.mockResolvedValue([{ id: 1 }]);
+
+    await expect(service.list({})).resolves.toEqual([{ id: 1 }]);
+    const findArgs = prisma.purchase.findMany.mock.calls[0][0];
+    expect(findArgs.skip).toBeUndefined();
+    expect(findArgs.take).toBeUndefined();
+    expect(prisma.purchase.count).not.toHaveBeenCalled();
   });
 
   // --- 15. Existing Purchase records survive the migration -----------------

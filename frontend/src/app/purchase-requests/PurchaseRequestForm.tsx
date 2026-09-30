@@ -71,8 +71,8 @@ function emptyForm(): FormState {
 
 type Props = { mode: "create" } | { mode: "edit"; purchaseRequestId: number };
 
-// Used by both /admin/purchase-requests/new and
-// /admin/purchase-requests/[id]/edit — same full-page (not modal) pattern
+// Used by both /purchase-requests/new and
+// /purchase-requests/[id]/edit — same full-page (not modal) pattern
 // as the Purchase module's own form. Status is only editable once a
 // request exists (edit mode): a new request always starts DRAFT (see
 // PurchaseRequestsService.create()).
@@ -211,7 +211,7 @@ export function PurchaseRequestForm(props: Props) {
         },
       );
       pushSuccess(props.mode === "edit" ? "درخواست خرید با موفقیت ویرایش شد." : "درخواست خرید جدید با موفقیت ثبت شد.");
-      router.push(`/admin/purchase-requests/${saved.id}`);
+      router.push(`/purchase-requests/${saved.id}`);
     } catch (reason) {
       const apiError = reason as ApiError;
       if (apiError.messages?.length) {
@@ -233,27 +233,29 @@ export function PurchaseRequestForm(props: Props) {
   }
 
   return (
-    <div className="p-4 sm:p-6 lg:p-8">
+    <div className="p-4 sm:p-5">
       <ToastViewport toasts={toasts} onDismiss={dismiss} />
-      <div className="mx-auto max-w-4xl space-y-6">
-        <div>
-          <h1 className="text-2xl font-semibold">{props.mode === "edit" ? "ویرایش درخواست خرید" : "ثبت درخواست خرید جدید"}</h1>
-          <p className="mt-2 text-sm text-muted-foreground">
+      {/* Same compact, wide layout as PurchaseForm — header fields 4-per-row
+          on desktop so the items table starts within the first screenful. */}
+      <div className="mx-auto max-w-7xl space-y-3">
+        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+          <h1 className="text-lg font-semibold tracking-tight">{props.mode === "edit" ? "ویرایش درخواست خرید" : "ثبت درخواست خرید جدید"}</h1>
+          <p className="text-sm text-muted-foreground">
             {props.mode === "edit" && requestNumber ? `شماره درخواست: ${requestNumber}` : "اطلاعات درخواست خرید و اقلام آن را وارد کنید"}
           </p>
         </div>
 
-        <form id="purchase-request-form" onSubmit={submit} className="space-y-6" noValidate>
-          <Card>
+        <form id="purchase-request-form" onSubmit={submit} className="space-y-3" noValidate>
+          <Card size="sm">
             <CardHeader>
-              <CardTitle className="text-base">اطلاعات درخواست</CardTitle>
+              <CardTitle className="text-sm font-semibold">اطلاعات درخواست</CardTitle>
             </CardHeader>
-            <CardContent className="grid gap-4 md:grid-cols-2">
-              <div className="flex flex-col gap-2">
+            <CardContent className="grid gap-x-3 gap-y-2.5 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="flex flex-col gap-1.5">
                 <Label htmlFor="request-date-year">تاریخ درخواست</Label>
                 <JalaliDateInput idPrefix="request-date" value={form.requestDate} onChange={(value) => update("requestDate", value)} required />
               </div>
-              <div className="flex flex-col gap-2">
+              <div className="flex flex-col gap-1.5">
                 <Label htmlFor="request-department">دپارتمان درخواست‌کننده</Label>
                 <select
                   id="request-department"
@@ -270,7 +272,7 @@ export function PurchaseRequestForm(props: Props) {
                   ))}
                 </select>
               </div>
-              <div className="flex flex-col gap-2">
+              <div className="flex flex-col gap-1.5">
                 <Label htmlFor="request-employee">درخواست‌کننده (اختیاری)</Label>
                 <select
                   id="request-employee"
@@ -286,7 +288,7 @@ export function PurchaseRequestForm(props: Props) {
                   ))}
                 </select>
               </div>
-              <div className="flex flex-col gap-2">
+              <div className="flex flex-col gap-1.5">
                 <Label htmlFor="request-priority">اولویت</Label>
                 <select
                   id="request-priority"
@@ -302,7 +304,7 @@ export function PurchaseRequestForm(props: Props) {
                 </select>
               </div>
               {props.mode === "edit" ? (
-                <div className="flex flex-col gap-2">
+                <div className="flex flex-col gap-1.5">
                   <Label htmlFor="request-status">وضعیت</Label>
                   <select
                     id="request-status"
@@ -318,41 +320,41 @@ export function PurchaseRequestForm(props: Props) {
                   </select>
                 </div>
               ) : null}
-              <div className="flex flex-col gap-2 md:col-span-2">
+              <div className="flex flex-col gap-1.5 sm:col-span-2 lg:col-span-4">
                 <Label htmlFor="request-note">یادداشت</Label>
                 <textarea id="request-note" className={textareaClass} value={form.note} onChange={(event) => update("note", event.target.value)} />
               </div>
             </CardContent>
           </Card>
 
-          <Card>
+          <Card size="sm">
             <CardHeader>
-              <CardTitle className="text-base">اقلام درخواستی</CardTitle>
+              <CardTitle className="text-sm font-semibold">اقلام درخواستی</CardTitle>
             </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className="space-y-2">
               <div className="overflow-x-auto rounded-lg border border-border">
                 <table className="w-full min-w-[56rem] text-right text-sm">
-                  <thead className="bg-muted/50 text-muted-foreground">
+                  <thead className="bg-muted/50 text-xs text-muted-foreground">
                     <tr>
-                      <th className="px-3 py-2 font-medium">نام / شرح</th>
-                      <th className="w-24 px-3 py-2 font-medium">مقدار</th>
-                      <th className="w-32 px-3 py-2 font-medium">واحد</th>
-                      <th className="w-40 px-3 py-2 font-medium">تاریخ موردنیاز (اختیاری)</th>
-                      <th className="px-3 py-2 font-medium">یادداشت</th>
-                      <th className="w-12 px-3 py-2 font-medium"></th>
+                      <th className="px-2 py-1.5 font-medium">نام / شرح</th>
+                      <th className="w-24 px-2 py-1.5 font-medium">مقدار</th>
+                      <th className="w-32 px-2 py-1.5 font-medium">واحد</th>
+                      <th className="w-40 px-2 py-1.5 font-medium">تاریخ موردنیاز (اختیاری)</th>
+                      <th className="px-2 py-1.5 font-medium">یادداشت</th>
+                      <th className="w-12 px-2 py-1.5 font-medium"></th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">
                     {form.items.map((item) => (
                       <tr key={item.key}>
-                        <td className="px-3 py-2">
+                        <td className="px-2 py-1">
                           <Input
                             aria-label="نام یا شرح قلم"
                             value={item.name}
                             onChange={(event) => updateItem(item.key, { name: event.target.value })}
                           />
                         </td>
-                        <td className="px-3 py-2">
+                        <td className="px-2 py-1">
                           <Input
                             aria-label="مقدار"
                             inputMode="decimal"
@@ -360,7 +362,7 @@ export function PurchaseRequestForm(props: Props) {
                             onChange={(event) => updateItem(item.key, { quantity: event.target.value })}
                           />
                         </td>
-                        <td className="px-3 py-2">
+                        <td className="px-2 py-1">
                           <select
                             aria-label="واحد"
                             className={`${selectClass} w-full`}
@@ -375,7 +377,7 @@ export function PurchaseRequestForm(props: Props) {
                             ))}
                           </select>
                         </td>
-                        <td className="px-3 py-2">
+                        <td className="px-2 py-1">
                           {/* Unlike other dates in this app (birth date,
                               purchase date, ...), "required by" looks
                               forward — JalaliDateInput's default maxYear
@@ -388,14 +390,14 @@ export function PurchaseRequestForm(props: Props) {
                             maxYear={requiredDateMaxYear}
                           />
                         </td>
-                        <td className="px-3 py-2">
+                        <td className="px-2 py-1">
                           <Input
                             aria-label="یادداشت"
                             value={item.note}
                             onChange={(event) => updateItem(item.key, { note: event.target.value })}
                           />
                         </td>
-                        <td className="px-3 py-2">
+                        <td className="px-2 py-1">
                           <Button
                             type="button"
                             variant="ghost"
@@ -420,7 +422,8 @@ export function PurchaseRequestForm(props: Props) {
           </Card>
         </form>
 
-        <div className="flex gap-2">
+        {/* Sticky so saving never requires scrolling past the items first. */}
+        <div className="sticky bottom-0 z-10 flex items-center gap-2 rounded-lg border border-border bg-card px-4 py-2.5 shadow-sm">
           <Button type="submit" form="purchase-request-form" disabled={saving}>
             {saving ? "در حال ذخیره..." : props.mode === "edit" ? "ذخیره تغییرات" : "ثبت درخواست خرید"}
           </Button>

@@ -11,6 +11,7 @@ import { JalaliDateInput } from "@/components/ui/jalali-date-input";
 import { useToasts, ToastViewport } from "@/components/ui/toast";
 import { formatJalali } from "@/lib/jalali";
 import { apiFetch, apiUpload, type ApiError } from "@/lib/api";
+import { useAdminUser } from "../admin/layout";
 
 type Department = { id: number; name: string; status: "active" | "inactive" };
 type EmployeeStatus = "active" | "on_leave" | "terminated";
@@ -266,6 +267,11 @@ function RequiredMark() {
 }
 
 export default function EmployeesPage() {
+  const user = useAdminUser();
+  // employees.view reads the list (also granted to PURCHASE_MANAGER for the
+  // buyer/requester dropdowns); create/edit need employees.manage.
+  const canView = user?.permissions.includes("employees.view") ?? false;
+  const canManage = user?.permissions.includes("employees.manage") ?? false;
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [departments, setDepartments] = useState<Department[]>([]);
   const [form, setForm] = useState<FormState>(emptyForm());
@@ -307,11 +313,12 @@ export default function EmployeesPage() {
   }
 
   useEffect(() => {
+    if (!canView) return;
     const run = async () => load();
     void run();
     // Load employee data once when the page mounts.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [canView]);
 
   // Live preview for a newly-chosen (not yet uploaded) photo file.
   useEffect(() => {
@@ -625,6 +632,18 @@ export default function EmployeesPage() {
 
   const photoPreviewSrc = photoObjectUrl ?? (existingPhotoPath ? `/api${existingPhotoPath}` : null);
 
+  if (!canView) {
+    return (
+      <div className="p-4 sm:p-6 lg:p-8">
+        <div className="mx-auto max-w-6xl">
+          <p className="rounded-lg border border-dashed border-border bg-muted/30 p-10 text-center text-sm text-muted-foreground">
+            اجازه دسترسی به کارکنان را ندارید.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="p-4 sm:p-6 lg:p-8">
       <ToastViewport toasts={toasts} onDismiss={dismiss} />
@@ -634,10 +653,12 @@ export default function EmployeesPage() {
             <h1 className="text-2xl font-semibold">کارکنان</h1>
             <p className="mt-2 text-sm text-muted-foreground">مدیریت کارکنان و واحد سازمانی هر کارمند</p>
           </div>
-          <Button onClick={openCreateForm}>
-            <UserPlus className="size-4" aria-hidden="true" />
-            افزودن کارمند
-          </Button>
+          {canManage ? (
+            <Button onClick={openCreateForm}>
+              <UserPlus className="size-4" aria-hidden="true" />
+              افزودن کارمند
+            </Button>
+          ) : null}
         </div>
 
         <Card>
@@ -694,7 +715,7 @@ export default function EmployeesPage() {
                       <th className="px-4 py-3 font-medium">واحد</th>
                       <th className="px-4 py-3 font-medium">سمت</th>
                       <th className="px-4 py-3 font-medium">وضعیت</th>
-                      <th className="px-4 py-3 font-medium">عملیات</th>
+                      {canManage ? <th className="px-4 py-3 font-medium">عملیات</th> : null}
                       <th className="px-4 py-3 font-medium">جزئیات</th>
                     </tr>
                   </thead>
@@ -719,7 +740,9 @@ export default function EmployeesPage() {
                             <td className="px-4 py-3">{employee.department.name}</td>
                             <td className="px-4 py-3">{employee.position || "-"}</td>
                             <td className="px-4 py-3 text-muted-foreground">{statusLabels[employee.status]}</td>
-                            <td className="px-4 py-3"><Button variant="link" size="sm" onClick={() => openEditForm(employee)}>ویرایش</Button></td>
+                            {canManage ? (
+                              <td className="px-4 py-3"><Button variant="link" size="sm" onClick={() => openEditForm(employee)}>ویرایش</Button></td>
+                            ) : null}
                             <td className="px-4 py-3">
                               <Button
                                 variant="ghost"
@@ -734,7 +757,7 @@ export default function EmployeesPage() {
                           </tr>
                           {expanded ? (
                             <tr className="bg-muted/20">
-                              <td colSpan={8} className="px-4 py-4">
+                              <td colSpan={canManage ? 8 : 7} className="px-4 py-4">
                                 <div className="space-y-5">
                                   <div>
                                     <h4 className="mb-2 text-xs font-semibold text-foreground">اطلاعات هویتی و خانوادگی</h4>

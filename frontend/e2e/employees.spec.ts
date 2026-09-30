@@ -110,8 +110,10 @@ async function createEmployee(page: Page, values: FormValues) {
   await openCreateDialog(page);
   await fillEmployeeForm(page, values);
   await page.getByRole("button", { name: "ایجاد کارمند" }).click();
+  // Toasts no longer get aria-hidden by a subsequent dialog, so two identical
+  // "created" toasts from back-to-back creates can both be on screen at once.
   await expect(
-    page.getByRole("status").filter({ hasText: "کارمند جدید با موفقیت ایجاد شد." }),
+    page.getByRole("status").filter({ hasText: "کارمند جدید با موفقیت ایجاد شد." }).last(),
   ).toBeVisible();
   await expect(page.getByRole("heading", { name: "افزودن کارمند جدید" })).toBeHidden();
 }

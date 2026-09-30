@@ -4,8 +4,11 @@ import { PrismaService } from '../prisma/prisma.service';
 export const PERMISSION_CATALOG = [
   { code: 'users.create', label: 'ایجاد کاربر', module: 'کاربران' },
   { code: 'users.disable', label: 'غیرفعال کردن کاربر', module: 'کاربران' },
+  { code: 'suppliers.view', label: 'مشاهده تأمین‌کنندگان', module: 'تأمین‌کنندگان' },
   { code: 'suppliers.manage', label: 'مدیریت تأمین‌کنندگان', module: 'تأمین‌کنندگان' },
+  { code: 'employees.view', label: 'مشاهده کارکنان', module: 'کارکنان' },
   { code: 'employees.manage', label: 'مدیریت کارکنان', module: 'کارکنان' },
+  { code: 'purchases.view', label: 'مشاهده خرید', module: 'خرید' },
   { code: 'purchases.manage', label: 'مدیریت خرید', module: 'خرید' },
   { code: 'purchases.edit', label: 'ویرایش خرید', module: 'خرید' },
   { code: 'sales.manage', label: 'مدیریت فروش', module: 'فروش' },

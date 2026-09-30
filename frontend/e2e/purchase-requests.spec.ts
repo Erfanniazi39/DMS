@@ -12,7 +12,7 @@ function uniqueSuffix(): string {
 }
 
 async function openListPage(page: Page) {
-  await page.goto("/admin/purchase-requests");
+  await page.goto("/purchase-requests");
   await expect(page.getByRole("heading", { name: "درخواست‌های خرید" })).toBeVisible();
 }
 
@@ -59,7 +59,7 @@ async function createPurchaseRequest(page: Page, itemName: string) {
   await expect(
     page.getByRole("status").filter({ hasText: "درخواست خرید جدید با موفقیت ثبت شد." }),
   ).toBeVisible();
-  await page.waitForURL(/\/admin\/purchase-requests\/\d+$/);
+  await page.waitForURL(/\/\/[^/]+\/purchase-requests\/\d+$/);
 }
 
 async function searchFor(page: Page, query: string) {
@@ -103,7 +103,7 @@ test("2b) leaving the date and department empty shows the app's Persian message,
     page.getByRole("alert").filter({ hasText: "تاریخ درخواست و دپارتمان درخواست‌کننده الزامی است." }),
   ).toBeVisible();
   await expect(page.getByRole("heading", { name: "ثبت درخواست خرید جدید" })).toBeVisible();
-  await expect(page).toHaveURL(/\/admin\/purchase-requests\/new/);
+  await expect(page).toHaveURL(/\/\/[^/]+\/purchase-requests\/new/);
 });
 
 test("3) editing a purchase request's note and priority succeeds and persists", async ({ page }) => {

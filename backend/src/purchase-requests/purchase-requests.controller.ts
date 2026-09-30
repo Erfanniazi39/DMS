@@ -18,6 +18,7 @@ export class PurchaseRequestsController {
   constructor(private readonly purchaseRequestsService: PurchaseRequestsService) {}
 
   @Get()
+  @RequirePermissions('purchases.view')
   list(
     @Query('q') q?: string,
     @Query('status') status?: string,
@@ -33,6 +34,7 @@ export class PurchaseRequestsController {
   }
 
   @Get(':id')
+  @RequirePermissions('purchases.view')
   get(@Param('id', ParseIntPipe) id: number) {
     return this.purchaseRequestsService.get(id);
   }

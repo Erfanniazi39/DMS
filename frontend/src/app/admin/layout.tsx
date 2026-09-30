@@ -33,7 +33,10 @@ export type SessionUser = {
 
 export const AdminUserContext = createContext<SessionUser | null>(null);
 
-type NavChild = { label: string; href: string };
+// `permission` on a child is checked in addition to the parent's — used to
+// hide create routes from users who can only view (e.g. purchases.view
+// without purchases.manage).
+type NavChild = { label: string; href: string; permission?: string };
 type NavItem = {
   label: string;
   href: string;
@@ -51,14 +54,14 @@ const navGroups: NavGroup[] = [
     items: [
       {
         label: "خرید",
-        href: "/admin/purchases",
+        href: "/purchases",
         icon: ShoppingCart,
-        permission: "purchases.manage",
+        permission: "purchases.view",
         children: [
-          { label: "ثبت خرید", href: "/admin/purchases/new" },
-          { label: "خریدها", href: "/admin/purchases" },
-          { label: "ثبت درخواست خرید", href: "/admin/purchase-requests/new" },
-          { label: "درخواست‌های خرید", href: "/admin/purchase-requests" },
+          { label: "ثبت خرید", href: "/purchases/new", permission: "purchases.manage" },
+          { label: "خریدها", href: "/purchases" },
+          { label: "ثبت درخواست خرید", href: "/purchase-requests/new", permission: "purchases.manage" },
+          { label: "درخواست‌های خرید", href: "/purchase-requests" },
         ],
       },
       { label: "فروش", href: "/admin/sales", icon: ReceiptText, permission: "sales.manage" },
@@ -67,13 +70,13 @@ const navGroups: NavGroup[] = [
   {
     label: "اطلاعات پایه",
     items: [
-      { label: "تأمین‌کنندگان", href: "/admin/suppliers", icon: Truck, permission: "suppliers.manage" },
+      { label: "تأمین‌کنندگان", href: "/suppliers", icon: Truck, permission: "suppliers.view" },
       { label: "مشتریان", href: "/admin/customers", icon: Users, permission: "customers.manage" },
-      { label: "کارکنان", href: "/employees", icon: UserRound, permission: "employees.manage" },
-      { label: "دپارتمان‌ها", href: "/admin/departments", icon: Building2, permission: "employees.manage" },
+      { label: "کارکنان", href: "/employees", icon: UserRound, permission: "employees.view" },
+      { label: "دپارتمان‌ها", href: "/departments", icon: Building2, permission: "employees.manage" },
       { label: "کالاها", href: "/admin/products", icon: Package, permission: "products.manage" },
       { label: "دسته‌بندی کالاها", href: "/admin/product-categories", icon: Tags, permission: "products.manage" },
-      { label: "واحدها", href: "/admin/units", icon: Boxes, permission: "products.manage" },
+      { label: "واحدها", href: "/units", icon: Boxes, permission: "purchases.manage" },
     ],
   },
 ];
@@ -127,7 +130,12 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
   const visibleGroups = navGroups
     .map((group) => ({
       ...group,
-      items: group.items.filter((item) => user.permissions.includes(item.permission)),
+      items: group.items
+        .filter((item) => user.permissions.includes(item.permission))
+        .map((item) => ({
+          ...item,
+          children: item.children?.filter((child) => !child.permission || user.permissions.includes(child.permission)),
+        })),
     }))
     .filter((group) => group.items.length > 0);
   const canManageUsers = user.permissions.includes("users.create");
@@ -193,7 +201,7 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
                     {group.items.map((item) => {
                       const ItemIcon = item.icon;
                       // A child's own href isn't always nested under the parent's
-                      // path (e.g. "خرید" → /admin/purchases and /admin/purchase-requests
+                      // path (e.g. "خرید" → /purchases and /purchase-requests
                       // are siblings, not parent/child routes), so it's checked
                       // separately rather than relying on the prefix match alone.
                       const childActive = item.children?.some((child) => pathname === child.href || pathname.startsWith(`${child.href}/`));

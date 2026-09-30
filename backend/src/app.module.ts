@@ -12,6 +12,7 @@ import { UnitsModule } from './units/units.module';
 import { PurchaseTypesModule } from './purchase-types/purchase-types.module';
 import { PurchasesModule } from './purchases/purchases.module';
 import { PurchaseRequestsModule } from './purchase-requests/purchase-requests.module';
+import { DashboardModule } from './dashboard/dashboard.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { PurchaseRequestsModule } from './purchase-requests/purchase-requests.mo
     PurchaseTypesModule,
     PurchasesModule,
     PurchaseRequestsModule,
+    DashboardModule,
   ],
   controllers: [AppController],
   providers: [AppService],

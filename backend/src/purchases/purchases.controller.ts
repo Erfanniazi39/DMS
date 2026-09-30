@@ -19,6 +19,7 @@ import type { Request } from 'express';
 import { randomUUID } from 'crypto';
 import { diskStorage } from 'multer';
 import { extname, join } from 'path';
+import { parsePagination } from '../common/pagination';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { SessionAuthGuard } from '../auth/guards/session-auth.guard';
@@ -26,11 +27,13 @@ import { ZodValidationPipe } from '../auth/zod-validation.pipe';
 import {
   createPurchaseDocumentSchema,
   createPurchasePaymentSchema,
+  createPurchaseReturnSchema,
   createPurchaseSchema,
   updatePurchaseSchema,
   type CreatePurchaseDocumentDto,
   type CreatePurchaseDto,
   type CreatePurchasePaymentDto,
+  type CreatePurchaseReturnDto,
   type UpdatePurchaseDto,
 } from './dto/purchase.dto';
 import { PurchasesService } from './purchases.service';
@@ -43,6 +46,7 @@ export class PurchasesController {
   constructor(private readonly purchasesService: PurchasesService) {}
 
   @Get()
+  @RequirePermissions('purchases.view')
   list(
     @Query('q') q?: string,
     @Query('purchaseTypeId') purchaseTypeId?: string,
@@ -53,7 +57,11 @@ export class PurchasesController {
     @Query('dateTo') dateTo?: string,
     // All / Operational / Historical reporting — omitted returns both kinds.
     @Query('sourceType') sourceType?: string,
+    // Opt-in pagination — see parsePagination(). Omitted = full array.
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
   ) {
+    const pagination = parsePagination(page, pageSize);
     return this.purchasesService.list({
       q: q || undefined,
       purchaseTypeId: purchaseTypeId ? Number(purchaseTypeId) : undefined,
@@ -63,10 +71,11 @@ export class PurchasesController {
       dateFrom: dateFrom ? new Date(dateFrom) : undefined,
       dateTo: dateTo ? new Date(dateTo) : undefined,
       sourceType: sourceType || undefined,
-    });
+    }, pagination);
   }
 
   @Get(':id')
+  @RequirePermissions('purchases.view')
   get(@Param('id', ParseIntPipe) id: number) {
     return this.purchasesService.get(id);
   }
@@ -109,6 +118,36 @@ export class PurchasesController {
   @RequirePermissions('purchases.manage')
   removePayment(@Param('id', ParseIntPipe) id: number, @Param('paymentId', ParseIntPipe) paymentId: number, @Req() req: Request) {
     return this.purchasesService.removePayment(id, paymentId, req.session.userId ?? null, req.ip);
+  }
+
+  // Return to Vendor — sub-resource of a Purchase, same shape as payments.
+  // All four routes (reads included) require purchases.manage.
+  @Get(':id/returns')
+  @RequirePermissions('purchases.manage')
+  listReturns(@Param('id', ParseIntPipe) id: number) {
+    return this.purchasesService.listReturns(id);
+  }
+
+  @Get(':id/returns/:returnId')
+  @RequirePermissions('purchases.manage')
+  getReturn(@Param('id', ParseIntPipe) id: number, @Param('returnId', ParseIntPipe) returnId: number) {
+    return this.purchasesService.getReturn(id, returnId);
+  }
+
+  @Post(':id/returns')
+  @RequirePermissions('purchases.manage')
+  createReturn(
+    @Param('id', ParseIntPipe) id: number,
+    @Body(new ZodValidationPipe(createPurchaseReturnSchema)) dto: CreatePurchaseReturnDto,
+    @Req() req: Request,
+  ) {
+    return this.purchasesService.createReturn(id, dto, req.session.userId ?? null, req.ip);
+  }
+
+  @Delete(':id/returns/:returnId')
+  @RequirePermissions('purchases.manage')
+  removeReturn(@Param('id', ParseIntPipe) id: number, @Param('returnId', ParseIntPipe) returnId: number, @Req() req: Request) {
+    return this.purchasesService.removeReturn(id, returnId, req.session.userId ?? null, req.ip);
   }
 
   @Post(':id/documents')

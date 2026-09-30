@@ -1,10 +1,16 @@
 "use client";
 
-import { useParams } from "next/navigation";
-import { PurchaseRequestForm } from "../../PurchaseRequestForm";
+import { useEffect } from "react";
+import { useParams, useRouter } from "next/navigation";
 
-export default function EditPurchaseRequestPage() {
+// This page moved to the top-level "/purchase-requests/[id]/edit" route. Anything that still links
+// here (an old bookmark, etc.) gets bounced there automatically, keeping any
+// query string.
+export default function AdminEditPurchaseRequestRedirect() {
+  const router = useRouter();
   const params = useParams<{ id: string }>();
-  const purchaseRequestId = Number(params.id);
-  return <PurchaseRequestForm mode="edit" purchaseRequestId={purchaseRequestId} />;
+  useEffect(() => {
+    router.replace(`/purchase-requests/${encodeURIComponent(params.id)}/edit${window.location.search}`);
+  }, [router, params.id]);
+  return null;
 }

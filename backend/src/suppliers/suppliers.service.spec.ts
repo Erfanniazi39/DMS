@@ -1,10 +1,12 @@
-import { ConflictException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
+import { parsePagination } from '../common/pagination';
 import { SuppliersService } from './suppliers.service';
 
 function createPrismaMock() {
   return {
     supplier: {
       findMany: jest.fn(),
+      count: jest.fn(),
       findUnique: jest.fn(),
       findFirst: jest.fn(),
       create: jest.fn(),
@@ -29,6 +31,55 @@ describe('SuppliersService', () => {
 
     await expect(service.list()).resolves.toEqual(rows);
     expect((prisma as any).supplier.findMany).toHaveBeenCalledWith(expect.objectContaining({ orderBy: { name: 'asc' } }));
+  });
+
+  // --- Pagination (opt-in; the plain-array shape above stays the default) ---
+
+  it('returns one page plus the total matching count when paginated', async () => {
+    const prisma = createPrismaMock();
+    const service = new SuppliersService(prisma as never);
+    const pageRows = [{ id: 21, code: 'SUP21', name: 'ت ۲۱' }];
+    (prisma as any).supplier.findMany.mockResolvedValue(pageRows);
+    (prisma as any).supplier.count.mockResolvedValue(45);
+
+    await expect(service.list({}, { page: 3, pageSize: 20 })).resolves.toEqual({ items: pageRows, total: 45, page: 3, pageSize: 20 });
+    // Page 3 of 20 → rows 41..60 → skip 40, take 20.
+    expect((prisma as any).supplier.findMany).toHaveBeenCalledWith(expect.objectContaining({ skip: 40, take: 20 }));
+  });
+
+  it('applies the same search/status filter to both the page query and the total count', async () => {
+    const prisma = createPrismaMock();
+    const service = new SuppliersService(prisma as never);
+    (prisma as any).supplier.findMany.mockResolvedValue([]);
+    (prisma as any).supplier.count.mockResolvedValue(0);
+
+    await service.list({ q: 'شیر', status: 'active' }, { page: 1, pageSize: 20 });
+
+    const findWhere = (prisma as any).supplier.findMany.mock.calls[0][0].where;
+    expect(findWhere.status).toBe('active');
+    expect(findWhere.OR).toEqual(expect.arrayContaining([{ name: { contains: 'شیر', mode: 'insensitive' } }]));
+    expect((prisma as any).supplier.count).toHaveBeenCalledWith({ where: findWhere });
+    expect((prisma as any).supplier.findMany.mock.calls[0][0]).toMatchObject({ skip: 0, take: 20 });
+  });
+
+  it('keeps the plain full-array response (no skip/take, no count) when not paginated', async () => {
+    const prisma = createPrismaMock();
+    const service = new SuppliersService(prisma as never);
+    (prisma as any).supplier.findMany.mockResolvedValue([]);
+
+    await expect(service.list()).resolves.toEqual([]);
+    const args = (prisma as any).supplier.findMany.mock.calls[0][0];
+    expect(args.skip).toBeUndefined();
+    expect(args.take).toBeUndefined();
+    expect((prisma as any).supplier.count).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unknown status filter instead of passing it to the database', async () => {
+    const prisma = createPrismaMock();
+    const service = new SuppliersService(prisma as never);
+
+    await expect(service.list({ status: 'bogus' })).rejects.toBeInstanceOf(BadRequestException);
+    expect((prisma as any).supplier.findMany).not.toHaveBeenCalled();
   });
 
   it('rejects duplicate code or name without creating a supplier', async () => {
@@ -85,5 +136,25 @@ describe('SuppliersService', () => {
 
     await expect(service.remove(2)).rejects.toBeInstanceOf(ConflictException);
     expect((prisma as any).supplier.delete).not.toHaveBeenCalled();
+  });
+});
+
+describe('parsePagination', () => {
+  it('is opt-in: returns undefined when neither page nor pageSize is given', () => {
+    expect(parsePagination(undefined, undefined)).toBeUndefined();
+  });
+
+  it('defaults to page 1 and pageSize 20', () => {
+    expect(parsePagination('', undefined)).toEqual({ page: 1, pageSize: 20 });
+    expect(parsePagination(undefined, '10')).toEqual({ page: 1, pageSize: 10 });
+    expect(parsePagination('4', undefined)).toEqual({ page: 4, pageSize: 20 });
+  });
+
+  it('rejects non-integer, zero/negative pages and out-of-range page sizes', () => {
+    expect(() => parsePagination('0', undefined)).toThrow(BadRequestException);
+    expect(() => parsePagination('abc', undefined)).toThrow(BadRequestException);
+    expect(() => parsePagination('1.5', undefined)).toThrow(BadRequestException);
+    expect(() => parsePagination('1', '0')).toThrow(BadRequestException);
+    expect(() => parsePagination('1', '101')).toThrow(BadRequestException);
   });
 });

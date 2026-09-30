@@ -385,6 +385,7 @@ model Purchase {
   items     PurchaseItem[]
   payments  PurchasePayment[]
   documents PurchaseDocument[]
+  returns   PurchaseReturn[]
 
   @@map("purchases")
 }
@@ -415,6 +416,9 @@ model PurchaseItem {
   // Purchase.purchaseRequestId, which only links the request as a whole).
   purchaseRequestItemId Int?                 @map("purchase_request_item_id")
   purchaseRequestItem   PurchaseRequestItem? @relation(fields: [purchaseRequestItemId], references: [id])
+
+  // Return-to-vendor lines recorded against this item (see PurchaseReturnItem).
+  returnItems PurchaseReturnItem[]
 
   @@map("purchase_items")
 }
@@ -449,6 +453,61 @@ model PurchaseDocument {
   note           String?
 
   @@map("purchase_documents")
+}
+
+// A Return-to-Vendor (RTV) record: goods from a Purchase sent back to the
+// supplier, with the credit value of each returned line. Deliberately a
+// plain historical record — no status lifecycle (same as PurchasePayment),
+// and it does NOT change Purchase.totalAmount/paidAmount/paymentStatus:
+// those keep meaning "what was originally billed/paid". How a return's
+// credit is later applied (future payment offset, refund, ...) is
+// intentionally not modeled yet. No Inventory/StockMovement effect either.
+model PurchaseReturn {
+  id           Int      @id @default(autoincrement())
+  // System-generated — "RTN-000001" — same placeholder-then-fix pattern as
+  // Purchase.purchaseNumber / PurchaseRequest.requestNumber.
+  returnNumber String   @unique @map("return_number")
+  // Restrict, same as PurchasePayment/PurchaseDocument — a Purchase with
+  // recorded returns can't be deleted out from under them.
+  purchaseId   Int      @map("purchase_id")
+  purchase     Purchase @relation(fields: [purchaseId], references: [id], onDelete: Restrict)
+  returnDate   DateTime @map("return_date")
+  reason       String
+  note         String?
+
+  // Which system account entered this record — data-entry provenance, same
+  // convention as PurchaseRequest.createdByUser.
+  createdByUserId Int?     @map("created_by_user_id")
+  createdByUser   User?    @relation(fields: [createdByUserId], references: [id])
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  items PurchaseReturnItem[]
+
+  @@index([purchaseId])
+  @@map("purchase_returns")
+}
+
+model PurchaseReturnItem {
+  id               Int            @id @default(autoincrement())
+  purchaseReturnId Int            @map("purchase_return_id")
+  purchaseReturn   PurchaseReturn @relation(fields: [purchaseReturnId], references: [id], onDelete: Cascade)
+  // The exact Purchase line being returned. Restrict — a purchase item with
+  // returns recorded against it can't be deleted (this is also why editing
+  // a Purchase's items is refused once it has returns — see
+  // PurchasesService.update()).
+  purchaseItemId   Int            @map("purchase_item_id")
+  purchaseItem     PurchaseItem   @relation(fields: [purchaseItemId], references: [id], onDelete: Restrict)
+  // Same precision as PurchaseItem.quantity. Server-validated so the sum of
+  // all returns for one purchase item never exceeds its original quantity.
+  quantity         Decimal        @db.Decimal(12, 2)
+  // Entered directly — NOT derived from quantity × unit price, same
+  // philosophy as PurchaseItem.totalPrice. No arithmetic check constraint.
+  creditAmount     Decimal        @map("credit_amount") @db.Decimal(15, 0)
+  note             String?
+
+  @@index([purchaseItemId])
+  @@map("purchase_return_items")
 }
 
 model Role {
@@ -498,6 +557,9 @@ model User {
   // Purchase Requests this account entered (PurchaseRequest.createdByUser) — data-entry
   // provenance, distinct from requestedByEmployee (who actually asked for it).
   createdPurchaseRequests PurchaseRequest[]
+  // Returns-to-vendor this account entered (PurchaseReturn.createdByUser) —
+  // same data-entry provenance meaning as createdPurchaseRequests above.
+  createdPurchaseReturns  PurchaseReturn[]
 
   @@map("users")
 }

@@ -97,7 +97,29 @@ export const createPurchaseDocumentSchema = z.object({
   note: optionalTrimmedString(500),
 });
 
+// Return-to-Vendor. Each line names the exact PurchaseItem being returned;
+// whether that item belongs to this purchase, and whether the quantity fits
+// within what's still returnable, is checked in PurchasesService (needs the
+// database). creditAmount is entered directly — never derived from
+// quantity × unit price, same philosophy as PurchaseItem.totalPrice.
+const purchaseReturnItemSchema = z.object({
+  purchaseItemId: z.coerce.number().int().positive('قلم خرید را انتخاب کنید'),
+  quantity: z.coerce.number().positive('مقدار برگشتی باید بزرگ‌تر از صفر باشد'),
+  creditAmount: z.coerce.number().min(0, 'مبلغ اعتبار نمی‌تواند منفی باشد'),
+  note: optionalTrimmedString(500),
+});
+
+// returnNumber is never accepted from the client — it's server-generated
+// (RTN-000001), same as purchaseNumber.
+export const createPurchaseReturnSchema = z.object({
+  returnDate: z.coerce.date(),
+  reason: z.string().trim().min(1, 'علت برگشت الزامی است').max(500),
+  note: optionalTrimmedString(1000),
+  items: z.array(purchaseReturnItemSchema).min(1, 'حداقل یک قلم برگشتی را وارد کنید'),
+});
+
 export type CreatePurchaseDto = z.infer<typeof createPurchaseSchema>;
 export type UpdatePurchaseDto = z.infer<typeof updatePurchaseSchema>;
 export type CreatePurchasePaymentDto = z.infer<typeof createPurchasePaymentSchema>;
 export type CreatePurchaseDocumentDto = z.infer<typeof createPurchaseDocumentSchema>;
+export type CreatePurchaseReturnDto = z.infer<typeof createPurchaseReturnSchema>;

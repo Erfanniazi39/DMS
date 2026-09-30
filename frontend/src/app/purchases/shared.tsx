@@ -4,6 +4,8 @@
 // pages — deliberately not exported as a route: this file has no
 // `page.tsx`/`layout.tsx` name, so Next.js does not treat it as one.
 
+import { formatJalali } from "@/lib/jalali";
+
 export type PurchaseStatus = "DRAFT" | "CONFIRMED" | "RECEIVED" | "CLOSED" | "CANCELLED";
 export type PurchasePaymentStatus = "UNPAID" | "PARTIAL" | "PAID";
 export type PaymentMethod = "CASH" | "BANK_TRANSFER" | "CHECK" | "CARD";
@@ -141,6 +143,34 @@ export function employeeFullName(employee: { firstName: string; lastName: string
 // own module (see ../purchase-requests/shared.tsx).
 export type PurchaseRequestOption = { id: number; requestNumber: string };
 
+// The same request as it actually arrives from GET /purchase-requests (the
+// list endpoint — see PurchaseRequestsService.list()), with just the extra
+// fields the Purchase form's picker uses to label each option. Nothing here
+// needs a backend change: the list response already carries all of it.
+export type PurchaseRequestPickerOption = PurchaseRequestOption & {
+  requestDate: string;
+  requesterDepartment: { id: number; name: string } | null;
+  items: { name: string }[];
+  _count: { items: number };
+};
+
+function truncate(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+/** "REQ-000042 — تولید — روغن موتور و ۲ مورد دیگر — ۱۴۰۴/۰۱/۰۱" for the picker. */
+export function purchaseRequestOptionLabel(request: PurchaseRequestPickerOption): string {
+  const parts = [request.requestNumber];
+  if (request.requesterDepartment) parts.push(request.requesterDepartment.name);
+  const firstItem = request.items[0]?.name;
+  if (firstItem) {
+    const extra = request._count.items - 1;
+    parts.push(extra > 0 ? `${truncate(firstItem, 30)} و ${extra.toLocaleString("fa-IR")} مورد دیگر` : truncate(firstItem, 30));
+  }
+  parts.push(formatJalali(request.requestDate));
+  return parts.join(" — ");
+}
+
 export type PurchaseListItem = {
   id: number;
   purchaseNumber: string;
@@ -204,6 +234,29 @@ export type PurchaseDocumentRow = {
   date: string;
   filePath: string | null;
   note: string | null;
+};
+
+// Return to Vendor (RTV) — loaded separately from GET /purchases/:id/returns
+// (gated on purchases.manage), not part of PurchaseDetail. A return never
+// changes the Purchase's totalAmount/paidAmount/paymentStatus.
+export type PurchaseReturnItemRow = {
+  id: number;
+  purchaseItemId: number;
+  quantity: string;
+  creditAmount: string;
+  note: string | null;
+  purchaseItem: { id: number; name: string; quantity: string; unit: UnitOption };
+};
+
+export type PurchaseReturnRow = {
+  id: number;
+  returnNumber: string;
+  returnDate: string;
+  reason: string;
+  note: string | null;
+  createdAt: string;
+  createdByUser: { id: number; username: string } | null;
+  items: PurchaseReturnItemRow[];
 };
 
 export type PurchaseDetail = {

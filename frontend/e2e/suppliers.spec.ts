@@ -28,7 +28,7 @@ function validFixture(overrides: Partial<FormValues> = {}): FormValues {
 }
 
 async function openSuppliersPage(page: Page) {
-  await page.goto("/admin/suppliers");
+  await page.goto("/suppliers");
   await expect(page.getByRole("heading", { name: "تأمین‌کنندگان" })).toBeVisible();
 }
 
@@ -48,7 +48,11 @@ async function createSupplier(page: Page, values: FormValues) {
   await openCreateDialog(page);
   await fillSupplierForm(page, values);
   await page.getByRole("button", { name: "ایجاد تأمین‌کننده" }).click();
-  await expect(page.getByRole("status").filter({ hasText: "تأمین‌کننده جدید با موفقیت ایجاد شد." })).toBeVisible();
+  // Toasts no longer get aria-hidden by a subsequent dialog, so two identical
+  // "created" toasts from back-to-back creates can both be on screen at once.
+  await expect(
+    page.getByRole("status").filter({ hasText: "تأمین‌کننده جدید با موفقیت ایجاد شد." }).last(),
+  ).toBeVisible();
   await expect(page.getByRole("heading", { name: "افزودن تأمین‌کننده جدید" })).toBeHidden();
 }
 
@@ -134,4 +138,22 @@ test("4) editing a supplier's phone number succeeds and persists", async ({ page
   await searchFor(page, original.code);
   const updatedRow = await getSingleRow(page);
   await expect(updatedRow).toContainText(newPhone);
+});
+
+test("5) a badly formatted email is rejected with the app's own Persian message", async ({ page }) => {
+  const data = validFixture({ email: "not-an-email" });
+  await openCreateDialog(page);
+  await fillSupplierForm(page, data);
+  await page.getByRole("button", { name: "ایجاد تأمین‌کننده" }).click();
+
+  // The form is noValidate: the browser's native (English) type="email"
+  // tooltip must not block submission — the page's own check reports it
+  // (this toast only appears if the submit handler actually ran).
+  await expect(page.getByRole("alert").filter({ hasText: "ایمیل معتبر نیست." })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "افزودن تأمین‌کننده جدید" })).toBeVisible();
+  await page.getByRole("button", { name: "انصراف" }).click();
+
+  // Nothing was saved.
+  await searchFor(page, data.code);
+  await expect(page.locator("tbody tr").filter({ hasText: data.code })).toHaveCount(0);
 });

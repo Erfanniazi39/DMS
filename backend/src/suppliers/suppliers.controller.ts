@@ -1,4 +1,5 @@
-import { Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import { parsePagination } from '../common/pagination';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { SessionAuthGuard } from '../auth/guards/session-auth.guard';
@@ -12,11 +13,19 @@ export class SuppliersController {
   constructor(private readonly suppliersService: SuppliersService) {}
 
   @Get()
-  list() {
-    return this.suppliersService.list();
+  @RequirePermissions('suppliers.view')
+  list(
+    @Query('q') q?: string,
+    @Query('status') status?: string,
+    // Opt-in pagination — see parsePagination(). Omitted = full array.
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+  ) {
+    return this.suppliersService.list({ q: q?.trim() || undefined, status: status || undefined }, parsePagination(page, pageSize));
   }
 
   @Get(':id')
+  @RequirePermissions('suppliers.view')
   get(@Param('id', ParseIntPipe) id: number) {
     return this.suppliersService.get(id);
   }

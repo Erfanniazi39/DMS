@@ -57,8 +57,11 @@ const OTHER_SUPPLIER = { code: 'OTHER', name: 'سایر' } as const;
 const PERMISSIONS = [
   'users.create',
   'users.disable',
+  'suppliers.view',
   'suppliers.manage',
+  'employees.view',
   'employees.manage',
+  'purchases.view',
   'purchases.manage',
   'purchases.edit',
   'sales.manage',
@@ -97,8 +100,10 @@ async function main() {
 
   const rolePermissions = {
     ADMIN: PERMISSIONS,
-    DATA_OPERATOR: ['suppliers.manage', 'employees.manage', 'purchases.manage', 'purchases.edit', 'sales.manage', 'sales.edit', 'documents.upload', 'reports.view'],
-    PURCHASE_MANAGER: ['suppliers.manage', 'purchases.manage', 'purchases.edit', 'documents.upload', 'reports.view'],
+    DATA_OPERATOR: ['suppliers.view', 'suppliers.manage', 'employees.view', 'employees.manage', 'purchases.view', 'purchases.manage', 'purchases.edit', 'sales.manage', 'sales.edit', 'documents.upload', 'reports.view'],
+    // employees.view (without employees.manage) is deliberate: the Purchase and
+    // Purchase Request forms load GET /employees for buyer/requester dropdowns.
+    PURCHASE_MANAGER: ['suppliers.view', 'suppliers.manage', 'employees.view', 'purchases.view', 'purchases.manage', 'purchases.edit', 'documents.upload', 'reports.view'],
     SALES_MANAGER: ['sales.manage', 'sales.edit', 'documents.upload', 'reports.view'],
     VIEWER: ['reports.view'],
   } as const;

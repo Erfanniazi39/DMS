@@ -3,15 +3,17 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Plus, Trash2 } from "lucide-react";
+import { Paperclip, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogBody, DialogCloseButton, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { JalaliDateInput } from "@/components/ui/jalali-date-input";
 import { useToasts, ToastViewport } from "@/components/ui/toast";
-import { apiFetch, type ApiError } from "@/lib/api";
+import { apiFetch, apiUpload, type ApiError } from "@/lib/api";
+import { useAdminUser } from "@/app/admin/layout";
 import {
+  DOCUMENT_TYPES,
   PURCHASE_SOURCE_TYPES,
   PURCHASE_STATUSES,
   StatusBadge,
@@ -23,11 +25,14 @@ import {
   textareaClass,
   formatMoney,
   employeeFullName,
+  documentTypeLabels,
+  purchaseRequestOptionLabel,
   type DepartmentOption,
+  type DocumentType,
   type EmployeeOption,
   type PurchaseDetail,
   type PurchasePaymentStatus,
-  type PurchaseRequestOption,
+  type PurchaseRequestPickerOption,
   type PurchaseSourceType,
   type PurchaseStatus,
   type PurchaseTypeOption,
@@ -50,11 +55,11 @@ function FormSection({
 }) {
   return (
     <section className="overflow-hidden rounded-lg border border-border bg-card">
-      <div className="border-b border-border px-5 py-3">
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 border-b border-border px-4 py-2">
         <h2 className="text-sm font-semibold">{title}</h2>
-        {description ? <p className="mt-0.5 text-xs text-muted-foreground">{description}</p> : null}
+        {description ? <p className="text-xs text-muted-foreground">{description}</p> : null}
       </div>
-      <div className="px-5 py-4">{children}</div>
+      <div className="px-4 py-3">{children}</div>
     </section>
   );
 }
@@ -71,6 +76,42 @@ type ItemFormRow = {
   // باقی‌مانده" actions on the Purchase Request detail page. Empty for a
   // normal, manually-added line.
   purchaseRequestItemId: string;
+};
+
+// A file picked on the create form, held locally until the purchase itself
+// has been saved (a PurchaseDocument needs a purchase id to attach to — see
+// POST /purchases/:id/documents + POST /purchases/:id/documents/:documentId/file,
+// the same two-step endpoints the purchase detail page uses). Uploaded right
+// after the purchase is created, inside the same submit flow.
+type StagedDocument = {
+  key: string;
+  file: File;
+  documentType: DocumentType;
+  documentNumber: string;
+  state: "pending" | "uploading" | "done" | "failed";
+  error?: string;
+};
+
+// Mirrors the backend's FileInterceptor limits on
+// POST /purchases/:id/documents/:documentId/file (ALLOWED_DOCUMENT_EXTENSIONS,
+// 10 MB) — checked up front so a bad file is rejected at pick time, not
+// only after the purchase has already been saved.
+const ALLOWED_DOCUMENT_EXTENSIONS = [".pdf", ".png", ".jpg", ".jpeg"];
+const MAX_DOCUMENT_BYTES = 10 * 1024 * 1024;
+
+function documentFileProblem(file: File): string | null {
+  const dot = file.name.lastIndexOf(".");
+  const ext = dot >= 0 ? file.name.slice(dot).toLowerCase() : "";
+  if (!ALLOWED_DOCUMENT_EXTENSIONS.includes(ext)) return `«${file.name}»: فقط فایل PDF یا تصویر با فرمت jpg، jpeg یا png مجاز است.`;
+  if (file.size > MAX_DOCUMENT_BYTES) return `«${file.name}»: حجم فایل نباید بیشتر از ۱۰ مگابایت باشد.`;
+  return null;
+}
+
+const stagedDocumentStateLabels: Record<StagedDocument["state"], string> = {
+  pending: "",
+  uploading: "در حال بارگذاری...",
+  done: "بارگذاری شد",
+  failed: "ناموفق",
 };
 
 function emptyItemRow(): ItemFormRow {
@@ -142,7 +183,7 @@ type PaymentSummary = { status: PurchasePaymentStatus; totalAmount: string; paid
 
 type Props = { mode: "create" } | { mode: "edit"; purchaseId: number };
 
-// Used by both /admin/purchases/new and /admin/purchases/[id]/edit — a
+// Used by both /purchases/new and /purchases/[id]/edit — a
 // dedicated full page in both cases, not a modal, per the module spec.
 // Status is only shown once a purchase exists (edit mode): a new purchase
 // always starts as DRAFT (see PurchasesService.create()), and the status
@@ -163,7 +204,19 @@ export function PurchaseForm(props: Props) {
   const [departments, setDepartments] = useState<DepartmentOption[]>([]);
   const [employees, setEmployees] = useState<EmployeeOption[]>([]);
   const [units, setUnits] = useState<UnitOption[]>([]);
-  const [purchaseRequests, setPurchaseRequests] = useState<PurchaseRequestOption[]>([]);
+  const [purchaseRequests, setPurchaseRequests] = useState<PurchaseRequestPickerOption[]>([]);
+
+  const user = useAdminUser();
+  // Same permission the detail page's "افزودن سند" action requires
+  // (documents.upload on POST /purchases/:id/documents[/...]/file).
+  const canUploadDocuments = user?.permissions.includes("documents.upload") ?? false;
+  const [stagedDocuments, setStagedDocuments] = useState<StagedDocument[]>([]);
+  // Set once a create-mode purchase has been saved but one or more staged
+  // documents failed to upload afterwards — the form then stays put (so the
+  // failure is visible) but locks its submit button, so the purchase can't
+  // accidentally be created a second time.
+  const [savedWithDocumentFailures, setSavedWithDocumentFailures] = useState<{ id: number; purchaseNumber: string } | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null);
 
   // Small "add a new purchase type inline" affordance — PurchaseType is
   // still master data seeded from database_plan.txt (see prisma/seed.ts),
@@ -181,7 +234,7 @@ export function PurchaseForm(props: Props) {
           apiFetch<DepartmentOption[]>("/departments"),
           apiFetch<EmployeeOption[]>("/employees"),
           apiFetch<UnitOption[]>("/units"),
-          apiFetch<PurchaseRequestOption[]>("/purchase-requests"),
+          apiFetch<PurchaseRequestPickerOption[]>("/purchase-requests"),
         ]);
         setPurchaseTypes(purchaseTypesData);
         setSuppliers(suppliersData.filter((supplier) => supplier.status === "active"));
@@ -276,6 +329,82 @@ export function PurchaseForm(props: Props) {
 
   function update<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((current) => ({ ...current, [key]: value }));
+  }
+
+  // "درخواست خرید مرتبط" only applies to an OPERATIONAL purchase — a
+  // HISTORICAL_IMPORT is an old paper record and is never part of the
+  // Purchase Request workflow. Switching to historical clears any request
+  // already picked, so a now-hidden value is never silently submitted.
+  function changeSourceType(sourceType: PurchaseSourceType) {
+    setForm((current) => ({
+      ...current,
+      sourceType,
+      purchaseRequestId: sourceType === "OPERATIONAL" ? current.purchaseRequestId : "",
+    }));
+  }
+
+  function addStagedFiles(files: FileList | null) {
+    if (!files || files.length === 0) return;
+    const accepted: StagedDocument[] = [];
+    const problems: string[] = [];
+    for (const file of Array.from(files)) {
+      const problem = documentFileProblem(file);
+      if (problem) {
+        problems.push(problem);
+        continue;
+      }
+      accepted.push({ key: crypto.randomUUID(), file, documentType: "INVOICE", documentNumber: "", state: "pending" });
+    }
+    if (problems.length) pushErrors(problems);
+    if (accepted.length) setStagedDocuments((current) => [...current, ...accepted]);
+  }
+
+  function updateStagedDocument(key: string, patch: Partial<StagedDocument>) {
+    setStagedDocuments((current) => current.map((doc) => (doc.key === key ? { ...doc, ...patch } : doc)));
+  }
+
+  function removeStagedDocument(key: string) {
+    setStagedDocuments((current) => current.filter((doc) => doc.key !== key));
+  }
+
+  // Runs only after the purchase itself was created successfully. Each
+  // staged file goes through the same two calls the detail page makes:
+  // create the PurchaseDocument record (dated with the purchase date), then
+  // attach the file to it. Returns how many failed; never throws — a
+  // document failure must not look like the purchase itself failed.
+  async function uploadStagedDocuments(purchaseId: number, purchaseDate: string): Promise<number> {
+    const queue = stagedDocuments.filter((doc) => doc.state !== "done");
+    let failed = 0;
+    setUploadProgress({ done: 0, total: queue.length });
+    for (const [index, doc] of queue.entries()) {
+      updateStagedDocument(doc.key, { state: "uploading", error: undefined });
+      let createdId: number | null = null;
+      try {
+        const created = await apiFetch<{ id: number }>(`/purchases/${purchaseId}/documents`, {
+          method: "POST",
+          body: JSON.stringify({
+            documentType: doc.documentType,
+            documentNumber: doc.documentNumber.trim(),
+            date: purchaseDate,
+          }),
+        });
+        createdId = created.id;
+        await apiUpload(`/purchases/${purchaseId}/documents/${created.id}/file`, doc.file);
+        updateStagedDocument(doc.key, { state: "done" });
+      } catch (reason) {
+        failed += 1;
+        updateStagedDocument(doc.key, { state: "failed", error: (reason as ApiError).message ?? "بارگذاری فایل ناموفق بود." });
+        // The metadata row was created but its file never arrived — remove
+        // it (best effort) so a retry from the detail page doesn't leave a
+        // duplicate, file-less document behind.
+        if (createdId !== null) {
+          await apiFetch(`/purchases/${purchaseId}/documents/${createdId}`, { method: "DELETE" }).catch(() => undefined);
+        }
+      }
+      setUploadProgress({ done: index + 1, total: queue.length });
+    }
+    setUploadProgress(null);
+    return failed;
   }
 
   function updateItem(key: string, patch: Partial<ItemFormRow>) {
@@ -379,7 +508,7 @@ export function PurchaseForm(props: Props) {
           "برای افزودن تأمین‌کننده جدید به صفحه تأمین‌کنندگان منتقل می‌شوید و اطلاعات واردشده در این فرم ذخیره نخواهد شد. ادامه می‌دهید؟",
         )
       ) {
-        router.push("/admin/suppliers");
+        router.push("/suppliers");
       } else {
         // The <select> is controlled, but the browser already moved its DOM
         // selection to "__new__" before onChange fired. Re-set the same
@@ -394,6 +523,7 @@ export function PurchaseForm(props: Props) {
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (savedWithDocumentFailures) return;
 
     // Requester department and buyer employee are only mandatory for a
     // normal (OPERATIONAL) purchase — a historical import may simply not
@@ -433,7 +563,9 @@ export function PurchaseForm(props: Props) {
       requesterDepartmentId: form.requesterDepartmentId ? Number(form.requesterDepartmentId) : undefined,
       buyerEmployeeId: form.buyerEmployeeId ? Number(form.buyerEmployeeId) : undefined,
       supplierId: Number(form.supplierId),
-      purchaseRequestId: form.purchaseRequestId ? Number(form.purchaseRequestId) : undefined,
+      // Never sent for a HISTORICAL_IMPORT (see changeSourceType()) — belt
+      // and braces in case state ever carries one over.
+      purchaseRequestId: form.sourceType === "OPERATIONAL" && form.purchaseRequestId ? Number(form.purchaseRequestId) : undefined,
       note: form.note.trim(),
       items: items.map((item) => ({
         name: item.name.trim(),
@@ -452,8 +584,20 @@ export function PurchaseForm(props: Props) {
         method: props.mode === "edit" ? "PATCH" : "POST",
         body: JSON.stringify(payload),
       });
+      if (props.mode === "create" && stagedDocuments.length > 0) {
+        const failed = await uploadStagedDocuments(saved.id, form.purchaseDate);
+        if (failed > 0) {
+          // The purchase is saved — stay on this page so the per-file
+          // failure is visible, but lock the form against a second create.
+          setSavedWithDocumentFailures({ id: saved.id, purchaseNumber: saved.purchaseNumber });
+          pushError(
+            `خرید ${saved.purchaseNumber} ذخیره شد اما بارگذاری ${failed.toLocaleString("fa-IR")} سند ناموفق بود — از صفحه جزئیات خرید دوباره تلاش کنید.`,
+          );
+          return;
+        }
+      }
       pushSuccess(props.mode === "edit" ? "خرید با موفقیت ویرایش شد." : "خرید جدید با موفقیت ثبت شد.");
-      router.push(`/admin/purchases/${saved.id}`);
+      router.push(`/purchases/${saved.id}`);
     } catch (reason) {
       const apiError = reason as ApiError;
       if (apiError.messages?.length) {
@@ -475,27 +619,60 @@ export function PurchaseForm(props: Props) {
   }
 
   return (
-    <div className="p-4 sm:p-6 lg:p-8 pb-24">
+    <div className="p-4 sm:p-5">
       <ToastViewport toasts={toasts} onDismiss={dismiss} />
-      <div className="mx-auto max-w-4xl space-y-4">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight">{props.mode === "edit" ? "ویرایش خرید" : "ثبت خرید جدید"}</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {props.mode === "edit" && purchaseNumber ? `شماره خرید: ${purchaseNumber}` : "اطلاعات خرید و اقلام آن را وارد کنید"}
-          </p>
+      {/* Wide container + compact chrome: this is a high-volume data-entry
+          screen (hundreds of purchases, many of them historical paper
+          records), so the header fields sit 4-per-row on desktop and the
+          items table starts within the first screenful. */}
+      <div className="mx-auto max-w-7xl space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+          <div className="flex flex-wrap items-baseline gap-x-3">
+            <h1 className="text-lg font-semibold tracking-tight">{props.mode === "edit" ? "ویرایش خرید" : "ثبت خرید جدید"}</h1>
+            <p className="text-sm text-muted-foreground">
+              {props.mode === "edit" && purchaseNumber ? `شماره خرید: ${purchaseNumber}` : "اطلاعات خرید و اقلام آن را وارد کنید"}
+            </p>
+          </div>
+          {/* پرداخت — display only; payments are added/removed on the
+              purchase detail page. Shown inline in the header row rather
+              than as its own section, to save a full block of height. */}
+          {props.mode === "edit" && paymentSummary ? (
+            <div className="flex flex-wrap items-center gap-3 text-sm">
+              <StatusBadge label={purchasePaymentStatusLabels[paymentSummary.status]} tone={purchasePaymentStatusTone[paymentSummary.status]} />
+              <span className="text-muted-foreground">
+                پرداخت‌شده: <span className="font-medium text-foreground tabular-nums">{formatMoney(paymentSummary.paidAmount)}</span> از{" "}
+                <span className="font-medium text-foreground tabular-nums">{formatMoney(paymentSummary.totalAmount)}</span> ریال
+              </span>
+              <Link href={`/purchases/${props.purchaseId}`} className="text-primary hover:underline">
+                ثبت/مشاهده پرداخت‌ها ←
+              </Link>
+            </div>
+          ) : null}
         </div>
 
-        <form id="purchase-form" onSubmit={submit} className="space-y-4" noValidate>
+        {savedWithDocumentFailures ? (
+          <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-warning/40 bg-warning/10 px-4 py-2.5 text-sm">
+            <span>
+              خرید <span className="font-medium">{savedWithDocumentFailures.purchaseNumber}</span> ذخیره شد اما بارگذاری برخی اسناد ناموفق بود —
+              از صفحه جزئیات خرید دوباره تلاش کنید.
+            </span>
+            <Link href={`/purchases/${savedWithDocumentFailures.id}`} className="font-medium text-primary hover:underline">
+              رفتن به صفحه جزئیات خرید ←
+            </Link>
+          </div>
+        ) : null}
+
+        <form id="purchase-form" onSubmit={submit} className="space-y-3" noValidate>
           {/* Section 1 — اطلاعات خرید */}
           <FormSection title="اطلاعات خرید">
-            <div className="grid gap-4 md:grid-cols-2">
-              <div className="flex flex-col gap-2">
+            <div className="grid gap-x-3 gap-y-2.5 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="flex flex-col gap-1.5">
                 <Label htmlFor="purchase-source-type">نوع ثبت</Label>
                 <select
                   id="purchase-source-type"
                   className={selectClass}
                   value={form.sourceType}
-                  onChange={(event) => update("sourceType", event.target.value as PurchaseSourceType)}
+                  onChange={(event) => changeSourceType(event.target.value as PurchaseSourceType)}
                 >
                   {PURCHASE_SOURCE_TYPES.map((sourceType) => (
                     <option key={sourceType} value={sourceType}>
@@ -503,38 +680,17 @@ export function PurchaseForm(props: Props) {
                     </option>
                   ))}
                 </select>
-                {form.sourceType === "HISTORICAL_IMPORT" ? (
-                  <p className="text-xs text-muted-foreground">
-                    برای ثبت سوابق کاغذی قدیمی — دپارتمان و کارمند خریدار در صورت نامشخص بودن قابل خالی گذاشتن است.
-                  </p>
-                ) : null}
               </div>
-              <div className="flex flex-col gap-2">
-                <Label htmlFor="purchase-request">درخواست خرید مرتبط (اختیاری)</Label>
-                <select
-                  id="purchase-request"
-                  className={selectClass}
-                  value={form.purchaseRequestId}
-                  onChange={(event) => update("purchaseRequestId", event.target.value)}
-                >
-                  <option value="">بدون درخواست خرید</option>
-                  {purchaseRequests.map((request) => (
-                    <option key={request.id} value={request.id}>
-                      {request.requestNumber}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="flex flex-col gap-2">
+              <div className="flex flex-col gap-1.5">
                 <Label htmlFor="purchase-date-year">تاریخ خرید</Label>
                 <JalaliDateInput idPrefix="purchase-date" value={form.purchaseDate} onChange={(value) => update("purchaseDate", value)} required />
               </div>
-              <div className="flex flex-col gap-2">
+              <div className="flex flex-col gap-1.5">
                 <Label htmlFor="purchase-type">نوع خرید</Label>
                 <div className="flex gap-2">
                   <select
                     id="purchase-type"
-                    className={`${selectClass} flex-1`}
+                    className={`${selectClass} min-w-0 flex-1`}
                     value={form.purchaseTypeId}
                     onChange={(event) => update("purchaseTypeId", event.target.value)}
                     required
@@ -551,7 +707,7 @@ export function PurchaseForm(props: Props) {
                   </Button>
                 </div>
               </div>
-              <div className="flex flex-col gap-2">
+              <div className="flex flex-col gap-1.5">
                 <Label htmlFor="purchase-supplier">تأمین‌کننده</Label>
                 <select
                   id="purchase-supplier"
@@ -569,7 +725,7 @@ export function PurchaseForm(props: Props) {
                   <option value="__new__">+ افزودن تأمین‌کننده جدید...</option>
                 </select>
               </div>
-              <div className="flex flex-col gap-2">
+              <div className="flex flex-col gap-1.5">
                 <Label htmlFor="purchase-department">
                   دپارتمان درخواست‌کننده{form.sourceType === "HISTORICAL_IMPORT" ? " (اختیاری)" : ""}
                 </Label>
@@ -588,7 +744,7 @@ export function PurchaseForm(props: Props) {
                   ))}
                 </select>
               </div>
-              <div className="flex flex-col gap-2">
+              <div className="flex flex-col gap-1.5">
                 <Label htmlFor="purchase-buyer">
                   کارمند خریدار{form.sourceType === "HISTORICAL_IMPORT" ? " (اختیاری)" : ""}
                 </Label>
@@ -608,8 +764,29 @@ export function PurchaseForm(props: Props) {
                   ))}
                 </select>
               </div>
+              {/* Only for an OPERATIONAL purchase — a HISTORICAL_IMPORT
+                  (old paper record) is never part of the Purchase Request
+                  workflow. Two columns wide since its labels are long. */}
+              {form.sourceType === "OPERATIONAL" ? (
+                <div className="flex flex-col gap-1.5 sm:col-span-2">
+                  <Label htmlFor="purchase-request">درخواست خرید مرتبط (اختیاری)</Label>
+                  <select
+                    id="purchase-request"
+                    className={selectClass}
+                    value={form.purchaseRequestId}
+                    onChange={(event) => update("purchaseRequestId", event.target.value)}
+                  >
+                    <option value="">بدون درخواست خرید</option>
+                    {purchaseRequests.map((request) => (
+                      <option key={request.id} value={request.id}>
+                        {purchaseRequestOptionLabel(request)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : null}
               {props.mode === "edit" ? (
-                <div className="flex flex-col gap-2">
+                <div className="flex flex-col gap-1.5">
                   <Label htmlFor="purchase-status">وضعیت خرید</Label>
                   <select
                     id="purchase-status"
@@ -626,34 +803,39 @@ export function PurchaseForm(props: Props) {
                 </div>
               ) : null}
             </div>
+            {form.sourceType === "HISTORICAL_IMPORT" ? (
+              <p className="mt-2 text-xs text-muted-foreground">
+                برای ثبت سوابق کاغذی قدیمی — دپارتمان و کارمند خریدار در صورت نامشخص بودن قابل خالی گذاشتن است.
+              </p>
+            ) : null}
           </FormSection>
 
           {/* Section 2 — اقلام خرید */}
           <FormSection title="اقلام خرید" description="نام قلم متن آزاد است و به کاتالوگ اقلام شرکت مرتبط نمی‌شود.">
-            <div className="space-y-3">
+            <div className="space-y-2">
               <div className="overflow-x-auto rounded-md border border-border">
                 <table className="w-full min-w-[48rem] text-right text-sm">
                   <thead className="bg-muted/40 text-xs text-muted-foreground">
                     <tr>
-                      <th className="px-3 py-2 font-medium">نام / شرح</th>
-                      <th className="w-24 px-3 py-2 font-medium">مقدار</th>
-                      <th className="w-32 px-3 py-2 font-medium">واحد</th>
-                      <th className="w-32 px-3 py-2 font-medium">قیمت واحد (اختیاری)</th>
-                      <th className="w-32 px-3 py-2 font-medium">قیمت کل</th>
-                      <th className="w-12 px-3 py-2 font-medium"></th>
+                      <th className="px-2 py-1.5 font-medium">نام / شرح</th>
+                      <th className="w-28 px-2 py-1.5 font-medium">مقدار</th>
+                      <th className="w-36 px-2 py-1.5 font-medium">واحد</th>
+                      <th className="w-40 px-2 py-1.5 font-medium">قیمت واحد (اختیاری)</th>
+                      <th className="w-40 px-2 py-1.5 font-medium">قیمت کل</th>
+                      <th className="w-12 px-2 py-1.5 font-medium"></th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">
                     {form.items.map((item) => (
                       <tr key={item.key}>
-                        <td className="px-3 py-2">
+                        <td className="px-2 py-1">
                           <Input
                             aria-label="نام یا شرح قلم"
                             value={item.name}
                             onChange={(event) => updateItem(item.key, { name: event.target.value })}
                           />
                         </td>
-                        <td className="px-3 py-2">
+                        <td className="px-2 py-1">
                           <Input
                             aria-label="مقدار"
                             inputMode="decimal"
@@ -661,7 +843,7 @@ export function PurchaseForm(props: Props) {
                             onChange={(event) => updateItem(item.key, { quantity: event.target.value })}
                           />
                         </td>
-                        <td className="px-3 py-2">
+                        <td className="px-2 py-1">
                           <select
                             aria-label="واحد"
                             className={`${selectClass} w-full`}
@@ -676,7 +858,7 @@ export function PurchaseForm(props: Props) {
                             ))}
                           </select>
                         </td>
-                        <td className="px-3 py-2">
+                        <td className="px-2 py-1">
                           <Input
                             aria-label="قیمت واحد (اختیاری)"
                             inputMode="decimal"
@@ -685,7 +867,7 @@ export function PurchaseForm(props: Props) {
                             onChange={(event) => updateItem(item.key, { unitPrice: event.target.value })}
                           />
                         </td>
-                        <td className="px-3 py-2">
+                        <td className="px-2 py-1">
                           <Input
                             aria-label="قیمت کل"
                             inputMode="decimal"
@@ -693,7 +875,7 @@ export function PurchaseForm(props: Props) {
                             onChange={(event) => updateItem(item.key, { totalPrice: event.target.value })}
                           />
                         </td>
-                        <td className="px-3 py-2">
+                        <td className="px-2 py-1">
                           <Button
                             type="button"
                             variant="ghost"
@@ -710,9 +892,9 @@ export function PurchaseForm(props: Props) {
                   </tbody>
                   <tfoot>
                     <tr className="border-t border-border bg-muted/30 font-medium">
-                      <td className="px-3 py-2" colSpan={4}>جمع کل اقلام</td>
-                      <td className="px-3 py-2 tabular-nums">{formatMoney(itemsTotal)} ریال</td>
-                      <td className="px-3 py-2"></td>
+                      <td className="px-2 py-1.5" colSpan={4}>جمع کل اقلام</td>
+                      <td className="px-2 py-1.5 tabular-nums">{formatMoney(itemsTotal)} ریال</td>
+                      <td className="px-2 py-1.5"></td>
                     </tr>
                   </tfoot>
                 </table>
@@ -724,48 +906,126 @@ export function PurchaseForm(props: Props) {
             </div>
           </FormSection>
 
-          {/* Section 3 — پرداخت (فقط نمایش؛ ثبت/حذف پرداخت در صفحه جزئیات خرید انجام می‌شود) */}
-          {props.mode === "edit" && paymentSummary ? (
-            <FormSection title="پرداخت" description="ثبت و حذف پرداخت‌ها در صفحه جزئیات خرید انجام می‌شود.">
-              <div className="flex flex-wrap items-center justify-between gap-4">
-                <div className="flex flex-wrap items-center gap-4 text-sm">
-                  <StatusBadge label={purchasePaymentStatusLabels[paymentSummary.status]} tone={purchasePaymentStatusTone[paymentSummary.status]} />
-                  <span className="text-muted-foreground">
-                    پرداخت‌شده: <span className="font-medium text-foreground tabular-nums">{formatMoney(paymentSummary.paidAmount)}</span> از{" "}
-                    <span className="font-medium text-foreground tabular-nums">{formatMoney(paymentSummary.totalAmount)}</span> ریال
-                  </span>
-                </div>
-                {props.mode === "edit" ? (
-                  <Link href={`/admin/purchases/${props.purchaseId}`} className="text-sm text-primary hover:underline">
-                    ثبت/مشاهده پرداخت‌ها ←
-                  </Link>
-                ) : null}
-              </div>
+          {/* Sections 3 & 4 — یادداشت and (create mode) اسناد side by side
+              on desktop, rather than stacked, to save another block of height. */}
+          <div className={`grid gap-3 ${props.mode === "create" && canUploadDocuments ? "lg:grid-cols-2" : ""}`}>
+            <FormSection title="یادداشت">
+              <textarea
+                id="purchase-note"
+                aria-label="یادداشت"
+                className={`${textareaClass} w-full`}
+                value={form.note}
+                onChange={(event) => update("note", event.target.value)}
+                placeholder="یادداشت یا توضیحات تکمیلی (اختیاری)"
+              />
             </FormSection>
-          ) : null}
 
-          {/* Section 4 — یادداشت */}
-          <FormSection title="یادداشت">
-            <textarea
-              id="purchase-note"
-              className={`${textareaClass} w-full`}
-              value={form.note}
-              onChange={(event) => update("note", event.target.value)}
-              placeholder="یادداشت یا توضیحات تکمیلی (اختیاری)"
-            />
-          </FormSection>
+            {props.mode === "create" && canUploadDocuments ? (
+              <FormSection title="اسناد" description="فایل‌ها پس از ثبت خرید بارگذاری می‌شوند (PDF یا تصویر، حداکثر ۱۰ مگابایت).">
+                <div className="space-y-2">
+                  {stagedDocuments.length > 0 ? (
+                    <ul className="divide-y divide-border rounded-md border border-border" aria-label="اسناد انتخاب‌شده">
+                      {stagedDocuments.map((doc) => (
+                        <li key={doc.key} className="flex flex-wrap items-center gap-2 px-2 py-1.5 text-sm">
+                          <Paperclip className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+                          <span className="min-w-0 flex-1 truncate" title={doc.file.name}>{doc.file.name}</span>
+                          <select
+                            aria-label={`نوع سند ${doc.file.name}`}
+                            className={`${selectClass} h-8 w-32`}
+                            value={doc.documentType}
+                            disabled={doc.state !== "pending"}
+                            onChange={(event) => updateStagedDocument(doc.key, { documentType: event.target.value as DocumentType })}
+                          >
+                            {DOCUMENT_TYPES.map((type) => (
+                              <option key={type} value={type}>{documentTypeLabels[type]}</option>
+                            ))}
+                          </select>
+                          <Input
+                            aria-label={`شماره سند ${doc.file.name}`}
+                            placeholder="شماره سند"
+                            className="h-8 w-28"
+                            value={doc.documentNumber}
+                            disabled={doc.state !== "pending"}
+                            onChange={(event) => updateStagedDocument(doc.key, { documentNumber: event.target.value })}
+                          />
+                          {doc.state !== "pending" ? (
+                            <span
+                              className={`text-xs ${doc.state === "failed" ? "text-destructive" : doc.state === "done" ? "text-success" : "text-muted-foreground"}`}
+                              title={doc.error}
+                            >
+                              {stagedDocumentStateLabels[doc.state]}
+                              {doc.state === "failed" && doc.error ? `: ${doc.error}` : ""}
+                            </span>
+                          ) : (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="size-8"
+                              aria-label={`حذف ${doc.file.name}`}
+                              onClick={() => removeStagedDocument(doc.key)}
+                            >
+                              <Trash2 className="size-4" />
+                            </Button>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
+                  {!savedWithDocumentFailures ? (
+                    // The native file input's own button/label text follows
+                    // the browser's UI language (often English), so it's
+                    // visually hidden behind a Persian label-as-button.
+                    <label
+                      htmlFor="purchase-documents"
+                      className="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-md border border-input px-3 text-sm hover:bg-muted focus-within:ring-2 focus-within:ring-ring"
+                    >
+                      <Paperclip className="size-4" aria-hidden="true" />
+                      افزودن فایل سند
+                      <input
+                        id="purchase-documents"
+                        type="file"
+                        multiple
+                        accept=".pdf,.png,.jpg,.jpeg"
+                        className="sr-only"
+                        onChange={(event) => {
+                          addStagedFiles(event.target.files);
+                          // Reset so picking the same file again still fires onChange.
+                          event.target.value = "";
+                        }}
+                      />
+                    </label>
+                  ) : null}
+                </div>
+              </FormSection>
+            ) : null}
+          </div>
         </form>
 
-        {/* Footer actions — a thin bordered bar rather than large buttons,
-            with the primary action first (RTL: leftmost) and clearly the
-            more prominent of the two without being oversized. */}
-        <div className="flex items-center gap-2 rounded-lg border border-border bg-card px-4 py-3">
-          <Button type="submit" form="purchase-form" disabled={saving}>
-            {saving ? "در حال ذخیره..." : props.mode === "edit" ? "ذخیره تغییرات" : "ثبت خرید"}
+        {/* Footer actions — sticky to the bottom of the viewport so saving
+            never requires scrolling down past the items first. */}
+        <div className="sticky bottom-0 z-10 flex items-center gap-2 rounded-lg border border-border bg-card px-4 py-2.5 shadow-sm">
+          <Button type="submit" form="purchase-form" disabled={saving || savedWithDocumentFailures !== null}>
+            {uploadProgress
+              ? `در حال بارگذاری اسناد (${uploadProgress.done.toLocaleString("fa-IR")} از ${uploadProgress.total.toLocaleString("fa-IR")})...`
+              : saving
+                ? "در حال ذخیره..."
+                : props.mode === "edit"
+                  ? "ذخیره تغییرات"
+                  : "ثبت خرید"}
           </Button>
-          <Button type="button" variant="outline" onClick={() => router.back()}>
-            انصراف
-          </Button>
+          {savedWithDocumentFailures ? (
+            <Button type="button" variant="outline" onClick={() => router.push(`/purchases/${savedWithDocumentFailures.id}`)}>
+              رفتن به صفحه جزئیات خرید
+            </Button>
+          ) : (
+            <Button type="button" variant="outline" onClick={() => router.back()}>
+              انصراف
+            </Button>
+          )}
+          <span className="ms-auto text-sm text-muted-foreground">
+            جمع کل: <span className="font-medium text-foreground tabular-nums">{formatMoney(itemsTotal)}</span> ریال
+          </span>
         </div>
       </div>
 

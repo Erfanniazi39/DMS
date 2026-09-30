@@ -43,7 +43,7 @@ async function createActiveEmployee(request: APIRequestContext): Promise<number>
 }
 
 async function openListPage(page: Page) {
-  await page.goto("/admin/purchases");
+  await page.goto("/purchases");
   await expect(page.getByRole("heading", { name: "خریدها" })).toBeVisible();
 }
 
@@ -84,6 +84,20 @@ async function searchFor(page: Page, query: string) {
   await page.getByPlaceholder("شماره خرید یا تأمین‌کننده").fill(query);
 }
 
+// The list is paginated (20 per page, newest purchaseDate first), so a just-
+// created purchase — especially an old-dated historical one — is not
+// guaranteed to be on page 1. Takes the purchase's detail-page URL (defaults
+// to the current one, right after saving), reads its server-generated
+// number, then opens the list filtered down to it.
+async function openListPageForCurrentPurchase(page: Page, detailUrl = page.url()) {
+  const id = new URL(detailUrl).pathname.split("/").pop();
+  const response = await page.request.get(`http://localhost:3001/purchases/${id}`);
+  if (!response.ok()) throw new Error(`Failed to load purchase ${id}: ${response.status()}`);
+  const { purchaseNumber } = (await response.json()) as { purchaseNumber: string };
+  await openListPage(page);
+  await searchFor(page, purchaseNumber);
+}
+
 test.beforeEach(async ({ page }) => {
   await openListPage(page);
 });
@@ -104,9 +118,9 @@ test("1) creating an OPERATIONAL purchase with valid data succeeds and appears i
   await page.locator('button[form="purchase-form"]').click();
 
   await expect(page.getByRole("status").filter({ hasText: "خرید جدید با موفقیت ثبت شد." })).toBeVisible();
-  await page.waitForURL(/\/admin\/purchases\/\d+$/);
+  await page.waitForURL(/\/\/[^/]+\/purchases\/\d+$/);
 
-  await openListPage(page);
+  await openListPageForCurrentPurchase(page);
   const row = page.locator("tbody tr").filter({ hasText: itemName });
   await expect(row).toHaveCount(1);
   // A server-generated PUR-###### number, never accepted from the client
@@ -129,9 +143,9 @@ test("2) creating a HISTORICAL_IMPORT purchase without a department or buyer suc
   await page.locator('button[form="purchase-form"]').click();
 
   await expect(page.getByRole("status").filter({ hasText: "خرید جدید با موفقیت ثبت شد." })).toBeVisible();
-  await page.waitForURL(/\/admin\/purchases\/\d+$/);
+  await page.waitForURL(/\/\/[^/]+\/purchases\/\d+$/);
 
-  await openListPage(page);
+  await openListPageForCurrentPurchase(page);
   const row = page.locator("tbody tr").filter({ hasText: itemName }).first();
   await expect(row).toContainText("ثبت تاریخی");
 });
@@ -162,7 +176,7 @@ test("3b) leaving required header fields empty shows the app's Persian message, 
 
   await expect(page.getByRole("alert").filter({ hasText: "همه فیلدهای اطلاعات خرید الزامی است." })).toBeVisible();
   await expect(page.getByRole("heading", { name: "ثبت خرید جدید" })).toBeVisible();
-  await expect(page).toHaveURL(/\/admin\/purchases\/new/);
+  await expect(page).toHaveURL(/\/\/[^/]+\/purchases\/new/);
 });
 
 test("4) editing a purchase's note and status succeeds and persists", async ({ page, request }) => {
@@ -178,9 +192,10 @@ test("4) editing a purchase's note and status succeeds and persists", async ({ p
   await fillFirstItem(page, { name: itemName, quantity: "2", totalPrice: "20000" });
   await page.locator('button[form="purchase-form"]').click();
   await expect(page.getByRole("status").filter({ hasText: "خرید جدید با موفقیت ثبت شد." })).toBeVisible();
-  await page.waitForURL(/\/admin\/purchases\/\d+$/);
+  await page.waitForURL(/\/\/[^/]+\/purchases\/\d+$/);
+  const detailUrl = page.url();
 
-  await openListPage(page);
+  await openListPageForCurrentPurchase(page);
   const row = page.locator("tbody tr").filter({ hasText: itemName }).first();
   await row.getByRole("button", { name: "ویرایش" }).click();
   await expect(page.getByRole("heading", { name: "ویرایش خرید" })).toBeVisible();
@@ -192,7 +207,84 @@ test("4) editing a purchase's note and status succeeds and persists", async ({ p
 
   await expect(page.getByRole("status").filter({ hasText: "خرید با موفقیت ویرایش شد." })).toBeVisible();
 
-  await openListPage(page);
+  await openListPageForCurrentPurchase(page, detailUrl);
   const updatedRow = page.locator("tbody tr").filter({ hasText: itemName }).first();
   await expect(updatedRow).toContainText("تأییدشده");
+});
+
+// Creates a minimal (DRAFT) Purchase Request straight through the API, just
+// so the Purchase form's "درخواست خرید مرتبط" picker has a known option.
+async function createPurchaseRequestViaApi(request: APIRequestContext, itemName: string): Promise<{ id: number; requestNumber: string }> {
+  const departments = (await (await request.get("http://localhost:3001/departments")).json()) as Array<{ id: number; status: string }>;
+  const department = departments.find((d) => d.status === "active");
+  const units = (await (await request.get("http://localhost:3001/units")).json()) as Array<{ id: number }>;
+  if (!department || units.length === 0) throw new Error("An active department and a unit must be seeded for this test.");
+  const response = await request.post("http://localhost:3001/purchase-requests", {
+    data: {
+      requestDate: "2025-03-21",
+      requesterDepartmentId: department.id,
+      priority: "NORMAL",
+      items: [{ name: itemName, quantity: 1, unitId: units[0].id }],
+    },
+  });
+  if (!response.ok()) throw new Error(`Failed to create purchase request: ${response.status()} ${await response.text()}`);
+  return (await response.json()) as { id: number; requestNumber: string };
+}
+
+test("5) the related-purchase-request picker is labeled richly, hidden for HISTORICAL_IMPORT, and cleared on switch", async ({ page, request }) => {
+  const itemName = `قلم درخواست ${uniqueSuffix()}`;
+  const created = await createPurchaseRequestViaApi(request, itemName);
+
+  await openCreatePage(page);
+  const picker = page.locator("#purchase-request");
+  await expect(picker).toBeVisible();
+  // Label = code + department + first item + Jalali date, not just the code.
+  const option = picker.locator(`option[value="${created.id}"]`);
+  await expect(option).toBeAttached();
+  await expect(option).toContainText(created.requestNumber);
+  await expect(option).toContainText(itemName);
+  await expect(option).toContainText("۱۴۰۴");
+  await picker.selectOption(String(created.id));
+
+  await page.locator("#purchase-source-type").selectOption("HISTORICAL_IMPORT");
+  await expect(page.locator("#purchase-request")).toHaveCount(0);
+
+  // Switching back must not resurrect the stale selection.
+  await page.locator("#purchase-source-type").selectOption("OPERATIONAL");
+  await expect(page.locator("#purchase-request")).toHaveValue("");
+});
+
+test("6) a file picked on the create form is uploaded as a purchase document right after saving", async ({ page }) => {
+  const itemName = `قلم با سند ${uniqueSuffix()}`;
+
+  await openCreatePage(page);
+  await page.locator("#purchase-source-type").selectOption("HISTORICAL_IMPORT");
+  await selectJalaliDate(page, "purchase-date", { year: 1395, month: 6, day: 10 });
+  await selectFirstRealOption(page, "purchase-type");
+  await selectFirstRealOption(page, "purchase-supplier");
+  await fillFirstItem(page, { name: itemName, quantity: "1", totalPrice: "250000" });
+
+  // A file type the backend rejects is refused at pick time, before saving.
+  await page.locator("#purchase-documents").setInputFiles({ name: "notes.txt", mimeType: "text/plain", buffer: Buffer.from("x") });
+  await expect(page.getByRole("alert").filter({ hasText: "notes.txt" })).toBeVisible();
+
+  await page.locator("#purchase-documents").setInputFiles({
+    name: "scanned-invoice.pdf",
+    mimeType: "application/pdf",
+    buffer: Buffer.from("%PDF-1.4\n%%EOF\n"),
+  });
+  const staged = page.getByRole("list", { name: "اسناد انتخاب‌شده" });
+  await expect(staged.locator("li")).toHaveCount(1);
+  await expect(staged).toContainText("scanned-invoice.pdf");
+  await staged.getByLabel("شماره سند scanned-invoice.pdf").fill("INV-77");
+
+  await page.locator('button[form="purchase-form"]').click();
+  await expect(page.getByRole("status").filter({ hasText: "خرید جدید با موفقیت ثبت شد." })).toBeVisible();
+  await page.waitForURL(/\/\/[^/]+\/purchases\/\d+$/);
+
+  // The detail page's documents table lists it, with a downloadable file.
+  const documentRow = page.locator("tbody tr").filter({ hasText: "INV-77" });
+  await expect(documentRow).toHaveCount(1);
+  await expect(documentRow).toContainText("فاکتور");
+  await expect(documentRow.getByRole("link", { name: "مشاهده" })).toHaveAttribute("href", /^\/api\/uploads\/purchases\/.+\.pdf$/);
 });

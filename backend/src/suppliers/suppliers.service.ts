@@ -1,13 +1,45 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { SupplierStatus, type Prisma } from '@prisma/client';
+import { toSkipTake, type PaginationParams } from '../common/pagination';
 import { PrismaService } from '../prisma/prisma.service';
 import type { CreateSupplierDto, UpdateSupplierDto } from './dto/supplier.dto';
+
+export type SupplierListFilters = { q?: string; status?: string };
 
 @Injectable()
 export class SuppliersService {
   constructor(private readonly prisma: PrismaService) {}
 
-  list() {
-    return this.prisma.supplier.findMany({ orderBy: { name: 'asc' } });
+  // Without `pagination` this returns every supplier as a plain array
+  // (original shape — the supplier dropdowns on the purchase form/filters
+  // depend on it). With it, returns one page plus the total matching count:
+  // { items, total, page, pageSize }. `q`/`status` filter server-side so
+  // search and paging work together on the list page.
+  async list(filters: SupplierListFilters = {}, pagination?: PaginationParams) {
+    const where: Prisma.SupplierWhereInput = {};
+    if (filters.q) {
+      where.OR = [
+        { name: { contains: filters.q, mode: 'insensitive' } },
+        { code: { contains: filters.q, mode: 'insensitive' } },
+        { phone: { contains: filters.q, mode: 'insensitive' } },
+        { email: { contains: filters.q, mode: 'insensitive' } },
+      ];
+    }
+    if (filters.status) {
+      if (!(Object.values(SupplierStatus) as string[]).includes(filters.status)) {
+        throw new BadRequestException('وضعیت تأمین‌کننده نامعتبر است');
+      }
+      where.status = filters.status as SupplierStatus;
+    }
+
+    if (!pagination) return this.prisma.supplier.findMany({ where, orderBy: { name: 'asc' } });
+
+    const [items, total] = await Promise.all([
+      // id as a tiebreaker keeps page boundaries stable.
+      this.prisma.supplier.findMany({ where, orderBy: [{ name: 'asc' }, { id: 'asc' }], ...toSkipTake(pagination) }),
+      this.prisma.supplier.count({ where }),
+    ]);
+    return { items, total, page: pagination.page, pageSize: pagination.pageSize };
   }
 
   async get(id: number) {

@@ -3,12 +3,14 @@ import { Prisma, PurchasePaymentStatus, PurchaseSourceType, PurchaseStatus } fro
 import { existsSync, unlink } from 'fs';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
+import { toSkipTake, type PaginationParams } from '../common/pagination';
 import { PrismaService } from '../prisma/prisma.service';
 import { PurchaseRequestsService } from '../purchase-requests/purchase-requests.service';
 import type {
   CreatePurchaseDocumentDto,
   CreatePurchaseDto,
   CreatePurchasePaymentDto,
+  CreatePurchaseReturnDto,
   UpdatePurchaseDto,
 } from './dto/purchase.dto';
 
@@ -39,6 +41,14 @@ const purchaseDetailInclude = {
   documents: { orderBy: { date: 'desc' } },
 } satisfies Prisma.PurchaseInclude;
 
+// A Return-to-Vendor record with each returned line's original PurchaseItem
+// (name/unit/quantity) — enough for the detail page to render the return and
+// derive "still returnable" per item without another round-trip.
+const purchaseReturnInclude = {
+  items: { include: { purchaseItem: { include: { unit: true } } }, orderBy: { id: 'asc' } },
+  createdByUser: { select: { id: true, username: true } },
+} satisfies Prisma.PurchaseReturnInclude;
+
 function sumItemTotals(items: { totalPrice: number }[]): number {
   return items.reduce((sum, item) => sum + item.totalPrice, 0);
 }
@@ -59,7 +69,10 @@ export class PurchasesService {
     private readonly purchaseRequestsService: PurchaseRequestsService,
   ) {}
 
-  list(filters: PurchaseListFilters) {
+  // Without `pagination` this returns the full filtered array (original
+  // shape, kept for any caller that wants everything). With it, returns one
+  // page plus the total matching count: { items, total, page, pageSize }.
+  async list(filters: PurchaseListFilters, pagination?: PaginationParams) {
     const where: Prisma.PurchaseWhereInput = {};
 
     if (filters.q) {
@@ -81,7 +94,7 @@ export class PurchasesService {
       };
     }
 
-    return this.prisma.purchase.findMany({
+    const query = {
       where,
       orderBy: [{ purchaseDate: 'desc' }, { id: 'desc' }],
       include: {
@@ -95,7 +108,15 @@ export class PurchasesService {
         items: { select: { name: true }, orderBy: { id: 'asc' }, take: 1 },
         _count: { select: { items: true } },
       },
-    });
+    } satisfies Prisma.PurchaseFindManyArgs;
+
+    if (!pagination) return this.prisma.purchase.findMany(query);
+
+    const [items, total] = await Promise.all([
+      this.prisma.purchase.findMany({ ...query, ...toSkipTake(pagination) }),
+      this.prisma.purchase.count({ where }),
+    ]);
+    return { items, total, page: pagination.page, pageSize: pagination.pageSize };
   }
 
   async get(id: number) {
@@ -163,8 +184,18 @@ export class PurchasesService {
   // same way the rest of this project's edit forms submit a complete record
   // rather than a partial patch. purchaseNumber is never part of the update
   // payload — it's fixed at creation, same reasoning as Employee.code.
+  //
+  // Because items are deleted and recreated, a purchase that already has
+  // Return-to-Vendor records can't be edited: those returns point at the
+  // exact PurchaseItem rows (PurchaseReturnItem.purchaseItem is Restrict),
+  // and recreating the items would orphan/break them. Refused up front with
+  // a clear message rather than surfacing a raw FK error.
   async update(id: number, dto: UpdatePurchaseDto, userId: number | null, ipAddress?: string) {
     const existing = await this.get(id);
+    const returnCount = await this.prisma.purchaseReturn.count({ where: { purchaseId: id } });
+    if (returnCount > 0) {
+      throw new ConflictException('برای این خرید برگشت به تأمین‌کننده ثبت شده است و قابل ویرایش نیست. ابتدا برگشت‌ها را حذف کنید.');
+    }
     await this.ensurePurchaseType(dto.purchaseTypeId);
     if (dto.requesterDepartmentId) await this.ensureDepartment(dto.requesterDepartmentId);
     if (dto.buyerEmployeeId) await this.ensureBuyerEmployee(dto.buyerEmployeeId);
@@ -235,11 +266,11 @@ export class PurchasesService {
   async remove(id: number, userId: number | null, ipAddress?: string) {
     const purchase = await this.prisma.purchase.findUnique({
       where: { id },
-      include: { _count: { select: { payments: true, documents: true } } },
+      include: { _count: { select: { payments: true, documents: true, returns: true } } },
     });
     if (!purchase) throw new NotFoundException('خرید پیدا نشد');
-    if (purchase._count.payments > 0 || purchase._count.documents > 0) {
-      throw new ConflictException('این خرید دارای پرداخت یا سند ثبت‌شده است و قابل حذف نیست. ابتدا آن‌ها را حذف کنید.');
+    if (purchase._count.payments > 0 || purchase._count.documents > 0 || purchase._count.returns > 0) {
+      throw new ConflictException('این خرید دارای پرداخت، سند یا برگشت ثبت‌شده است و قابل حذف نیست. ابتدا آن‌ها را حذف کنید.');
     }
     await this.prisma.purchase.delete({ where: { id } });
     await this.writeAuditLog(userId, ipAddress, 'PURCHASE_DELETED', id, purchase.purchaseNumber);
@@ -305,6 +336,104 @@ export class PurchasesService {
     if (document.filePath) this.deleteUploadedFile(document.filePath);
     await this.prisma.purchaseDocument.update({ where: { id: documentId }, data: { filePath } });
     return this.get(purchaseId);
+  }
+
+  // --- Return to Vendor (RTV) ----------------------------------------------
+  //
+  // A PurchaseReturn is a historical record of goods sent back and their
+  // credit value. It deliberately does NOT touch Purchase.totalAmount /
+  // paidAmount / paymentStatus (those stay "what was originally billed /
+  // paid") and has no status lifecycle — same create/list/delete shape as
+  // PurchasePayment. No Inventory effect.
+
+  // returnNumber (RTN-000001) uses the same placeholder-then-fix pattern as
+  // purchaseNumber. The returnable-quantity check runs inside the same
+  // transaction, after locking the parent Purchase row, so two concurrent
+  // returns against the same purchase can't both pass the check and
+  // together exceed an item's original quantity.
+  async createReturn(purchaseId: number, dto: CreatePurchaseReturnDto, userId: number | null, ipAddress?: string) {
+    const created = await this.prisma.$transaction(async (tx) => {
+      const locked = await tx.$queryRaw<{ id: number }[]>`SELECT id FROM purchases WHERE id = ${purchaseId} FOR UPDATE`;
+      if (locked.length === 0) throw new NotFoundException('خرید پیدا نشد');
+
+      const itemIds = [...new Set(dto.items.map((item) => item.purchaseItemId))];
+      const purchaseItems = await tx.purchaseItem.findMany({
+        where: { id: { in: itemIds }, purchaseId },
+        select: { id: true, name: true, quantity: true },
+      });
+      if (purchaseItems.length !== itemIds.length) {
+        throw new ConflictException('یکی از اقلام انتخاب‌شده برای برگشت، متعلق به این خرید نیست');
+      }
+
+      const alreadyReturned = await tx.purchaseReturnItem.groupBy({
+        by: ['purchaseItemId'],
+        where: { purchaseItemId: { in: itemIds } },
+        _sum: { quantity: true },
+      });
+      const returnedByItem = new Map(alreadyReturned.map((row) => [row.purchaseItemId, new Prisma.Decimal(row._sum.quantity ?? 0)]));
+      // The same item may appear on more than one line of this return —
+      // what counts is the total being returned now.
+      const requestedByItem = new Map<number, Prisma.Decimal>();
+      for (const line of dto.items) {
+        const current = requestedByItem.get(line.purchaseItemId) ?? new Prisma.Decimal(0);
+        requestedByItem.set(line.purchaseItemId, current.plus(line.quantity));
+      }
+      for (const item of purchaseItems) {
+        const remaining = new Prisma.Decimal(item.quantity).minus(returnedByItem.get(item.id) ?? 0);
+        const requested = requestedByItem.get(item.id) ?? new Prisma.Decimal(0);
+        if (requested.greaterThan(remaining)) {
+          throw new ConflictException(`مقدار برگشتی «${item.name}» بیشتر از مقدار قابل برگشت (${remaining.toString()}) است`);
+        }
+      }
+
+      const record = await tx.purchaseReturn.create({
+        data: {
+          returnNumber: `PENDING-${randomUUID()}`,
+          purchaseId,
+          returnDate: dto.returnDate,
+          reason: dto.reason,
+          note: dto.note,
+          createdByUserId: userId ?? undefined,
+          items: { create: dto.items },
+        },
+      });
+      const returnNumber = `RTN-${String(record.id).padStart(6, '0')}`;
+      return tx.purchaseReturn.update({ where: { id: record.id }, data: { returnNumber }, include: purchaseReturnInclude });
+    });
+
+    await this.writeAuditLog(userId, ipAddress, 'PURCHASE_RETURN_CREATED', purchaseId, created.returnNumber);
+    return created;
+  }
+
+  async listReturns(purchaseId: number) {
+    await this.ensurePurchaseExists(purchaseId);
+    return this.prisma.purchaseReturn.findMany({
+      where: { purchaseId },
+      orderBy: [{ returnDate: 'desc' }, { id: 'desc' }],
+      include: purchaseReturnInclude,
+    });
+  }
+
+  async getReturn(purchaseId: number, returnId: number) {
+    const purchaseReturn = await this.prisma.purchaseReturn.findFirst({ where: { id: returnId, purchaseId }, include: purchaseReturnInclude });
+    if (!purchaseReturn) throw new NotFoundException('برگشت پیدا نشد');
+    return purchaseReturn;
+  }
+
+  // Removing a mistaken return — its lines cascade with it. Like
+  // removePayment(), no Purchase field needs recomputing here (returns
+  // never touched them in the first place).
+  async removeReturn(purchaseId: number, returnId: number, userId: number | null, ipAddress?: string) {
+    const purchaseReturn = await this.prisma.purchaseReturn.findFirst({ where: { id: returnId, purchaseId } });
+    if (!purchaseReturn) throw new NotFoundException('برگشت پیدا نشد');
+    await this.prisma.purchaseReturn.delete({ where: { id: returnId } });
+    await this.writeAuditLog(userId, ipAddress, 'PURCHASE_RETURN_DELETED', purchaseId, purchaseReturn.returnNumber);
+    return { success: true };
+  }
+
+  private async ensurePurchaseExists(id: number) {
+    const purchase = await this.prisma.purchase.findUnique({ where: { id }, select: { id: true } });
+    if (!purchase) throw new NotFoundException('خرید پیدا نشد');
   }
 
   private async recomputePaymentTotals(purchaseId: number, totalAmount: number) {
