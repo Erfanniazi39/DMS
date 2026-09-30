@@ -46,10 +46,24 @@ export function useToasts() {
   return { toasts, pushError, pushErrors, pushSuccess, dismiss };
 }
 
+// The viewport container is ALWAYS mounted (even with zero toasts) and
+// carries an explicit `aria-live` attribute. This is load-bearing: a modal
+// @base-ui/react Dialog, when it opens, sets `aria-hidden` on everything
+// outside its own portal EXCEPT elements that already carry `[aria-live]`
+// (see `markOthers` in @base-ui/react's floating-ui-react utils — the same
+// convention Base UI's own Toast.Viewport relies on). Without this, a
+// validation toast fired while a Dialog is open would be visible but absent
+// from the accessibility tree.
 export function ToastViewport({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id: number) => void }) {
-  if (toasts.length === 0) return null;
   return (
-    <div className="pointer-events-none fixed inset-x-0 top-4 z-[100] flex flex-col items-center gap-2 px-4">
+    <div
+      role="region"
+      aria-live="polite"
+      aria-atomic="false"
+      aria-relevant="additions text"
+      aria-label="اعلان‌ها"
+      className="pointer-events-none fixed inset-x-0 top-4 z-[100] flex flex-col items-center gap-2 px-4"
+    >
       {toasts.map((toast) => (
         <div
           key={toast.id}

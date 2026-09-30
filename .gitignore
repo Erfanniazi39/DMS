@@ -31,3 +31,9 @@ uploads/
 # Editor
 .vscode/*
 !.vscode/extensions.json
+
+# TypeScript build cache
+*.tsbuildinfo
+
+# Graphify generated files
+graphify-out/

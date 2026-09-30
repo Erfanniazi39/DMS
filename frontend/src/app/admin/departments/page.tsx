@@ -288,7 +288,7 @@ export default function DepartmentsPage() {
             <DialogCloseButton />
           </DialogHeader>
           <DialogBody>
-            <form id="department-form" className="grid gap-4 md:grid-cols-2" onSubmit={saveDepartment}>
+            <form id="department-form" className="grid gap-4 md:grid-cols-2" onSubmit={saveDepartment} noValidate>
               <div className="flex flex-col gap-2">
                 <Label htmlFor="department-code">کد دپارتمان</Label>
                 <Input id="department-code" value={form.code} onChange={(event) => update("code", event.target.value)} required />

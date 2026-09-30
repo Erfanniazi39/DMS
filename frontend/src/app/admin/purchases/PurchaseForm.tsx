@@ -485,7 +485,7 @@ export function PurchaseForm(props: Props) {
           </p>
         </div>
 
-        <form id="purchase-form" onSubmit={submit} className="space-y-4">
+        <form id="purchase-form" onSubmit={submit} className="space-y-4" noValidate>
           {/* Section 1 — اطلاعات خرید */}
           <FormSection title="اطلاعات خرید">
             <div className="grid gap-4 md:grid-cols-2">
@@ -776,7 +776,7 @@ export function PurchaseForm(props: Props) {
             <DialogCloseButton />
           </DialogHeader>
           <DialogBody>
-            <form id="purchase-type-form" className="grid gap-4" onSubmit={submitPurchaseType}>
+            <form id="purchase-type-form" className="grid gap-4" onSubmit={submitPurchaseType} noValidate>
               <div className="flex flex-col gap-2">
                 <Label htmlFor="purchase-type-code">کد</Label>
                 <Input

@@ -503,7 +503,7 @@ export default function PurchaseDetailPage() {
             <DialogCloseButton />
           </DialogHeader>
           <DialogBody>
-            <form id="payment-form" className="grid gap-4" onSubmit={submitPayment}>
+            <form id="payment-form" className="grid gap-4" onSubmit={submitPayment} noValidate>
               <div className="flex flex-col gap-2">
                 <Label htmlFor="payment-date-year">تاریخ</Label>
                 <JalaliDateInput
@@ -586,7 +586,7 @@ export default function PurchaseDetailPage() {
             <DialogCloseButton />
           </DialogHeader>
           <DialogBody>
-            <form id="document-form" className="grid gap-4" onSubmit={submitDocument}>
+            <form id="document-form" className="grid gap-4" onSubmit={submitDocument} noValidate>
               <div className="flex flex-col gap-2">
                 <Label htmlFor="document-type">نوع سند</Label>
                 <select

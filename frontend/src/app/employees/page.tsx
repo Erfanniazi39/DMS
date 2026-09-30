@@ -947,7 +947,7 @@ export default function EmployeesPage() {
             <DialogCloseButton />
           </DialogHeader>
           <DialogBody>
-            <form id="employee-form" onSubmit={save} className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3" autoComplete="off">
+            <form id="employee-form" onSubmit={save} className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3" autoComplete="off" noValidate>
               <div className="flex flex-col gap-2">
                 <Label>تصویر کارمند (اختیاری)</Label>
                 <div className="flex items-center gap-3">

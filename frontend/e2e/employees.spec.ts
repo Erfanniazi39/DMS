@@ -156,9 +156,7 @@ test("2) adding an employee with invalid field formats is rejected with specific
   page,
 }) => {
   await openCreateDialog(page);
-  // Department, name and dates are all valid/present (native `required`
-  // would otherwise block the submit before our own validation ever runs).
-  // Only the format of these four fields is wrong, so each should surface
+  // Department, name and dates are all valid/present. Only the format of these four fields is wrong, so each should surface
   // its own distinct toast rather than one generic error.
   await fillEmployeeForm(page, {
     firstName: "علی",
@@ -233,4 +231,25 @@ test("4) editing an employee to reuse another employee's national ID is rejected
   await searchFor(page, employeeA.nationalId);
   // Still exactly one employee has employeeA's national ID: employeeA.
   await expect(page.locator("tbody tr")).toHaveCount(1);
+});
+
+test("5) submitting the empty create form shows the app's own Persian messages, reachable via role=alert while the dialog is open", async ({
+  page,
+}) => {
+  await openCreateDialog(page);
+  // Nothing filled in. The form is `noValidate`, so the browser's native
+  // (English) constraint tooltip doesn't pre-empt validate(); and the toasts
+  // it produces must stay in the accessibility tree even though a modal
+  // @base-ui/react Dialog aria-hides everything outside its own portal
+  // (ToastViewport is an always-mounted `aria-live` region, which Base UI
+  // deliberately leaves exposed). getByRole() skips aria-hidden subtrees.
+  await page.getByRole("button", { name: "ایجاد کارمند" }).click();
+
+  await expect(page.getByRole("dialog")).toBeVisible();
+  for (const message of ["واحد سازمانی را انتخاب کنید.", "نام را وارد کنید.", "تاریخ تولد را مشخص کنید."]) {
+    const alert = page.getByRole("alert").filter({ hasText: message });
+    await expect(alert).toBeVisible();
+    expect(await alert.evaluate((el) => el.closest('[aria-hidden="true"]') === null)).toBe(true);
+  }
+  await expect(page.getByRole("heading", { name: "افزودن کارمند جدید" })).toBeVisible();
 });

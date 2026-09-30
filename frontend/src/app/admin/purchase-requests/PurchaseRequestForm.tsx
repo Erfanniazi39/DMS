@@ -243,7 +243,7 @@ export function PurchaseRequestForm(props: Props) {
           </p>
         </div>
 
-        <form id="purchase-request-form" onSubmit={submit} className="space-y-6">
+        <form id="purchase-request-form" onSubmit={submit} className="space-y-6" noValidate>
           <Card>
             <CardHeader>
               <CardTitle className="text-base">اطلاعات درخواست</CardTitle>

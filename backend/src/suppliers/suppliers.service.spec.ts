@@ -11,6 +11,12 @@ function createPrismaMock() {
       update: jest.fn(),
       delete: jest.fn(),
     },
+    // remove() guards against deleting a supplier that still has purchase
+    // history (see SuppliersService.remove()) — every test that reaches
+    // that guard needs this stubbed, even ones not specifically about it.
+    purchase: {
+      count: jest.fn(),
+    },
   } as never;
 }
 
@@ -60,12 +66,24 @@ describe('SuppliersService', () => {
     expect((prisma as any).supplier.update).not.toHaveBeenCalled();
   });
 
-  it('deletes an existing supplier', async () => {
+  it('deletes an existing supplier with no purchase history', async () => {
     const prisma = createPrismaMock();
     const service = new SuppliersService(prisma as never);
     (prisma as any).supplier.findUnique.mockResolvedValue({ id: 2 });
+    (prisma as any).purchase.count.mockResolvedValue(0);
 
     await expect(service.remove(2)).resolves.toEqual({ success: true });
+    expect((prisma as any).purchase.count).toHaveBeenCalledWith({ where: { supplierId: 2 } });
     expect((prisma as any).supplier.delete).toHaveBeenCalledWith({ where: { id: 2 } });
+  });
+
+  it('rejects deleting a supplier that still has purchase history', async () => {
+    const prisma = createPrismaMock();
+    const service = new SuppliersService(prisma as never);
+    (prisma as any).supplier.findUnique.mockResolvedValue({ id: 2 });
+    (prisma as any).purchase.count.mockResolvedValue(3);
+
+    await expect(service.remove(2)).rejects.toBeInstanceOf(ConflictException);
+    expect((prisma as any).supplier.delete).not.toHaveBeenCalled();
   });
 });
