@@ -31,6 +31,14 @@ import {
   type PurchasePaymentStatus,
   type PurchaseStatus,
 } from "@/app/purchases/shared";
+import {
+  purchaseRequestPriorityLabels,
+  purchaseRequestPriorityTone,
+  purchaseRequestStatusLabels,
+  purchaseRequestStatusTone,
+  type PurchaseRequestPriority,
+  type PurchaseRequestStatus,
+} from "@/app/purchase-requests/shared";
 import type { TrendPoint } from "./PurchaseTrendChart";
 
 // echarts draws into a real DOM canvas — client-only, and kept out of the
@@ -81,7 +89,60 @@ type PurchasesSummary = {
   openPurchaseRequestCount: number;
   trend: TrendPoint[];
   recentPurchases: RecentPurchase[];
+  topSuppliers: SupplierSpend[];
 };
+
+// Spend data only — purchase amounts per supplier. There is no
+// delivery/quality data behind it, so it is labelled as a spend overview.
+type SupplierSpend = {
+  supplier: { id: number; name: string };
+  spend: string;
+  purchaseCount: number;
+  outstanding: string;
+};
+
+type OpenPurchase = {
+  id: number;
+  purchaseNumber: string;
+  purchaseDate: string;
+  totalAmount: string;
+  outstanding: string;
+  status: PurchaseStatus;
+  paymentStatus: PurchasePaymentStatus;
+  supplier: { id: number; name: string };
+  ageDays: number;
+};
+
+type OpenRequest = {
+  id: number;
+  requestNumber: string;
+  requestDate: string;
+  status: PurchaseRequestStatus;
+  priority: PurchaseRequestPriority;
+  requesterDepartment: { id: number; name: string };
+  ageDays: number;
+};
+
+// GET /dashboard/open-items — current state, independent of the period.
+type OpenItems = {
+  paymentAging: { bucket: "0-30" | "31-60" | "61+"; purchaseCount: number; outstandingAmount: string }[];
+  requestAging: { bucket: "0-7" | "8-30" | "31+"; requestCount: number }[];
+  openPurchases: { total: number; items: OpenPurchase[] };
+  openRequests: { total: number; items: OpenRequest[] };
+};
+
+// No due-date exists on Purchase, so these are ages since the purchase /
+// request date — deliberately never called "overdue".
+const agingBucketLabels: Record<string, string> = {
+  "0-30": "۰ تا ۳۰ روز",
+  "31-60": "۳۱ تا ۶۰ روز",
+  "61+": "بیش از ۶۰ روز",
+  "0-7": "۰ تا ۷ روز",
+  "8-30": "۸ تا ۳۰ روز",
+  "31+": "بیش از ۳۰ روز",
+};
+
+type OpenItemsTab = "purchases" | "requests";
 
 type ActivityEntry = {
   id: number;
@@ -179,6 +240,13 @@ export default function AdminDashboardPage() {
   const [activityError, setActivityError] = useState<string | null>(null);
   const [activityReloadKey, setActivityReloadKey] = useState(0);
 
+  // Operational "still open" view — loads and retries on its own, like
+  // recent activity, since it isn't period-scoped either.
+  const [openItems, setOpenItems] = useState<OpenItems | null>(null);
+  const [openItemsError, setOpenItemsError] = useState<string | null>(null);
+  const [openItemsReloadKey, setOpenItemsReloadKey] = useState(0);
+  const [openItemsTab, setOpenItemsTab] = useState<OpenItemsTab>("purchases");
+
   const canViewPurchases = user?.permissions.includes("purchases.manage") ?? false;
   const customIncomplete = period === "custom" && (!customFrom || !customTo);
   const customReversed = period === "custom" && !!customFrom && !!customTo && customFrom > customTo;
@@ -233,6 +301,27 @@ export default function AdminDashboardPage() {
       cancelled = true;
     };
   }, [canViewPurchases, activityReloadKey]);
+
+  useEffect(() => {
+    if (!canViewPurchases) return;
+    let cancelled = false;
+    async function loadOpenItems() {
+      setOpenItemsError(null);
+      try {
+        const data = await apiFetch<OpenItems>("/dashboard/open-items");
+        if (!cancelled) setOpenItems(data);
+      } catch (reason) {
+        if (!cancelled) {
+          setOpenItems(null);
+          setOpenItemsError((reason as ApiError).message ?? "دریافت موارد باز ناموفق بود.");
+        }
+      }
+    }
+    void loadOpenItems();
+    return () => {
+      cancelled = true;
+    };
+  }, [canViewPurchases, openItemsReloadKey]);
 
   if (!user) return null;
 
@@ -378,6 +467,191 @@ export default function AdminDashboardPage() {
     );
   }
 
+  const retryOpenItems = () => setOpenItemsReloadKey((key) => key + 1);
+  const thClass = "px-3 py-2 font-medium";
+  const tdClass = "px-3 py-2";
+
+  // Shared loading/error state for the three sections backed by /open-items.
+  function openItemsPending() {
+    if (openItemsError) return <ErrorState message={openItemsError} onRetry={retryOpenItems} />;
+    if (!openItems) return <SectionMessage message="در حال بارگذاری..." />;
+    return null;
+  }
+
+  function renderPaymentAging() {
+    const pending = openItemsPending();
+    if (pending || !openItems) return pending;
+    if (openItems.paymentAging.every((row) => row.purchaseCount === 0)) return <EmptyState message="بدهی پرداخت‌نشده‌ای وجود ندارد." />;
+    return (
+      <div className="overflow-x-auto rounded-lg border border-border">
+        <table className="w-full text-right text-sm">
+          <thead className="bg-muted/40 text-xs text-muted-foreground">
+            <tr>
+              <th className={thClass}>سن از تاریخ خرید</th>
+              <th className={thClass}>تعداد خرید</th>
+              <th className={thClass}>مبلغ مانده</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-border">
+            {openItems.paymentAging.map((row) => (
+              <tr key={row.bucket}>
+                <td className={tdClass}>{agingBucketLabels[row.bucket]}</td>
+                <td className={`${tdClass} tabular-nums`}>{toPersianDigits(row.purchaseCount)}</td>
+                <td className={`${tdClass} font-medium whitespace-nowrap tabular-nums`}>{formatMoney(row.outstandingAmount)} ریال</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+
+  function renderRequestAging() {
+    const pending = openItemsPending();
+    if (pending || !openItems) return pending;
+    if (openItems.requestAging.every((row) => row.requestCount === 0)) return <EmptyState message="درخواست خرید بازی وجود ندارد." />;
+    return (
+      <div className="overflow-x-auto rounded-lg border border-border">
+        <table className="w-full text-right text-sm">
+          <thead className="bg-muted/40 text-xs text-muted-foreground">
+            <tr>
+              <th className={thClass}>سن از تاریخ درخواست</th>
+              <th className={thClass}>تعداد درخواست</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-border">
+            {openItems.requestAging.map((row) => (
+              <tr key={row.bucket}>
+                <td className={tdClass}>{agingBucketLabels[row.bucket]}</td>
+                <td className={`${tdClass} tabular-nums`}>{toPersianDigits(row.requestCount)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+
+  function renderSupplierSpend() {
+    if (error && !rangeInvalid) return <ErrorState message={error} onRetry={retry} />;
+    if (pendingMessage || !summary) return <SectionMessage message={pendingMessage ?? ""} />;
+    if (summary.topSuppliers.length === 0) return <EmptyState message="در این بازه خریدی ثبت نشده است." />;
+    return (
+      <div className="overflow-x-auto rounded-lg border border-border">
+        <table className="w-full min-w-[36rem] text-right text-sm">
+          <thead className="bg-muted/40 text-xs text-muted-foreground">
+            <tr>
+              <th className={thClass}>تأمین‌کننده</th>
+              <th className={thClass}>مبلغ خرید در دوره</th>
+              <th className={thClass}>تعداد خرید</th>
+              <th className={thClass}>مانده پرداخت‌نشده</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-border">
+            {summary.topSuppliers.map((row) => (
+              <tr key={row.supplier.id}>
+                <td className={tdClass}>{row.supplier.name}</td>
+                <td className={`${tdClass} font-medium whitespace-nowrap tabular-nums`}>{formatMoney(row.spend)} ریال</td>
+                <td className={`${tdClass} tabular-nums`}>{toPersianDigits(row.purchaseCount)}</td>
+                <td className={`${tdClass} whitespace-nowrap tabular-nums`}>{formatMoney(row.outstanding)} ریال</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+
+  function renderOpenPurchases(items: OpenPurchase[]) {
+    if (items.length === 0) return <EmptyState message="خرید بازی وجود ندارد." />;
+    return (
+      <div className="overflow-x-auto rounded-lg border border-border">
+        <table className="w-full min-w-[52rem] text-right text-sm">
+          <thead className="bg-muted/40 text-xs text-muted-foreground">
+            <tr>
+              <th className={thClass}>شماره خرید</th>
+              <th className={thClass}>تاریخ</th>
+              <th className={thClass}>سن</th>
+              <th className={thClass}>تأمین‌کننده</th>
+              <th className={thClass}>مبلغ کل</th>
+              <th className={thClass}>مانده</th>
+              <th className={thClass}>پرداخت</th>
+              <th className={thClass}>وضعیت</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-border">
+            {items.map((purchase) => (
+              <tr key={purchase.id} className="cursor-pointer transition-colors hover:bg-muted/40" onClick={() => router.push(`/purchases/${purchase.id}`)}>
+                <td className={`${tdClass} font-mono text-xs text-foreground`}>{purchase.purchaseNumber}</td>
+                <td className={`${tdClass} whitespace-nowrap text-muted-foreground`}>{formatJalali(purchase.purchaseDate)}</td>
+                <td className={`${tdClass} whitespace-nowrap tabular-nums`}>{toPersianDigits(purchase.ageDays)} روز</td>
+                <td className={tdClass}>{purchase.supplier.name}</td>
+                <td className={`${tdClass} whitespace-nowrap tabular-nums`}>{formatMoney(purchase.totalAmount)} ریال</td>
+                <td className={`${tdClass} font-medium whitespace-nowrap tabular-nums`}>{formatMoney(purchase.outstanding)} ریال</td>
+                <td className={tdClass}><StatusBadge label={purchasePaymentStatusLabels[purchase.paymentStatus]} tone={purchasePaymentStatusTone[purchase.paymentStatus]} /></td>
+                <td className={tdClass}><StatusBadge label={purchaseStatusLabels[purchase.status]} tone={purchaseStatusTone[purchase.status]} /></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+
+  function renderOpenRequests(items: OpenRequest[]) {
+    if (items.length === 0) return <EmptyState message="درخواست خرید بازی وجود ندارد." />;
+    return (
+      <div className="overflow-x-auto rounded-lg border border-border">
+        <table className="w-full min-w-[40rem] text-right text-sm">
+          <thead className="bg-muted/40 text-xs text-muted-foreground">
+            <tr>
+              <th className={thClass}>شماره درخواست</th>
+              <th className={thClass}>تاریخ</th>
+              <th className={thClass}>سن</th>
+              <th className={thClass}>واحد درخواست‌کننده</th>
+              <th className={thClass}>اولویت</th>
+              <th className={thClass}>وضعیت</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-border">
+            {items.map((request) => (
+              <tr key={request.id} className="cursor-pointer transition-colors hover:bg-muted/40" onClick={() => router.push(`/purchase-requests/${request.id}`)}>
+                <td className={`${tdClass} font-mono text-xs text-foreground`}>{request.requestNumber}</td>
+                <td className={`${tdClass} whitespace-nowrap text-muted-foreground`}>{formatJalali(request.requestDate)}</td>
+                <td className={`${tdClass} whitespace-nowrap tabular-nums`}>{toPersianDigits(request.ageDays)} روز</td>
+                <td className={tdClass}>{request.requesterDepartment.name}</td>
+                <td className={tdClass}><StatusBadge label={purchaseRequestPriorityLabels[request.priority]} tone={purchaseRequestPriorityTone[request.priority]} /></td>
+                <td className={tdClass}><StatusBadge label={purchaseRequestStatusLabels[request.status]} tone={purchaseRequestStatusTone[request.status]} /></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+
+  function renderOpenItems() {
+    const pending = openItemsPending();
+    if (pending || !openItems) return pending;
+    const list = openItemsTab === "purchases" ? openItems.openPurchases : openItems.openRequests;
+    return (
+      <>
+        {openItemsTab === "purchases" ? renderOpenPurchases(openItems.openPurchases.items) : renderOpenRequests(openItems.openRequests.items)}
+        {list.total > 0 ? (
+          <p className="mt-3 border-t border-border pt-3 text-xs text-muted-foreground">
+            {toPersianDigits(list.items.length)} مورد قدیمی‌تر از {toPersianDigits(list.total)} مورد باز
+          </p>
+        ) : null}
+      </>
+    );
+  }
+
+  const openItemsTabs: { key: OpenItemsTab; label: string; count: number | null; href: string }[] = [
+    { key: "purchases", label: "خریدهای باز", count: openItems?.openPurchases.total ?? null, href: "/purchases" },
+    { key: "requests", label: "درخواست‌های باز", count: openItems?.openRequests.total ?? null, href: "/purchase-requests" },
+  ];
+  const activeOpenItemsHref = openItemsTabs.find((tab) => tab.key === openItemsTab)?.href ?? "/purchases";
+
   return (
     <div className="min-w-0 p-4 sm:p-6 lg:p-8">
       <div className="mx-auto max-w-7xl space-y-6">
@@ -420,6 +694,21 @@ export default function AdminDashboardPage() {
           </Card>
           <Card><CardHeader className="border-b border-border"><CardTitle>فعالیت‌های اخیر</CardTitle></CardHeader><CardContent className="pt-4">{renderActivity()}</CardContent></Card>
         </section> : null}
+
+        {canViewPurchases ? <section className="grid gap-6 lg:grid-cols-2">
+          <Card><CardHeader className="border-b border-border"><CardTitle>سن مانده پرداخت‌نشده خریدها</CardTitle><p className="mt-1 text-sm text-muted-foreground">بر اساس روزهای گذشته از تاریخ خرید — مستقل از بازه</p></CardHeader><CardContent className="pt-4">{renderPaymentAging()}</CardContent></Card>
+          <Card><CardHeader className="border-b border-border"><CardTitle>سن درخواست‌های خرید باز</CardTitle><p className="mt-1 text-sm text-muted-foreground">ارسال‌شده، تأییدشده یا نیمه‌خریداری‌شده — مستقل از بازه</p></CardHeader><CardContent className="pt-4">{renderRequestAging()}</CardContent></Card>
+        </section> : null}
+
+        {canViewPurchases ? <Card>
+          <CardHeader className="border-b border-border"><CardTitle>نمای کلی هزینه به تفکیک تأمین‌کننده</CardTitle><p className="mt-1 text-sm text-muted-foreground">پنج تأمین‌کننده با بیشترین مبلغ خرید — گزارش دوره: {periodDescription}. بر اساس مبلغ خرید؛ شامل داده تحویل یا کیفیت نیست. مانده پرداخت‌نشده مستقل از بازه است.</p></CardHeader>
+          <CardContent className="pt-4">{renderSupplierSpend()}</CardContent>
+        </Card> : null}
+
+        {canViewPurchases ? <Card>
+          <CardHeader className="border-b border-border"><div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center"><div><CardTitle>موارد باز</CardTitle><p className="mt-1 text-sm text-muted-foreground">قدیمی‌ترین خریدها و درخواست‌های خرید باز</p></div><div className="flex items-center gap-2"><div role="tablist" aria-label="نوع موارد باز" className="flex items-center gap-1">{openItemsTabs.map((tab) => <Button key={tab.key} role="tab" aria-selected={openItemsTab === tab.key} variant={openItemsTab === tab.key ? "secondary" : "ghost"} size="sm" onClick={() => setOpenItemsTab(tab.key)}>{tab.label}{tab.count !== null ? ` (${toPersianDigits(tab.count)})` : ""}</Button>)}</div><Button variant="link" size="sm" className="gap-1" onClick={() => router.push(activeOpenItemsHref)}>مشاهده همه<ArrowUpRight className="size-3.5" /></Button></div></div></CardHeader>
+          <CardContent className="pt-4">{renderOpenItems()}</CardContent>
+        </Card> : null}
 
         {canViewTransactions ? <Card>
           <CardHeader className="border-b border-border"><div className="flex items-center justify-between gap-3"><div><CardTitle>آخرین تراکنش‌ها</CardTitle><p className="mt-1 text-sm text-muted-foreground">خریدها و فروش‌های ثبت‌شده در سامانه</p></div><Button variant="link" size="sm" className="gap-1" disabled={!canViewPurchases} onClick={() => router.push("/purchases")}>مشاهده همه<ArrowUpRight className="size-3.5" /></Button></div></CardHeader>

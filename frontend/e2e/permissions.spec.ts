@@ -97,6 +97,8 @@ test("1) a VIEWER's session really carries no purchases/suppliers/users permissi
   await expect(nav).not.toContainText("تأمین‌کنندگان");
   await expect(nav).not.toContainText("واحدها");
   await expect(nav).not.toContainText("کارکنان");
+  // Covers both "کالاها" and "دسته‌بندی کالاها" (items.view).
+  await expect(nav).not.toContainText("کالاها");
 });
 
 test("2) protected read/write/admin API routes return 403 (not data, not 2xx) for a logged-in VIEWER", async ({ page }) => {
@@ -124,6 +126,12 @@ test("2) protected read/write/admin API routes return 403 (not data, not 2xx) fo
     { label: "GET /access/roles", send: () => api.get(`${BACKEND}/access/roles`) },
     { label: "GET /dashboard/purchases-summary", send: () => api.get(`${BACKEND}/dashboard/purchases-summary`) },
     { label: "GET /units/all", send: () => api.get(`${BACKEND}/units/all`) },
+    // Item + Item Category — items.view / items.manage, neither held by VIEWER.
+    { label: "GET /items", send: () => api.get(`${BACKEND}/items`) },
+    { label: "GET /items/1", send: () => api.get(`${BACKEND}/items/1`) },
+    { label: "POST /items", send: () => api.post(`${BACKEND}/items`, { data: {} }) },
+    { label: "GET /item-categories/all", send: () => api.get(`${BACKEND}/item-categories/all`) },
+    { label: "POST /item-categories", send: () => api.post(`${BACKEND}/item-categories`, { data: {} }) },
   ];
 
   for (const attempt of attempts) {
@@ -155,6 +163,8 @@ test("3) a VIEWER deep-linking to purchases/suppliers/employees pages sees a no-
     { path: "/purchases", notice: "اجازه دسترسی به خریدها را ندارید.", hiddenButton: "خرید جدید" },
     { path: "/purchase-requests", notice: "اجازه دسترسی به درخواست‌های خرید را ندارید.", hiddenButton: "ثبت درخواست خرید" },
     { path: "/employees", notice: "اجازه دسترسی به کارکنان را ندارید.", hiddenButton: "افزودن کارمند" },
+    { path: "/items", notice: "اجازه دسترسی به کالاها را ندارید.", hiddenButton: "افزودن کالا" },
+    { path: "/item-categories", notice: "اجازه دسترسی به دسته‌بندی کالاها را ندارید.", hiddenButton: "افزودن دسته‌بندی" },
   ];
   for (const target of pages) {
     await page.goto(target.path);

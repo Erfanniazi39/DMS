@@ -71,11 +71,12 @@ const navGroups: NavGroup[] = [
     label: "اطلاعات پایه",
     items: [
       { label: "تأمین‌کنندگان", href: "/suppliers", icon: Truck, permission: "suppliers.view" },
-      { label: "مشتریان", href: "/admin/customers", icon: Users, permission: "customers.manage" },
+      { label: "مشتریان", href: "/customers", icon: Users, permission: "customers.manage" },
       { label: "کارکنان", href: "/employees", icon: UserRound, permission: "employees.view" },
       { label: "دپارتمان‌ها", href: "/departments", icon: Building2, permission: "employees.manage" },
-      { label: "کالاها", href: "/admin/products", icon: Package, permission: "products.manage" },
-      { label: "دسته‌بندی کالاها", href: "/admin/product-categories", icon: Tags, permission: "products.manage" },
+      // Visible with items.view; write actions inside both pages need items.manage.
+      { label: "کالاها", href: "/items", icon: Package, permission: "items.view" },
+      { label: "دسته‌بندی کالاها", href: "/item-categories", icon: Tags, permission: "items.view" },
       { label: "واحدها", href: "/units", icon: Boxes, permission: "purchases.manage" },
     ],
   },

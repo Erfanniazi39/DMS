@@ -29,4 +29,12 @@ export class DashboardController {
   recentActivity() {
     return this.dashboardService.getRecentActivity();
   }
+
+  // Same gate: payment aging, purchase-request aging and the open
+  // purchases / purchase requests lists (not period-scoped).
+  @Get('open-items')
+  @RequirePermissions('purchases.manage')
+  openItems() {
+    return this.dashboardService.getOpenItems();
+  }
 }

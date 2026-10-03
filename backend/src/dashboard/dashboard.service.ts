@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { Prisma, PurchasePaymentStatus, PurchaseRequestStatus } from '@prisma/client';
+import { Prisma, PurchasePaymentStatus, PurchaseRequestStatus, PurchaseStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import type { DashboardPeriod, PurchasesSummaryQueryDto } from './dto/purchases-summary.dto';
 
@@ -15,6 +15,27 @@ const DAILY_BUCKET_MAX_DAYS = 62;
 
 const RECENT_PURCHASES_LIMIT = 10;
 const RECENT_ACTIVITY_LIMIT = 10;
+const TOP_SUPPLIERS_LIMIT = 5;
+const OPEN_ITEMS_LIMIT = 10;
+
+// Aging buckets, in whole days since the record's own date. There is no
+// due-date field on Purchase, so this is "age of the unpaid balance", never
+// "overdue". `max: null` = open-ended last bucket.
+const PAYMENT_AGING_BUCKETS = [
+  { key: '0-30', min: 0, max: 30 },
+  { key: '31-60', min: 31, max: 60 },
+  { key: '61+', min: 61, max: null },
+] as const;
+const REQUEST_AGING_BUCKETS = [
+  { key: '0-7', min: 0, max: 7 },
+  { key: '8-30', min: 8, max: 30 },
+  { key: '31+', min: 31, max: null },
+] as const;
+
+// Purchases whose status still says work is pending. Status is only ever set
+// manually (no auto-close), so a RECEIVED + fully PAID purchase that nobody
+// closed still counts as open here — the list reflects the real status field.
+const OPEN_PURCHASE_STATUSES: PurchaseStatus[] = ['DRAFT', 'CONFIRMED', 'RECEIVED'];
 
 // The activity feed is gated on purchases.manage, so it only shows audit
 // entries about the entities that permission covers. Auth events (LOGIN,
@@ -71,6 +92,19 @@ const jalaliInTehran = new Intl.DateTimeFormat('en-US-u-ca-persian-nu-latn', {
   day: 'numeric',
 });
 
+// Today's Tehran calendar date, as UTC midnight (the same space dates are
+// stored in — see resolvePeriodRange).
+export function tehranToday(now: Date = new Date()): Date {
+  const { year, month, day } = partsOf(gregorianInTehran, now);
+  return new Date(Date.UTC(year, month - 1, day));
+}
+
+// Whole calendar days between a stored date (UTC midnight) and today.
+// A future-dated record (e.g. a purchase entered ahead of time) is age 0.
+function ageInDays(date: Date, today: Date): number {
+  return Math.max(0, Math.floor((today.getTime() - date.getTime()) / MS_PER_DAY));
+}
+
 // Purchase.purchaseDate is stored as UTC midnight of its calendar date (the
 // DTO coerces "YYYY-MM-DD"), so every boundary here is computed in that same
 // "calendar day as UTC midnight" space.
@@ -83,8 +117,7 @@ export function resolvePeriodRange(query: PurchasesSummaryQueryDto, now: Date = 
     from = new Date(`${query.from}T00:00:00Z`);
     toExclusive = addDays(new Date(`${query.to}T00:00:00Z`), 1);
   } else {
-    const { year, month, day } = partsOf(gregorianInTehran, now);
-    const today = new Date(Date.UTC(year, month - 1, day));
+    const today = tehranToday(now);
     toExclusive = addDays(today, 1);
     if (query.period === 'today') {
       from = today;
@@ -116,7 +149,7 @@ export class DashboardService {
       purchaseDate: { gte: range.from, lt: range.toExclusive },
     };
 
-    const [periodTotals, perDate, outstanding, openPurchaseRequestCount, recentPurchases] = await Promise.all([
+    const [periodTotals, perDate, outstanding, openPurchaseRequestCount, recentPurchases, topSuppliers] = await Promise.all([
       this.prisma.purchase.aggregate({
         where: periodWhere,
         _sum: { totalAmount: true },
@@ -153,6 +186,7 @@ export class DashboardService {
           supplier: { select: { id: true, name: true } },
         },
       }),
+      this.getTopSuppliers(periodWhere),
     ]);
 
     const bucketDays = range.bucket === 'day' ? 1 : 7;
@@ -190,6 +224,135 @@ export class DashboardService {
       openPurchaseRequestCount,
       trend: buckets.map((bucket) => ({ date: toIsoDate(bucket.date), amount: bucket.amount.toString(), count: bucket.count })),
       recentPurchases,
+      topSuppliers,
+    };
+  }
+
+  // Spend overview per supplier — purchase amounts only (there is no
+  // delivery/quality data to score suppliers on). spend/purchaseCount follow
+  // the dashboard period; outstanding is the supplier's current unpaid
+  // balance across all (non-cancelled) purchases, like the outstanding KPI.
+  private async getTopSuppliers(periodWhere: Prisma.PurchaseWhereInput) {
+    const spendRows = await this.prisma.purchase.groupBy({
+      by: ['supplierId'],
+      where: periodWhere,
+      _sum: { totalAmount: true },
+      _count: { _all: true },
+      orderBy: [{ _sum: { totalAmount: 'desc' } }, { supplierId: 'asc' }],
+      take: TOP_SUPPLIERS_LIMIT,
+    });
+    if (spendRows.length === 0) return [];
+
+    const supplierIds = spendRows.map((row) => row.supplierId);
+    const [suppliers, outstandingRows] = await Promise.all([
+      this.prisma.supplier.findMany({ where: { id: { in: supplierIds } }, select: { id: true, name: true } }),
+      this.prisma.purchase.groupBy({
+        by: ['supplierId'],
+        where: { ...NOT_CANCELLED, paymentStatus: { in: OUTSTANDING_PAYMENT_STATUSES }, supplierId: { in: supplierIds } },
+        _sum: { totalAmount: true, paidAmount: true },
+      }),
+    ]);
+    const suppliersById = new Map(suppliers.map((supplier) => [supplier.id, supplier]));
+    const outstandingById = new Map(
+      outstandingRows.map((row) => [
+        row.supplierId,
+        (row._sum.totalAmount ?? new Prisma.Decimal(0)).minus(row._sum.paidAmount ?? 0),
+      ]),
+    );
+
+    return spendRows.map((row) => ({
+      supplier: suppliersById.get(row.supplierId) ?? { id: row.supplierId, name: '' },
+      spend: (row._sum.totalAmount ?? new Prisma.Decimal(0)).toString(),
+      purchaseCount: row._count._all,
+      outstanding: (outstandingById.get(row.supplierId) ?? new Prisma.Decimal(0)).toString(),
+    }));
+  }
+
+  // Operational "what's still open" view — current state, not period-scoped:
+  // aging of unpaid purchase balances, aging of unresolved purchase requests,
+  // and the oldest open purchases / purchase requests.
+  async getOpenItems(now: Date = new Date()) {
+    const today = tehranToday(now);
+    // Date filter for "age between min and max days" (dates are UTC midnight).
+    const ageRange = (bucket: { min: number; max: number | null }) => ({
+      ...(bucket.max === null ? {} : { gte: addDays(today, -bucket.max) }),
+      // The youngest bucket has no upper bound, so future-dated rows land there.
+      ...(bucket.min === 0 ? {} : { lte: addDays(today, -bucket.min) }),
+    });
+    const unpaidWhere: Prisma.PurchaseWhereInput = { ...NOT_CANCELLED, paymentStatus: { in: OUTSTANDING_PAYMENT_STATUSES } };
+    const openPurchaseWhere: Prisma.PurchaseWhereInput = { status: { in: OPEN_PURCHASE_STATUSES } };
+    const openRequestWhere: Prisma.PurchaseRequestWhereInput = { status: { in: OPEN_PURCHASE_REQUEST_STATUSES } };
+
+    const [paymentAging, requestAging, openPurchaseTotal, openPurchases, openRequestTotal, openRequests] = await Promise.all([
+      Promise.all(
+        PAYMENT_AGING_BUCKETS.map((bucket) =>
+          this.prisma.purchase.aggregate({
+            where: { ...unpaidWhere, purchaseDate: ageRange(bucket) },
+            _sum: { totalAmount: true, paidAmount: true },
+            _count: { _all: true },
+          }),
+        ),
+      ),
+      Promise.all(
+        REQUEST_AGING_BUCKETS.map((bucket) =>
+          this.prisma.purchaseRequest.count({ where: { ...openRequestWhere, requestDate: ageRange(bucket) } }),
+        ),
+      ),
+      this.prisma.purchase.count({ where: openPurchaseWhere }),
+      // Oldest first — the ones most likely to need chasing.
+      this.prisma.purchase.findMany({
+        where: openPurchaseWhere,
+        orderBy: [{ purchaseDate: 'asc' }, { id: 'asc' }],
+        take: OPEN_ITEMS_LIMIT,
+        select: {
+          id: true,
+          purchaseNumber: true,
+          purchaseDate: true,
+          totalAmount: true,
+          paidAmount: true,
+          status: true,
+          paymentStatus: true,
+          supplier: { select: { id: true, name: true } },
+        },
+      }),
+      this.prisma.purchaseRequest.count({ where: openRequestWhere }),
+      this.prisma.purchaseRequest.findMany({
+        where: openRequestWhere,
+        orderBy: [{ requestDate: 'asc' }, { id: 'asc' }],
+        take: OPEN_ITEMS_LIMIT,
+        select: {
+          id: true,
+          requestNumber: true,
+          requestDate: true,
+          status: true,
+          priority: true,
+          requesterDepartment: { select: { id: true, name: true } },
+        },
+      }),
+    ]);
+
+    return {
+      paymentAging: PAYMENT_AGING_BUCKETS.map((bucket, index) => {
+        const row = paymentAging[index];
+        return {
+          bucket: bucket.key,
+          purchaseCount: row._count._all,
+          outstandingAmount: (row._sum.totalAmount ?? new Prisma.Decimal(0)).minus(row._sum.paidAmount ?? 0).toString(),
+        };
+      }),
+      requestAging: REQUEST_AGING_BUCKETS.map((bucket, index) => ({ bucket: bucket.key, requestCount: requestAging[index] })),
+      openPurchases: {
+        total: openPurchaseTotal,
+        items: openPurchases.map(({ paidAmount, ...purchase }) => ({
+          ...purchase,
+          outstanding: purchase.totalAmount.minus(paidAmount).toString(),
+          ageDays: ageInDays(purchase.purchaseDate, today),
+        })),
+      },
+      openRequests: {
+        total: openRequestTotal,
+        items: openRequests.map((request) => ({ ...request, ageDays: ageInDays(request.requestDate, today) })),
+      },
     };
   }
 

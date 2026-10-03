@@ -8,7 +8,10 @@ import { DepartmentsModule } from './departments/departments.module';
 import { AccessModule } from './access/access.module';
 import { EmployeesModule } from './employees/employees.module';
 import { SuppliersModule } from './suppliers/suppliers.module';
+import { CustomersModule } from './customers/customers.module';
 import { UnitsModule } from './units/units.module';
+import { ItemCategoriesModule } from './item-categories/item-categories.module';
+import { ItemsModule } from './items/items.module';
 import { PurchaseTypesModule } from './purchase-types/purchase-types.module';
 import { PurchasesModule } from './purchases/purchases.module';
 import { PurchaseRequestsModule } from './purchase-requests/purchase-requests.module';
@@ -23,7 +26,10 @@ import { DashboardModule } from './dashboard/dashboard.module';
     AccessModule,
     EmployeesModule,
     SuppliersModule,
+    CustomersModule,
     UnitsModule,
+    ItemCategoriesModule,
+    ItemsModule,
     PurchaseTypesModule,
     PurchasesModule,
     PurchaseRequestsModule,
