@@ -1,4 +1,6 @@
 import { ConflictException } from '@nestjs/common';
+import { AuditService } from '../audit/audit.service';
+import { PurchaseQuantitiesService } from '../purchases/purchase-quantities.service';
 import { PurchaseRequestsService } from './purchase-requests.service';
 import type { CreatePurchaseRequestDto, UpdatePurchaseRequestDto } from './dto/purchase-request.dto';
 
@@ -23,6 +25,16 @@ function createPrismaMock() {
   return mock;
 }
 
+// The real Purchases-owned quantity provider over the same Prisma mock, so
+// the CANCELLED-exclusion query it owns is exercised (and asserted) here too.
+function createService(prisma: ReturnType<typeof createPrismaMock>) {
+  return new PurchaseRequestsService(
+    prisma as never,
+    new PurchaseQuantitiesService(prisma as never),
+    new AuditService(prisma as never),
+  );
+}
+
 const baseItems: CreatePurchaseRequestDto['items'] = [
   { name: 'روغن موتور', quantity: 10 as never, unitId: 1 } as never,
 ];
@@ -30,7 +42,7 @@ const baseItems: CreatePurchaseRequestDto['items'] = [
 describe('PurchaseRequestsService', () => {
   it('creates a Purchase Request and generates its request number (REQ-000001) after the row exists', async () => {
     const prisma = createPrismaMock();
-    const service = new PurchaseRequestsService(prisma as never);
+    const service = createService(prisma);
     prisma.department.findUnique.mockResolvedValue({ id: 2, status: 'active' });
     prisma.unit.count.mockResolvedValue(1);
     prisma.purchaseRequest.create.mockResolvedValue({ id: 1 });
@@ -61,7 +73,7 @@ describe('PurchaseRequestsService', () => {
 
   it('accepts a Purchase Request with no named requester employee — only the requesting department is mandatory', async () => {
     const prisma = createPrismaMock();
-    const service = new PurchaseRequestsService(prisma as never);
+    const service = createService(prisma);
     prisma.department.findUnique.mockResolvedValue({ id: 2, status: 'active' });
     prisma.unit.count.mockResolvedValue(1);
     prisma.purchaseRequest.create.mockResolvedValue({ id: 2 });
@@ -85,7 +97,7 @@ describe('PurchaseRequestsService', () => {
 
   it('rejects a Purchase Request from an inactive department', async () => {
     const prisma = createPrismaMock();
-    const service = new PurchaseRequestsService(prisma as never);
+    const service = createService(prisma);
     prisma.department.findUnique.mockResolvedValue({ id: 2, status: 'inactive' });
 
     await expect(
@@ -107,7 +119,7 @@ describe('PurchaseRequestsService', () => {
 
   it('logs PURCHASE_REQUEST_STATUS_CHANGED only when the status actually changes on update', async () => {
     const prisma = createPrismaMock();
-    const service = new PurchaseRequestsService(prisma as never);
+    const service = createService(prisma);
     const existing = {
       id: 1,
       status: 'DRAFT',
@@ -120,7 +132,7 @@ describe('PurchaseRequestsService', () => {
     prisma.purchaseRequest.findUnique.mockResolvedValue(existing);
     prisma.department.findUnique.mockResolvedValue({ id: 2, status: 'active' });
     prisma.unit.count.mockResolvedValue(1);
-    prisma.purchaseRequest.update.mockResolvedValue({ id: 1, status: 'SUBMITTED' });
+    prisma.purchaseRequest.update.mockResolvedValue({ id: 1, status: 'SUBMITTED', items: [] });
 
     const dto: UpdatePurchaseRequestDto = {
       requestDate: new Date('2026-01-01') as never,
@@ -139,7 +151,7 @@ describe('PurchaseRequestsService', () => {
 
     prisma.auditLog.create.mockClear();
     prisma.purchaseRequest.findUnique.mockResolvedValue({ ...existing, status: 'SUBMITTED' });
-    prisma.purchaseRequest.update.mockResolvedValue({ id: 1, status: 'SUBMITTED' });
+    prisma.purchaseRequest.update.mockResolvedValue({ id: 1, status: 'SUBMITTED', items: [] });
     await service.update(1, dto, 9, '127.0.0.1');
     expect(prisma.auditLog.create).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ action: 'PURCHASE_REQUEST_UPDATED' }) }),
@@ -153,7 +165,7 @@ describe('PurchaseRequestsService', () => {
 
   it('computes purchasedQuantity/remainingQuantity per item from every linked Purchase, excluding CANCELLED ones', async () => {
     const prisma = createPrismaMock();
-    const service = new PurchaseRequestsService(prisma as never);
+    const service = createService(prisma);
     prisma.purchaseRequest.findUnique.mockResolvedValue({
       id: 1,
       requestNumber: 'REQ-000001',
@@ -187,14 +199,15 @@ describe('PurchaseRequestsService', () => {
 
   it('recomputeStatus(): APPROVED → PARTIALLY_PURCHASED → COMPLETED as multiple Purchases fulfill one request item (500kg in two purchases)', async () => {
     const prisma = createPrismaMock();
-    const service = new PurchaseRequestsService(prisma as never);
+    const service = createService(prisma);
 
     // Purchase #1: 300 of 500 kg.
     prisma.purchaseRequest.findUnique.mockResolvedValueOnce({
       id: 1,
       status: 'APPROVED',
-      items: [{ quantity: 500, purchaseItems: [{ quantity: 300 }] }],
+      items: [{ id: 501, quantity: 500 }],
     });
+    prisma.purchaseItem.groupBy.mockResolvedValueOnce([{ purchaseRequestItemId: 501, _sum: { quantity: 300 } }]);
     await service.recomputeStatus(1, 9, '127.0.0.1');
     expect(prisma.purchaseRequest.update).toHaveBeenLastCalledWith({ where: { id: 1 }, data: { status: 'PARTIALLY_PURCHASED' } });
     expect(prisma.auditLog.create).toHaveBeenLastCalledWith(
@@ -205,20 +218,22 @@ describe('PurchaseRequestsService', () => {
     prisma.purchaseRequest.findUnique.mockResolvedValueOnce({
       id: 1,
       status: 'PARTIALLY_PURCHASED',
-      items: [{ quantity: 500, purchaseItems: [{ quantity: 300 }, { quantity: 200 }] }],
+      items: [{ id: 501, quantity: 500 }],
     });
+    prisma.purchaseItem.groupBy.mockResolvedValueOnce([{ purchaseRequestItemId: 501, _sum: { quantity: 500 } }]);
     await service.recomputeStatus(1, 9, '127.0.0.1');
     expect(prisma.purchaseRequest.update).toHaveBeenLastCalledWith({ where: { id: 1 }, data: { status: 'COMPLETED' } });
   });
 
   it('recomputeStatus(): a request with no purchased quantity yet stays/returns to APPROVED, never COMPLETED merely because a Purchase was created', async () => {
     const prisma = createPrismaMock();
-    const service = new PurchaseRequestsService(prisma as never);
+    const service = createService(prisma);
     prisma.purchaseRequest.findUnique.mockResolvedValue({
       id: 1,
       status: 'APPROVED',
-      items: [{ quantity: 500, purchaseItems: [] }],
+      items: [{ id: 501, quantity: 500 }],
     });
+    prisma.purchaseItem.groupBy.mockResolvedValue([]);
 
     await service.recomputeStatus(1, 9, '127.0.0.1');
 
@@ -229,12 +244,13 @@ describe('PurchaseRequestsService', () => {
     'recomputeStatus() never touches a request that is still %s, even if a linked Purchase exists',
     async (status) => {
       const prisma = createPrismaMock();
-      const service = new PurchaseRequestsService(prisma as never);
+      const service = createService(prisma);
       prisma.purchaseRequest.findUnique.mockResolvedValue({
         id: 1,
         status,
-        items: [{ quantity: 500, purchaseItems: [{ quantity: 500 }] }],
+        items: [{ id: 501, quantity: 500 }],
       });
+      prisma.purchaseItem.groupBy.mockResolvedValue([{ purchaseRequestItemId: 501, _sum: { quantity: 500 } }]);
 
       await service.recomputeStatus(1, 9, '127.0.0.1');
 
@@ -245,7 +261,7 @@ describe('PurchaseRequestsService', () => {
 
   it('filters the request list by status, priority, and requesting department', async () => {
     const prisma = createPrismaMock();
-    const service = new PurchaseRequestsService(prisma as never);
+    const service = createService(prisma);
     prisma.purchaseRequest.findMany.mockResolvedValue([]);
 
     await service.list({ status: 'SUBMITTED', priority: 'URGENT', requesterDepartmentId: 2 });

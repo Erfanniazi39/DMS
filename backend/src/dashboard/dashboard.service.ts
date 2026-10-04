@@ -1,6 +1,8 @@
 import { Injectable } from '@nestjs/common';
-import { Prisma, PurchasePaymentStatus, PurchaseRequestStatus, PurchaseStatus } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { OPEN_PURCHASE_REQUEST_WHERE } from '../purchase-requests/purchase-request-rules';
+import { COUNTABLE_PURCHASE_WHERE, OPEN_PURCHASE_WHERE, OUTSTANDING_PURCHASE_WHERE } from '../purchases/purchase-rules';
 import type { DashboardPeriod, PurchasesSummaryQueryDto } from './dto/purchases-summary.dto';
 
 const MS_PER_DAY = 86_400_000;
@@ -32,11 +34,6 @@ const REQUEST_AGING_BUCKETS = [
   { key: '31+', min: 31, max: null },
 ] as const;
 
-// Purchases whose status still says work is pending. Status is only ever set
-// manually (no auto-close), so a RECEIVED + fully PAID purchase that nobody
-// closed still counts as open here — the list reflects the real status field.
-const OPEN_PURCHASE_STATUSES: PurchaseStatus[] = ['DRAFT', 'CONFIRMED', 'RECEIVED'];
-
 // The activity feed is gated on purchases.manage, so it only shows audit
 // entries about the entities that permission covers. Auth events (LOGIN,
 // LOGOUT, LOGIN_FAILED:<username>:<reason>) are deliberately left out —
@@ -44,14 +41,10 @@ const OPEN_PURCHASE_STATUSES: PurchaseStatus[] = ['DRAFT', 'CONFIRMED', 'RECEIVE
 // to everyone who manages purchases.
 const ACTIVITY_ENTITY_TYPES = ['Purchase', 'PurchaseRequest'] as const;
 
-// "Open" = still waiting on someone to act: submitted for approval,
-// approved but not yet purchased, or only partly purchased.
-const OPEN_PURCHASE_REQUEST_STATUSES: PurchaseRequestStatus[] = ['SUBMITTED', 'APPROVED', 'PARTIALLY_PURCHASED'];
-const OUTSTANDING_PAYMENT_STATUSES: PurchasePaymentStatus[] = ['UNPAID', 'PARTIAL'];
-
-// Same convention as PurchaseRequestsService.recomputeStatus(): a CANCELLED
-// purchase never counts toward any quantity/amount aggregate.
-const NOT_CANCELLED: Prisma.PurchaseWhereInput = { status: { not: 'CANCELLED' } };
+// What counts as "open", "outstanding", or "countable" (CANCELLED excluded)
+// is never defined here — it comes from the owning modules' rule files
+// (purchases/purchase-rules.ts, purchase-requests/purchase-request-rules.ts),
+// per CLAUDE.md rule 11. This service only aggregates on top of them.
 
 export type PeriodRange = {
   period: DashboardPeriod;
@@ -145,7 +138,7 @@ export class DashboardService {
   async getPurchasesSummary(query: PurchasesSummaryQueryDto, now: Date = new Date()) {
     const range = resolvePeriodRange(query, now);
     const periodWhere: Prisma.PurchaseWhereInput = {
-      ...NOT_CANCELLED,
+      ...COUNTABLE_PURCHASE_WHERE,
       purchaseDate: { gte: range.from, lt: range.toExclusive },
     };
 
@@ -165,11 +158,11 @@ export class DashboardService {
       }),
       // Current state, not period-scoped: everything still owed right now.
       this.prisma.purchase.aggregate({
-        where: { ...NOT_CANCELLED, paymentStatus: { in: OUTSTANDING_PAYMENT_STATUSES } },
+        where: OUTSTANDING_PURCHASE_WHERE,
         _sum: { totalAmount: true, paidAmount: true },
         _count: { _all: true },
       }),
-      this.prisma.purchaseRequest.count({ where: { status: { in: OPEN_PURCHASE_REQUEST_STATUSES } } }),
+      this.prisma.purchaseRequest.count({ where: OPEN_PURCHASE_REQUEST_WHERE }),
       // Latest purchases in the system regardless of period or status — the
       // transactions table is a "what just happened" log, so a CANCELLED one
       // still shows up (with its status badge).
@@ -248,7 +241,7 @@ export class DashboardService {
       this.prisma.supplier.findMany({ where: { id: { in: supplierIds } }, select: { id: true, name: true } }),
       this.prisma.purchase.groupBy({
         by: ['supplierId'],
-        where: { ...NOT_CANCELLED, paymentStatus: { in: OUTSTANDING_PAYMENT_STATUSES }, supplierId: { in: supplierIds } },
+        where: { ...OUTSTANDING_PURCHASE_WHERE, supplierId: { in: supplierIds } },
         _sum: { totalAmount: true, paidAmount: true },
       }),
     ]);
@@ -279,9 +272,9 @@ export class DashboardService {
       // The youngest bucket has no upper bound, so future-dated rows land there.
       ...(bucket.min === 0 ? {} : { lte: addDays(today, -bucket.min) }),
     });
-    const unpaidWhere: Prisma.PurchaseWhereInput = { ...NOT_CANCELLED, paymentStatus: { in: OUTSTANDING_PAYMENT_STATUSES } };
-    const openPurchaseWhere: Prisma.PurchaseWhereInput = { status: { in: OPEN_PURCHASE_STATUSES } };
-    const openRequestWhere: Prisma.PurchaseRequestWhereInput = { status: { in: OPEN_PURCHASE_REQUEST_STATUSES } };
+    const unpaidWhere = OUTSTANDING_PURCHASE_WHERE;
+    const openPurchaseWhere = OPEN_PURCHASE_WHERE;
+    const openRequestWhere = OPEN_PURCHASE_REQUEST_WHERE;
 
     const [paymentAging, requestAging, openPurchaseTotal, openPurchases, openRequestTotal, openRequests] = await Promise.all([
       Promise.all(

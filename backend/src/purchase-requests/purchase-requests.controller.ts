@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Param, ParseIntPipe, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
+import { parsePagination } from '../common/pagination';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { SessionAuthGuard } from '../auth/guards/session-auth.guard';
@@ -24,13 +25,17 @@ export class PurchaseRequestsController {
     @Query('status') status?: string,
     @Query('priority') priority?: string,
     @Query('requesterDepartmentId') requesterDepartmentId?: string,
+    // Opt-in pagination — see parsePagination(). Omitted = full array.
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
   ) {
+    const pagination = parsePagination(page, pageSize);
     return this.purchaseRequestsService.list({
       q: q || undefined,
       status: status || undefined,
       priority: priority || undefined,
       requesterDepartmentId: requesterDepartmentId ? Number(requesterDepartmentId) : undefined,
-    });
+    }, pagination);
   }
 
   @Get(':id')

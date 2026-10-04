@@ -185,7 +185,7 @@ export default function PurchasesPage() {
   if (!canView) {
     return (
       <div className="p-4 sm:p-6 lg:p-8">
-        <div className="mx-auto max-w-6xl">
+        <div className="mx-auto max-w-7xl">
           <p className="rounded-lg border border-dashed border-border bg-muted/30 p-10 text-center text-sm text-muted-foreground">
             اجازه دسترسی به خریدها را ندارید.
           </p>
@@ -197,7 +197,7 @@ export default function PurchasesPage() {
   return (
     <div className="p-4 sm:p-6 lg:p-8">
       <ToastViewport toasts={toasts} onDismiss={dismiss} />
-      <div className="mx-auto max-w-6xl space-y-4">
+      <div className="mx-auto max-w-7xl space-y-4">
         {/* Header */}
         <div className="flex items-center justify-between gap-3">
           <div>
@@ -333,7 +333,7 @@ export default function PurchasesPage() {
             </p>
           ) : (
             <div className={`overflow-x-auto transition-opacity ${loading ? "pointer-events-none opacity-60" : ""}`} aria-busy={loading}>
-              <table className="w-full min-w-[76rem] text-right text-sm">
+              <table className="w-full text-right text-sm">
                 <thead className="bg-muted/40 text-xs text-muted-foreground">
                   <tr>
                     <th className="px-3 py-2.5 font-medium">شماره خرید</th>

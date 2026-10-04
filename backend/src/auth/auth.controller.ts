@@ -10,6 +10,7 @@ import {
   UsePipes,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
+import { AuditService } from '../audit/audit.service';
 import { AuthService } from './auth.service';
 import type { LoginDto } from './dto/login.dto';
 import { loginSchema } from './dto/login.dto';
@@ -17,7 +18,10 @@ import { ZodValidationPipe } from './zod-validation.pipe';
 
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly authService: AuthService) {}
+  constructor(
+    private readonly authService: AuthService,
+    private readonly audit: AuditService,
+  ) {}
 
   @Post('login')
   @HttpCode(200)
@@ -26,11 +30,11 @@ export class AuthController {
     const result = await this.authService.attemptLogin(body.username, body.password);
 
     if (result.status !== 'ok') {
-      await this.authService.writeAuditLog(
-        null,
-        `LOGIN_FAILED:${body.username}:${result.status}`,
-        req.ip,
-      );
+      await this.audit.log({
+        userId: null,
+        action: `LOGIN_FAILED:${body.username}:${result.status}`,
+        ipAddress: req.ip,
+      });
       // "not_found" and "invalid_password" intentionally share the same generic
       // message, so a login attempt can't be used to guess which usernames exist.
       // "locked"/"disabled" tell the user the real reason, per their own request —
@@ -54,7 +58,7 @@ export class AuthController {
     req.session.permissions = permissions;
 
     await this.authService.recordLogin(user.id);
-    await this.authService.writeAuditLog(user.id, 'LOGIN', req.ip);
+    await this.audit.log({ userId: user.id, action: 'LOGIN', ipAddress: req.ip });
 
     return {
       id: user.id,
@@ -69,7 +73,7 @@ export class AuthController {
   logout(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const userId = req.session.userId ?? null;
     return new Promise((resolve) => {
-      void this.authService.writeAuditLog(userId, 'LOGOUT', req.ip).finally(() => {
+      void this.audit.log({ userId, action: 'LOGOUT', ipAddress: req.ip }).finally(() => {
         req.session.destroy(() => {
           res.clearCookie('connect.sid');
           resolve({ success: true });

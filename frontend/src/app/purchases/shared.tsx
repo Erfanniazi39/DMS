@@ -120,6 +120,14 @@ export const textareaClass =
   "min-h-16 rounded-md border border-input bg-transparent px-3 py-2 text-sm outline-none placeholder:text-muted-foreground";
 export const selectClass = "h-9 rounded-md border border-input bg-transparent px-3 text-sm";
 
+// Only required fields are marked (a red asterisk after the label) —
+// optional fields get no marker at all, same convention as
+// app/employees/page.tsx's own RequiredMark. Replaces this module's older
+// "(اختیاری)" suffix on optional-field labels.
+export function RequiredMark() {
+  return <span className="text-destructive"> *</span>;
+}
+
 // --- Shared API record shapes -------------------------------------------
 
 export type PurchaseTypeOption = { id: number; code: string; nameFa: string; nameEn: string };

@@ -4,7 +4,9 @@ import { DashboardService } from './dashboard.service';
 
 // Read-only analytics over existing modules' tables. Deliberately does not
 // import PurchasesModule/PurchaseRequestsModule — it only reads via Prisma
-// and never goes through (or duplicates) their write/recompute logic.
+// and never goes through their write/recompute logic. Every business rule it
+// filters on ("open", "outstanding", CANCELLED exclusion) is imported from
+// the owning module's rule file, never redefined here (CLAUDE.md rule 11).
 @Module({
   controllers: [DashboardController],
   providers: [DashboardService],

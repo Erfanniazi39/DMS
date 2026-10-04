@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useEffect, useMemo, useState, type ChangeEvent, type FormEvent } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import { ChevronDown, ChevronUp, ImagePlus, Paperclip, Search, User, UserPlus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -288,6 +288,7 @@ export default function EmployeesPage() {
   const [formOpen, setFormOpen] = useState(false);
   const [photoFile, setPhotoFile] = useState<File | null>(null);
   const [photoObjectUrl, setPhotoObjectUrl] = useState<string | null>(null);
+  const photoObjectUrlRef = useRef<string | null>(null);
   const [existingPhotoPath, setExistingPhotoPath] = useState<string | null>(null);
   // Contract document (PDF or image): no live thumbnail preview like the
   // photo above, since it isn't always an image — just the chosen file's
@@ -320,16 +321,25 @@ export default function EmployeesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canView]);
 
-  // Live preview for a newly-chosen (not yet uploaded) photo file.
-  useEffect(() => {
-    if (!photoFile) {
-      setPhotoObjectUrl(null);
-      return;
-    }
-    const url = URL.createObjectURL(photoFile);
+  // Live preview for a newly-chosen (not yet uploaded) photo file. The
+  // object URL is created/revoked right where the file changes (an event,
+  // not an effect), so the previous preview URL is always released.
+  function choosePhoto(file: File | null) {
+    if (photoObjectUrlRef.current) URL.revokeObjectURL(photoObjectUrlRef.current);
+    const url = file ? URL.createObjectURL(file) : null;
+    photoObjectUrlRef.current = url;
+    setPhotoFile(file);
     setPhotoObjectUrl(url);
-    return () => URL.revokeObjectURL(url);
-  }, [photoFile]);
+  }
+
+  // Release the last preview URL when the page unmounts.
+  useEffect(() => {
+    const ref = photoObjectUrlRef;
+    return () => {
+      if (ref.current) URL.revokeObjectURL(ref.current);
+      ref.current = null;
+    };
+  }, []);
 
   function update<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((current) => ({ ...current, [key]: value }));
@@ -338,7 +348,7 @@ export default function EmployeesPage() {
   function startCreate() {
     setEditingId(null);
     setForm(emptyForm());
-    setPhotoFile(null);
+    choosePhoto(null);
     setExistingPhotoPath(null);
     setContractDocumentFile(null);
     setExistingContractDocumentPath(null);
@@ -378,7 +388,7 @@ export default function EmployeesPage() {
       bankAccountNumber: employee.bankAccountNumber ?? "",
       address: employee.address ?? "",
     });
-    setPhotoFile(null);
+    choosePhoto(null);
     setExistingPhotoPath(employee.photoPath);
     setContractDocumentFile(null);
     setExistingContractDocumentPath(employee.contractDocumentPath);
@@ -414,7 +424,7 @@ export default function EmployeesPage() {
       pushError("حجم تصویر نباید بیشتر از ۵ مگابایت باشد.");
       return;
     }
-    setPhotoFile(file);
+    choosePhoto(file);
   }
 
   function handleContractDocumentChange(event: ChangeEvent<HTMLInputElement>) {
@@ -618,17 +628,14 @@ export default function EmployeesPage() {
   );
   const pageNumbers = useMemo(() => buildPageNumbers(page, totalPages), [page, totalPages]);
 
-  // A new search or sort choice starts back at page 1, so the user isn't
-  // silently left on a now out-of-range page.
-  useEffect(() => {
-    setPage(1);
-  }, [query, sortField, sortDirection]);
-
+  // A new search or sort choice starts back at page 1 (done in those
+  // controls' own handlers), so the user isn't silently left on a now
+  // out-of-range page.
   // If the list shrinks (e.g. after a delete) below the current page,
   // clamp back to the last real page instead of showing an empty one.
-  useEffect(() => {
-    setPage((current) => Math.min(current, totalPages));
-  }, [totalPages]);
+  // Adjusted during render (React's "adjusting state when props change"
+  // pattern) rather than in an effect, so there's no extra render pass.
+  if (page > totalPages) setPage(totalPages);
 
   const photoPreviewSrc = photoObjectUrl ?? (existingPhotoPath ? `/api${existingPhotoPath}` : null);
 
@@ -672,7 +679,10 @@ export default function EmployeesPage() {
                   className="min-w-0 flex-1 bg-transparent pe-3 text-sm outline-none placeholder:text-muted-foreground"
                   placeholder="جستجو بر اساس نام، کد، کد ملی یا شماره تماس"
                   value={query}
-                  onChange={(event) => setQuery(event.target.value)}
+                  onChange={(event) => {
+                    setQuery(event.target.value);
+                    setPage(1);
+                  }}
                 />
               </label>
               <div className="flex items-center gap-2">
@@ -681,7 +691,10 @@ export default function EmployeesPage() {
                   id="employee-sort-field"
                   className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
                   value={sortField}
-                  onChange={(event) => setSortField(event.target.value as SortField)}
+                  onChange={(event) => {
+                    setSortField(event.target.value as SortField);
+                    setPage(1);
+                  }}
                 >
                   {Object.entries(sortFieldLabels).map(([value, label]) => (
                     <option key={value} value={value}>{label}</option>
@@ -691,7 +704,10 @@ export default function EmployeesPage() {
                   type="button"
                   variant="outline"
                   size="sm"
-                  onClick={() => setSortDirection((direction) => (direction === "asc" ? "desc" : "asc"))}
+                  onClick={() => {
+                    setSortDirection((direction) => (direction === "asc" ? "desc" : "asc"));
+                    setPage(1);
+                  }}
                 >
                   {sortDirection === "asc" ? "صعودی" : "نزولی"}
                 </Button>
@@ -991,7 +1007,7 @@ export default function EmployeesPage() {
                     {photoFile ? (
                       <button
                         type="button"
-                        onClick={() => setPhotoFile(null)}
+                        onClick={() => choosePhoto(null)}
                         className="inline-flex w-fit items-center gap-1 text-xs text-muted-foreground hover:text-destructive"
                       >
                         <X className="size-3" aria-hidden="true" />

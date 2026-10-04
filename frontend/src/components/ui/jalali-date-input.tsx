@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { JALALI_MONTH_NAMES, jalaliMonthLength, toGregorian, toJalali, toPersianDigits } from "@/lib/jalali";
 
 type JalaliDateInputProps = {
@@ -45,14 +45,18 @@ export function JalaliDateInput({ value, onChange, idPrefix, required, minYear =
 
   // Stay in sync when the value changes from outside this component —
   // loading an employee into the edit form, or resetting the form back to
-  // empty after a save.
-  useEffect(() => {
+  // empty after a save. Re-parsed during render whenever `value` differs
+  // from the last one seen (React's "adjusting state when props change"
+  // pattern) instead of in an effect — same trigger (any change of `value`),
+  // same result, without the extra render pass.
+  const [syncedValue, setSyncedValue] = useState(value);
+  if (value !== syncedValue) {
+    setSyncedValue(value);
     const parsed = parseIso(value);
     setJy(parsed?.jy ?? null);
     setJm(parsed?.jm ?? null);
     setJd(parsed?.jd ?? null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [value]);
+  }
 
   const years: number[] = [];
   for (let year = effectiveMaxYear; year >= minYear; year -= 1) years.push(year);

@@ -1,4 +1,5 @@
 import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
+import { AuditService } from '../audit/audit.service';
 import { createCustomerSchema } from './dto/customer.dto';
 import { CustomersService } from './customers.service';
 
@@ -24,7 +25,7 @@ const validDto = { code: 'CUS1', name: 'مشتری یک', customerType: 'retail'
 describe('CustomersService', () => {
   it('lists customers ordered by name', async () => {
     const prisma = createPrismaMock();
-    const service = new CustomersService(prisma as never);
+    const service = new CustomersService(prisma as never, new AuditService(prisma as never));
     const rows = [{ id: 1, code: 'CUS1', name: 'مشتری یک', customerType: 'retail' }];
     (prisma as any).customer.findMany.mockResolvedValue(rows);
 
@@ -35,7 +36,7 @@ describe('CustomersService', () => {
 
   it('returns one page plus the total matching count when paginated', async () => {
     const prisma = createPrismaMock();
-    const service = new CustomersService(prisma as never);
+    const service = new CustomersService(prisma as never, new AuditService(prisma as never));
     const pageRows = [{ id: 21, code: 'CUS21', name: 'م ۲۱' }];
     (prisma as any).customer.findMany.mockResolvedValue(pageRows);
     (prisma as any).customer.count.mockResolvedValue(45);
@@ -48,7 +49,7 @@ describe('CustomersService', () => {
 
   it('rejects an unknown customer type filter', async () => {
     const prisma = createPrismaMock();
-    const service = new CustomersService(prisma as never);
+    const service = new CustomersService(prisma as never, new AuditService(prisma as never));
 
     await expect(service.list({ customerType: 'bogus' })).rejects.toBeInstanceOf(BadRequestException);
     expect((prisma as any).customer.findMany).not.toHaveBeenCalled();
@@ -56,7 +57,7 @@ describe('CustomersService', () => {
 
   it('creates a customer and writes an audit log entry', async () => {
     const prisma = createPrismaMock();
-    const service = new CustomersService(prisma as never);
+    const service = new CustomersService(prisma as never, new AuditService(prisma as never));
     const created = { id: 5, ...validDto };
     (prisma as any).customer.findFirst.mockResolvedValue(null);
     (prisma as any).customer.create.mockResolvedValue(created);
@@ -70,7 +71,7 @@ describe('CustomersService', () => {
 
   it('rejects a duplicate code without creating a customer', async () => {
     const prisma = createPrismaMock();
-    const service = new CustomersService(prisma as never);
+    const service = new CustomersService(prisma as never, new AuditService(prisma as never));
     (prisma as any).customer.findFirst.mockResolvedValue({ code: 'CUS1', name: 'دیگری' });
 
     await expect(service.create(validDto as never)).rejects.toThrow('کد مشتری قبلاً استفاده شده است');
@@ -80,7 +81,7 @@ describe('CustomersService', () => {
 
   it('rejects a duplicate name without creating a customer', async () => {
     const prisma = createPrismaMock();
-    const service = new CustomersService(prisma as never);
+    const service = new CustomersService(prisma as never, new AuditService(prisma as never));
     (prisma as any).customer.findFirst.mockResolvedValue({ code: 'OTHER', name: 'مشتری یک' });
 
     await expect(service.create(validDto as never)).rejects.toBeInstanceOf(ConflictException);
@@ -90,7 +91,7 @@ describe('CustomersService', () => {
 
   it('updates a customer, excluding itself from the uniqueness check, and clears omitted optional fields', async () => {
     const prisma = createPrismaMock();
-    const service = new CustomersService(prisma as never);
+    const service = new CustomersService(prisma as never, new AuditService(prisma as never));
     const existing = { id: 2, ...validDto, email: 'a@b.com' };
     const updated = { ...existing, customerType: 'wholesale', email: null };
     (prisma as any).customer.findUnique.mockResolvedValue(existing);
@@ -108,7 +109,7 @@ describe('CustomersService', () => {
 
   it('reports a missing customer without modifying data', async () => {
     const prisma = createPrismaMock();
-    const service = new CustomersService(prisma as never);
+    const service = new CustomersService(prisma as never, new AuditService(prisma as never));
     (prisma as any).customer.findUnique.mockResolvedValue(null);
 
     await expect(service.update(999, validDto as never)).rejects.toBeInstanceOf(NotFoundException);
@@ -119,7 +120,7 @@ describe('CustomersService', () => {
 
   it('deletes an existing customer and writes an audit log entry', async () => {
     const prisma = createPrismaMock();
-    const service = new CustomersService(prisma as never);
+    const service = new CustomersService(prisma as never, new AuditService(prisma as never));
     (prisma as any).customer.findUnique.mockResolvedValue({ id: 2, code: 'CUS2' });
 
     await expect(service.remove(2)).resolves.toEqual({ success: true });

@@ -62,10 +62,6 @@ async function createPurchaseRequest(page: Page, itemName: string) {
   await page.waitForURL(/\/\/[^/]+\/purchase-requests\/\d+$/);
 }
 
-async function searchFor(page: Page, query: string) {
-  await page.getByPlaceholder("جستجو بر اساس شماره درخواست").fill(query);
-}
-
 test.beforeEach(async ({ page }) => {
   await openListPage(page);
 });

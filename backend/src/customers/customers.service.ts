@@ -2,13 +2,17 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException }
 import { CustomerType, type Prisma } from '@prisma/client';
 import { toSkipTake, type PaginationParams } from '../common/pagination';
 import { PrismaService } from '../prisma/prisma.service';
+import { AuditService } from '../audit/audit.service';
 import type { CreateCustomerDto, UpdateCustomerDto } from './dto/customer.dto';
 
 export type CustomerListFilters = { q?: string; customerType?: string };
 
 @Injectable()
 export class CustomersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly audit: AuditService,
+  ) {}
 
   // Same opt-in pagination contract as SuppliersService.list(): without
   // `pagination` → plain array (for future dropdowns, e.g. Sales); with it →
@@ -59,7 +63,7 @@ export class CustomersService {
         note: dto.note,
       },
     });
-    await this.writeAuditLog(userId, ipAddress, 'CUSTOMER_CREATED', created.id, created.code);
+    await this.audit.log({ userId, ipAddress, action: 'CUSTOMER_CREATED', entityType: 'Customer', entityId: created.id, details: created.code });
     return created;
   }
 
@@ -78,7 +82,7 @@ export class CustomersService {
         note: dto.note ?? null,
       },
     });
-    await this.writeAuditLog(userId, ipAddress, 'CUSTOMER_UPDATED', id, updated.code);
+    await this.audit.log({ userId, ipAddress, action: 'CUSTOMER_UPDATED', entityType: 'Customer', entityId: id, details: updated.code });
     return updated;
   }
 
@@ -88,7 +92,7 @@ export class CustomersService {
   async remove(id: number, userId: number | null = null, ipAddress?: string) {
     const customer = await this.get(id);
     await this.prisma.customer.delete({ where: { id } });
-    await this.writeAuditLog(userId, ipAddress, 'CUSTOMER_DELETED', id, customer.code);
+    await this.audit.log({ userId, ipAddress, action: 'CUSTOMER_DELETED', entityType: 'Customer', entityId: id, details: customer.code });
     return { success: true };
   }
 
@@ -104,17 +108,4 @@ export class CustomersService {
     if (duplicate?.name === name) throw new ConflictException('این نام قبلاً برای مشتری دیگری استفاده شده است');
   }
 
-  // Same minimal write to the shared AUDIT_LOG table as PurchasesService.
-  private async writeAuditLog(userId: number | null, ipAddress: string | undefined, action: string, customerId: number, details?: string) {
-    await this.prisma.auditLog.create({
-      data: {
-        userId: userId ?? undefined,
-        action,
-        entityType: 'Customer',
-        entityId: String(customerId),
-        details,
-        ipAddress: ipAddress ?? undefined,
-      },
-    });
-  }
 }

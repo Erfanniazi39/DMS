@@ -1,7 +1,10 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma, PurchaseRequestPriority, PurchaseRequestStatus } from '@prisma/client';
 import { randomUUID } from 'crypto';
+import { toSkipTake, type PaginationParams } from '../common/pagination';
 import { PrismaService } from '../prisma/prisma.service';
+import { AuditService } from '../audit/audit.service';
+import { PurchaseQuantitiesService } from '../purchases/purchase-quantities.service';
 import type { CreatePurchaseRequestDto, UpdatePurchaseRequestDto } from './dto/purchase-request.dto';
 
 export type PurchaseRequestListFilters = {
@@ -37,9 +40,21 @@ const AUTO_MANAGED_STATUSES: PurchaseRequestStatus[] = ['APPROVED', 'PARTIALLY_P
 
 @Injectable()
 export class PurchaseRequestsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    // The Purchases module owns "what counts as purchased" (CANCELLED
+    // excluded) — this module asks it rather than re-deriving that rule
+    // (CLAUDE.md rule 11).
+    private readonly purchaseQuantities: PurchaseQuantitiesService,
+    private readonly audit: AuditService,
+  ) {}
 
-  list(filters: PurchaseRequestListFilters) {
+  // Without `pagination` this returns the full filtered array (original
+  // shape — the Purchase form's "درخواست خرید مرتبط" picker needs the full
+  // list, not one page of it). With it, returns one page plus the total
+  // matching count: { items, total, page, pageSize } — same opt-in shape as
+  // PurchasesService.list().
+  async list(filters: PurchaseRequestListFilters, pagination?: PaginationParams) {
     const where: Prisma.PurchaseRequestWhereInput = {};
 
     if (filters.q) {
@@ -52,7 +67,7 @@ export class PurchaseRequestsService {
     if (filters.priority) where.priority = filters.priority as PurchaseRequestPriority;
     if (filters.requesterDepartmentId) where.requesterDepartmentId = filters.requesterDepartmentId;
 
-    return this.prisma.purchaseRequest.findMany({
+    const query = {
       where,
       orderBy: [{ requestDate: 'desc' }, { id: 'desc' }],
       include: {
@@ -61,7 +76,15 @@ export class PurchaseRequestsService {
         items: { select: { name: true }, orderBy: { id: 'asc' }, take: 1 },
         _count: { select: { items: true, purchases: true } },
       },
-    });
+    } satisfies Prisma.PurchaseRequestFindManyArgs;
+
+    if (!pagination) return this.prisma.purchaseRequest.findMany(query);
+
+    const [items, total] = await Promise.all([
+      this.prisma.purchaseRequest.findMany({ ...query, ...toSkipTake(pagination) }),
+      this.prisma.purchaseRequest.count({ where }),
+    ]);
+    return { items, total, page: pagination.page, pageSize: pagination.pageSize };
   }
 
   async get(id: number) {
@@ -76,26 +99,16 @@ export class PurchaseRequestsService {
   // Attaches derived purchasedQuantity/remainingQuantity to each requested
   // item — computed from the PurchaseItem rows that link back to it via
   // PurchaseItem.purchaseRequestItemId, excluding items on a CANCELLED
-  // Purchase (a cancelled purchase never actually delivered anything).
+  // Purchase (a cancelled purchase never actually delivered anything). That
+  // exclusion rule lives in the Purchases module — see
+  // PurchaseQuantitiesService.sumQuantitiesByRequestItem().
   // Never stored on the row itself — generated fresh from the underlying
   // transactional data on every read, same principle as Purchase's own
   // totals. remainingQuantity is floored at 0: over-purchasing beyond what
   // was requested is allowed (the business rule for that isn't specified),
   // but "remaining" itself is never negative.
   private async withItemQuantities(request: PurchaseRequestWithDetails) {
-    const itemIds = request.items.map((item) => item.id);
-    const purchasedRows = itemIds.length
-      ? await this.prisma.purchaseItem.groupBy({
-          by: ['purchaseRequestItemId'],
-          where: { purchaseRequestItemId: { in: itemIds }, purchase: { status: { not: 'CANCELLED' } } },
-          _sum: { quantity: true },
-        })
-      : [];
-    const purchasedByItemId = new Map<number, number>(
-      purchasedRows
-        .filter((row) => row.purchaseRequestItemId !== null)
-        .map((row) => [row.purchaseRequestItemId as number, Number(row._sum.quantity ?? 0)]),
-    );
+    const purchasedByItemId = await this.purchaseQuantities.sumQuantitiesByRequestItem(request.items.map((item) => item.id));
 
     return {
       ...request,
@@ -124,25 +137,18 @@ export class PurchaseRequestsService {
   async recomputeStatus(requestId: number, userId: number | null, ipAddress?: string) {
     const request = await this.prisma.purchaseRequest.findUnique({
       where: { id: requestId },
-      include: {
-        items: {
-          select: {
-            quantity: true,
-            purchaseItems: {
-              where: { purchase: { status: { not: 'CANCELLED' } } },
-              select: { quantity: true },
-            },
-          },
-        },
-      },
+      include: { items: { select: { id: true, quantity: true } } },
     });
     if (!request) return;
     if (!AUTO_MANAGED_STATUSES.includes(request.status)) return;
 
+    // Same purchased-quantity source as withItemQuantities() — the Purchases
+    // module decides what counts (CANCELLED excluded).
+    const purchasedByItemId = await this.purchaseQuantities.sumQuantitiesByRequestItem(request.items.map((item) => item.id));
     let anyPurchased = false;
     let allFullyPurchased = true;
     for (const item of request.items) {
-      const purchased = item.purchaseItems.reduce((sum, purchaseItem) => sum + Number(purchaseItem.quantity), 0);
+      const purchased = purchasedByItemId.get(item.id) ?? 0;
       if (purchased > 0) anyPurchased = true;
       if (purchased < Number(item.quantity)) allFullyPurchased = false;
     }
@@ -151,7 +157,7 @@ export class PurchaseRequestsService {
     if (nextStatus === request.status) return;
 
     await this.prisma.purchaseRequest.update({ where: { id: requestId }, data: { status: nextStatus } });
-    await this.writeAuditLog(userId, ipAddress, 'PURCHASE_REQUEST_STATUS_CHANGED', requestId, `از ${request.status} به ${nextStatus} (خودکار، بر اساس مقدار خریداری‌شده)`);
+    await this.audit.log({ userId, ipAddress, action: 'PURCHASE_REQUEST_STATUS_CHANGED', entityType: 'PurchaseRequest', entityId: requestId, details: `از ${request.status} به ${nextStatus} (خودکار، بر اساس مقدار خریداری‌شده)` });
   }
 
   // Same placeholder-then-fix pattern as PurchasesService.create() —
@@ -183,7 +189,7 @@ export class PurchaseRequestsService {
       });
     });
 
-    await this.writeAuditLog(userId, ipAddress, 'PURCHASE_REQUEST_CREATED', created.id);
+    await this.audit.log({ userId, ipAddress, action: 'PURCHASE_REQUEST_CREATED', entityType: 'PurchaseRequest', entityId: created.id });
     return created;
   }
 
@@ -215,31 +221,15 @@ export class PurchaseRequestsService {
 
     const action = existing.status !== dto.status ? 'PURCHASE_REQUEST_STATUS_CHANGED' : 'PURCHASE_REQUEST_UPDATED';
     const details = existing.status !== dto.status ? `از ${existing.status} به ${dto.status}` : undefined;
-    await this.writeAuditLog(userId, ipAddress, action, id, details);
-    return updated;
+    await this.audit.log({ userId, ipAddress, action, entityType: 'PurchaseRequest', entityId: id, details });
+    // Same shape as get() (purchasedQuantity/remainingQuantity attached) —
+    // without this, a client that applies this response directly (rather
+    // than re-fetching) would see every item's remainingQuantity as
+    // undefined, e.g. the detail page's "ثبت خرید" action staying disabled
+    // until a manual page refresh.
+    return this.withItemQuantities(updated);
   }
 
-  // Minimal, local write to the project's one shared AUDIT_LOG table — not
-  // a separate audit system, and not an elaborate event taxonomy (see
-  // database_plan.txt's own note on AUDIT_LOG: keep this simple for now).
-  private async writeAuditLog(
-    userId: number | null,
-    ipAddress: string | undefined,
-    action: string,
-    purchaseRequestId: number,
-    details?: string,
-  ) {
-    await this.prisma.auditLog.create({
-      data: {
-        userId: userId ?? undefined,
-        action,
-        entityType: 'PurchaseRequest',
-        entityId: String(purchaseRequestId),
-        details,
-        ipAddress: ipAddress ?? undefined,
-      },
-    });
-  }
 
   private async ensureDepartment(id: number) {
     const department = await this.prisma.department.findUnique({ where: { id } });

@@ -107,14 +107,6 @@ describe('AuthService', () => {
     );
   });
 
-  it('writes an audit log entry with a null userId for an anonymous/failed-login event', async () => {
-    const prisma = createPrismaMock();
-    const service = new AuthService(prisma as never);
-
-    await service.writeAuditLog(null, 'LOGIN_FAILED:admin:invalid_password', '127.0.0.1');
-
-    expect((prisma as any).auditLog.create).toHaveBeenCalledWith({
-      data: { userId: undefined, action: 'LOGIN_FAILED:admin:invalid_password', ipAddress: '127.0.0.1' },
-    });
-  });
+  // The failed-login audit-entry test moved to audit/audit.service.spec.ts
+  // along with the writer itself (AuditService.log()).
 });

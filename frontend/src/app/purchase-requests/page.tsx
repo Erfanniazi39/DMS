@@ -6,6 +6,7 @@ import { Plus, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
+import { LIST_PAGE_SIZE, ListPagination, totalPages, type Paginated } from "@/components/ui/list-pagination";
 import { useToasts, ToastViewport } from "@/components/ui/toast";
 import { formatJalali } from "@/lib/jalali";
 import { apiFetch, type ApiError } from "@/lib/api";
@@ -51,6 +52,10 @@ export default function PurchaseRequestsPage() {
   const [loading, setLoading] = useState(true);
   const [filters, setFilters] = useState<FilterState>(emptyFilters);
   const [departments, setDepartments] = useState<DepartmentOption[]>([]);
+  // Server-side pagination (GET /purchase-requests?page=&pageSize=), same
+  // pattern as the Purchases list. Any filter change resets to page 1.
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
 
   useEffect(() => {
     if (!canView) return;
@@ -67,6 +72,7 @@ export default function PurchaseRequestsPage() {
 
   useEffect(() => {
     if (!canView) return;
+    let cancelled = false;
     async function loadRequests() {
       setLoading(true);
       try {
@@ -75,27 +81,42 @@ export default function PurchaseRequestsPage() {
         if (filters.status) params.set("status", filters.status);
         if (filters.priority) params.set("priority", filters.priority);
         if (filters.requesterDepartmentId) params.set("requesterDepartmentId", filters.requesterDepartmentId);
-        const query = params.toString();
-        setRequests(await apiFetch<PurchaseRequestListItem[]>(`/purchase-requests${query ? `?${query}` : ""}`));
+        params.set("page", String(page));
+        params.set("pageSize", String(LIST_PAGE_SIZE));
+        const data = await apiFetch<Paginated<PurchaseRequestListItem>>(`/purchase-requests?${params.toString()}`);
+        if (cancelled) return;
+        // Current page fell past the end (e.g. the last row on it moved off
+        // after a filter change) — jump to the new last page instead of
+        // showing an empty table.
+        if (data.items.length === 0 && data.total > 0 && page > 1) {
+          setPage(totalPages(data.total, LIST_PAGE_SIZE));
+          return;
+        }
+        setRequests(data.items);
+        setTotal(data.total);
       } catch (reason) {
-        pushError((reason as ApiError).message ?? "دریافت فهرست درخواست‌های خرید ناموفق بود.");
+        if (!cancelled) pushError((reason as ApiError).message ?? "دریافت فهرست درخواست‌های خرید ناموفق بود.");
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     }
     const timeout = setTimeout(() => void loadRequests(), filters.q ? 300 : 0);
-    return () => clearTimeout(timeout);
+    return () => {
+      cancelled = true;
+      clearTimeout(timeout);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filters, canView]);
+  }, [filters, page, canView]);
 
   function updateFilter<K extends keyof FilterState>(key: K, value: FilterState[K]) {
     setFilters((current) => ({ ...current, [key]: value }));
+    setPage(1);
   }
 
   if (!canView) {
     return (
       <div className="p-4 sm:p-6 lg:p-8">
-        <div className="mx-auto max-w-6xl">
+        <div className="mx-auto max-w-7xl">
           <p className="rounded-lg border border-dashed border-border bg-muted/30 p-10 text-center text-sm text-muted-foreground">
             اجازه دسترسی به درخواست‌های خرید را ندارید.
           </p>
@@ -107,7 +128,7 @@ export default function PurchaseRequestsPage() {
   return (
     <div className="p-4 sm:p-6 lg:p-8">
       <ToastViewport toasts={toasts} onDismiss={dismiss} />
-      <div className="mx-auto max-w-6xl space-y-6">
+      <div className="mx-auto max-w-7xl space-y-6">
         <div className="flex items-center justify-between gap-3">
           <div>
             <h1 className="text-2xl font-semibold">درخواست‌های خرید</h1>
@@ -186,7 +207,15 @@ export default function PurchaseRequestsPage() {
               </div>
 
               {Object.values(filters).some((value) => value !== "") ? (
-                <Button type="button" variant="ghost" size="sm" onClick={() => setFilters(emptyFilters)}>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setFilters(emptyFilters);
+                    setPage(1);
+                  }}
+                >
                   پاک کردن فیلترها
                 </Button>
               ) : null}
@@ -200,7 +229,7 @@ export default function PurchaseRequestsPage() {
               </p>
             ) : (
               <div className="overflow-x-auto rounded-lg border border-border">
-                <table className="w-full min-w-[72rem] text-right text-sm">
+                <table className="w-full text-right text-sm">
                   <thead className="bg-muted/50 text-muted-foreground">
                     <tr>
                       <th className="px-4 py-3 font-medium">تاریخ درخواست</th>
@@ -255,6 +284,9 @@ export default function PurchaseRequestsPage() {
                 </table>
               </div>
             )}
+            {requests.length > 0 ? (
+              <ListPagination page={page} pageSize={LIST_PAGE_SIZE} total={total} loading={loading} onPageChange={setPage} />
+            ) : null}
           </CardContent>
         </Card>
       </div>

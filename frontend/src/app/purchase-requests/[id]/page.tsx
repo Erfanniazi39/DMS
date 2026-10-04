@@ -35,7 +35,7 @@ export default function PurchaseRequestDetailPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
   const requestId = Number(params.id);
-  const { toasts, pushError, dismiss } = useToasts();
+  const { toasts, pushError, pushSuccess, dismiss } = useToasts();
   const user = useAdminUser();
   const canView = user?.permissions.includes("purchases.view") ?? false;
   const canEdit = user?.permissions.includes("purchases.edit") ?? false;
@@ -43,6 +43,42 @@ export default function PurchaseRequestDetailPage() {
 
   const [request, setRequest] = useState<PurchaseRequestDetail | null>(null);
   const [loading, setLoading] = useState(true);
+  const [approving, setApproving] = useState(false);
+
+  // Shortcut for the same status change already possible from the edit
+  // form's "وضعیت" field — PATCH /purchase-requests/:id requires the whole
+  // record (items included, see PurchaseRequestsService.update()), so the
+  // request's own current values are sent back unchanged apart from status.
+  async function approveRequest() {
+    if (!request) return;
+    setApproving(true);
+    try {
+      const updated = await apiFetch<PurchaseRequestDetail>(`/purchase-requests/${request.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          requestDate: request.requestDate,
+          requesterDepartmentId: request.requesterDepartment.id,
+          requestedByEmployeeId: request.requestedByEmployee?.id,
+          priority: request.priority,
+          note: request.note ?? "",
+          status: "APPROVED",
+          items: request.items.map((item) => ({
+            name: item.name,
+            quantity: item.quantity,
+            unitId: item.unit.id,
+            requiredDate: item.requiredDate || undefined,
+            note: item.note ?? "",
+          })),
+        }),
+      });
+      setRequest(updated);
+      pushSuccess("درخواست خرید تأیید شد.");
+    } catch (reason) {
+      pushError((reason as ApiError).message ?? "تأیید درخواست خرید ناموفق بود.");
+    } finally {
+      setApproving(false);
+    }
+  }
 
   useEffect(() => {
     if (!canView) return;
@@ -97,6 +133,9 @@ export default function PurchaseRequestDetailPage() {
   // purchases.manage (POST /purchases), so the actions are hidden without it.
   const canCreatePurchases = canManagePurchases && (request.status === "APPROVED" || request.status === "PARTIALLY_PURCHASED");
   const itemsWithRemaining = request.items.filter((item) => item.remainingQuantity > 0);
+  // "تایید" is a shortcut for the DRAFT/SUBMITTED → APPROVED step — the same
+  // transition the edit form's status field already allows.
+  const canApprove = canEdit && (request.status === "DRAFT" || request.status === "SUBMITTED");
 
   return (
     <div className="p-4 sm:p-6 lg:p-8">
@@ -110,6 +149,39 @@ export default function PurchaseRequestDetailPage() {
           <div className="flex items-center gap-2">
             <StatusBadge label={purchaseRequestPriorityLabels[request.priority]} tone={purchaseRequestPriorityTone[request.priority]} />
             <StatusBadge label={purchaseRequestStatusLabels[request.status]} tone={purchaseRequestStatusTone[request.status]} />
+            {canApprove ? (
+              <Button variant="success" disabled={approving} onClick={() => void approveRequest()}>
+                {approving ? "در حال تأیید..." : "تایید"}
+              </Button>
+            ) : null}
+            {canManagePurchases ? (
+              <Button
+                variant="default"
+                disabled={!canCreatePurchases || itemsWithRemaining.length === 0}
+                title={
+                  !canCreatePurchases
+                    ? "ابتدا درخواست را تأیید کنید"
+                    : itemsWithRemaining.length === 0
+                      ? "همه اقلام این درخواست خریداری شده است"
+                      : undefined
+                }
+                onClick={() =>
+                  router.push(
+                    buildNewPurchaseUrl(
+                      request.id,
+                      itemsWithRemaining.map((item) => ({
+                        name: item.name,
+                        quantity: item.remainingQuantity,
+                        unitId: item.unit.id,
+                        purchaseRequestItemId: item.id,
+                      })),
+                    ),
+                  )
+                }
+              >
+                ثبت خرید
+              </Button>
+            ) : null}
             {canEdit ? (
               <Button variant="outline" onClick={() => router.push(`/purchase-requests/${request.id}/edit`)}>
                 ویرایش
@@ -184,9 +256,13 @@ export default function PurchaseRequestDetailPage() {
             ) : null}
           </CardHeader>
           <CardContent>
-            <div className="overflow-x-auto rounded-lg border border-border">
-              <table className="w-full min-w-[64rem] text-right text-sm">
-                <thead className="bg-muted/50 text-muted-foreground">
+            {/* Bounded height with its own scroll — a request with many
+                items scrolls inside this box instead of stretching the
+                whole page, and the header row stays visible (sticky) while
+                scrolling it. */}
+            <div className="max-h-[26rem] overflow-auto rounded-lg border border-border">
+              <table className="w-full text-right text-sm">
+                <thead className="sticky top-0 z-10 bg-muted text-muted-foreground">
                   <tr>
                     <th className="px-4 py-2 font-medium">نام / شرح</th>
                     <th className="px-4 py-2 font-medium">مقدار درخواستی</th>

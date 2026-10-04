@@ -12,6 +12,7 @@ import { useToasts, ToastViewport } from "@/components/ui/toast";
 import { toJalali } from "@/lib/jalali";
 import { apiFetch, type ApiError } from "@/lib/api";
 import {
+  RequiredMark,
   selectClass,
   textareaClass,
   type DepartmentOption,
@@ -41,6 +42,11 @@ function emptyItemRow(): ItemFormRow {
   return { key: crypto.randomUUID(), name: "", quantity: "", unitId: "", requiredDate: "", note: "" };
 }
 
+function todayIso(): string {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+}
+
 // "Required by" looks forward in time, unlike the other dates in this app —
 // a few years' headroom past the current Jalali year.
 const requiredDateMaxYear = toJalali(new Date()).jy + 3;
@@ -57,9 +63,11 @@ type FormState = {
   items: ItemFormRow[];
 };
 
+// Defaults to today — the common case is logging a request as it's made,
+// not backdating one. Still a plain editable date field afterwards.
 function emptyForm(): FormState {
   return {
-    requestDate: "",
+    requestDate: todayIso(),
     requesterDepartmentId: "",
     requestedByEmployeeId: "",
     priority: "NORMAL",
@@ -252,11 +260,11 @@ export function PurchaseRequestForm(props: Props) {
             </CardHeader>
             <CardContent className="grid gap-x-3 gap-y-2.5 sm:grid-cols-2 lg:grid-cols-4">
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="request-date-year">تاریخ درخواست</Label>
+                <Label htmlFor="request-date-year">تاریخ درخواست<RequiredMark /></Label>
                 <JalaliDateInput idPrefix="request-date" value={form.requestDate} onChange={(value) => update("requestDate", value)} required />
               </div>
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="request-department">دپارتمان درخواست‌کننده</Label>
+                <Label htmlFor="request-department">دپارتمان درخواست‌کننده<RequiredMark /></Label>
                 <select
                   id="request-department"
                   className={selectClass}
@@ -273,7 +281,7 @@ export function PurchaseRequestForm(props: Props) {
                 </select>
               </div>
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="request-employee">درخواست‌کننده (اختیاری)</Label>
+                <Label htmlFor="request-employee">درخواست‌کننده</Label>
                 <select
                   id="request-employee"
                   className={selectClass}
@@ -336,10 +344,10 @@ export function PurchaseRequestForm(props: Props) {
                 <table className="w-full min-w-[56rem] text-right text-sm">
                   <thead className="bg-muted/50 text-xs text-muted-foreground">
                     <tr>
-                      <th className="px-2 py-1.5 font-medium">نام / شرح</th>
-                      <th className="w-24 px-2 py-1.5 font-medium">مقدار</th>
-                      <th className="w-32 px-2 py-1.5 font-medium">واحد</th>
-                      <th className="w-40 px-2 py-1.5 font-medium">تاریخ موردنیاز (اختیاری)</th>
+                      <th className="px-2 py-1.5 font-medium">نام / شرح<RequiredMark /></th>
+                      <th className="w-24 px-2 py-1.5 font-medium">مقدار<RequiredMark /></th>
+                      <th className="w-32 px-2 py-1.5 font-medium">واحد<RequiredMark /></th>
+                      <th className="w-40 px-2 py-1.5 font-medium">تاریخ موردنیاز</th>
                       <th className="px-2 py-1.5 font-medium">یادداشت</th>
                       <th className="w-12 px-2 py-1.5 font-medium"></th>
                     </tr>

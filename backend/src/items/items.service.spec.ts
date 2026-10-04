@@ -1,4 +1,5 @@
 import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
+import { AuditService } from '../audit/audit.service';
 import { Prisma } from '@prisma/client';
 import { createItemSchema, updateItemSchema } from './dto/item.dto';
 import { ItemsService } from './items.service';
@@ -28,7 +29,7 @@ describe('ItemsService', () => {
   describe('list', () => {
     it('lists items ordered by name, with category and unit included', async () => {
       const prisma = createPrismaMock();
-      const service = new ItemsService(prisma as never);
+      const service = new ItemsService(prisma as never, new AuditService(prisma as never));
       const rows = [{ id: 1, code: 'ITM1', name: 'شیر' }];
       (prisma as any).item.findMany.mockResolvedValue(rows);
 
@@ -41,7 +42,7 @@ describe('ItemsService', () => {
 
     it('returns one page plus the total matching count when paginated', async () => {
       const prisma = createPrismaMock();
-      const service = new ItemsService(prisma as never);
+      const service = new ItemsService(prisma as never, new AuditService(prisma as never));
       const pageRows = [{ id: 21 }];
       (prisma as any).item.findMany.mockResolvedValue(pageRows);
       (prisma as any).item.count.mockResolvedValue(45);
@@ -52,7 +53,7 @@ describe('ItemsService', () => {
 
     it('applies the same search/status/category filter to both the page query and the total count', async () => {
       const prisma = createPrismaMock();
-      const service = new ItemsService(prisma as never);
+      const service = new ItemsService(prisma as never, new AuditService(prisma as never));
       (prisma as any).item.findMany.mockResolvedValue([]);
       (prisma as any).item.count.mockResolvedValue(0);
 
@@ -67,7 +68,7 @@ describe('ItemsService', () => {
 
     it('keeps the plain full-array response (no skip/take, no count) when not paginated', async () => {
       const prisma = createPrismaMock();
-      const service = new ItemsService(prisma as never);
+      const service = new ItemsService(prisma as never, new AuditService(prisma as never));
       (prisma as any).item.findMany.mockResolvedValue([]);
 
       await service.list();
@@ -79,7 +80,7 @@ describe('ItemsService', () => {
 
     it('rejects an unknown status or a malformed categoryId filter', async () => {
       const prisma = createPrismaMock();
-      const service = new ItemsService(prisma as never);
+      const service = new ItemsService(prisma as never, new AuditService(prisma as never));
 
       await expect(service.list({ status: 'blacklisted' })).rejects.toBeInstanceOf(BadRequestException);
       await expect(service.list({ categoryId: 'abc' })).rejects.toBeInstanceOf(BadRequestException);
@@ -90,7 +91,7 @@ describe('ItemsService', () => {
   describe('create', () => {
     it('creates an item and writes an ITEM_CREATED audit entry', async () => {
       const prisma = createPrismaMock();
-      const service = new ItemsService(prisma as never);
+      const service = new ItemsService(prisma as never, new AuditService(prisma as never));
       (prisma as any).item.findFirst.mockResolvedValue(null);
       (prisma as any).item.create.mockResolvedValue({ id: 7, code: 'ITM1' });
 
@@ -105,7 +106,7 @@ describe('ItemsService', () => {
 
     it('rejects a duplicate code', async () => {
       const prisma = createPrismaMock();
-      const service = new ItemsService(prisma as never);
+      const service = new ItemsService(prisma as never, new AuditService(prisma as never));
       (prisma as any).item.findFirst.mockResolvedValue({ code: 'ITM1', name: 'چیز دیگر' });
 
       await expect(service.create(baseDto)).rejects.toBeInstanceOf(ConflictException);
@@ -114,7 +115,7 @@ describe('ItemsService', () => {
 
     it('rejects a duplicate name, even with a different code', async () => {
       const prisma = createPrismaMock();
-      const service = new ItemsService(prisma as never);
+      const service = new ItemsService(prisma as never, new AuditService(prisma as never));
       (prisma as any).item.findFirst.mockResolvedValue({ code: 'OTHER', name: 'شیر پاستوریزه' });
 
       await expect(service.create(baseDto)).rejects.toBeInstanceOf(ConflictException);
@@ -123,7 +124,7 @@ describe('ItemsService', () => {
 
     it('checks uniqueness against both code and name, with no id exclusion', async () => {
       const prisma = createPrismaMock();
-      const service = new ItemsService(prisma as never);
+      const service = new ItemsService(prisma as never, new AuditService(prisma as never));
       (prisma as any).item.findFirst.mockResolvedValue(null);
       (prisma as any).item.create.mockResolvedValue({ id: 1, code: 'ITM1' });
 
@@ -136,7 +137,7 @@ describe('ItemsService', () => {
 
     it('rejects a missing or inactive category', async () => {
       const prisma = createPrismaMock();
-      const service = new ItemsService(prisma as never);
+      const service = new ItemsService(prisma as never, new AuditService(prisma as never));
       (prisma as any).item.findFirst.mockResolvedValue(null);
       (prisma as any).itemCategory.findUnique.mockResolvedValueOnce(null).mockResolvedValueOnce({ isActive: false });
 
@@ -147,7 +148,7 @@ describe('ItemsService', () => {
 
     it('rejects a missing or inactive unit', async () => {
       const prisma = createPrismaMock();
-      const service = new ItemsService(prisma as never);
+      const service = new ItemsService(prisma as never, new AuditService(prisma as never));
       (prisma as any).item.findFirst.mockResolvedValue(null);
       (prisma as any).unit.findUnique.mockResolvedValueOnce(null).mockResolvedValueOnce({ isActive: false });
 
@@ -160,7 +161,7 @@ describe('ItemsService', () => {
   describe('update', () => {
     it('updates every editable field, clears omitted optional text, and audits', async () => {
       const prisma = createPrismaMock();
-      const service = new ItemsService(prisma as never);
+      const service = new ItemsService(prisma as never, new AuditService(prisma as never));
       (prisma as any).item.findUnique.mockResolvedValue({ id: 4, categoryId: 1, unitId: 2 });
       (prisma as any).item.findFirst.mockResolvedValue(null);
       (prisma as any).item.update.mockResolvedValue({ id: 4, code: 'ITM1' });
@@ -180,7 +181,7 @@ describe('ItemsService', () => {
 
     it('lets an item keep a category/unit that has since been deactivated', async () => {
       const prisma = createPrismaMock();
-      const service = new ItemsService(prisma as never);
+      const service = new ItemsService(prisma as never, new AuditService(prisma as never));
       (prisma as any).item.findUnique.mockResolvedValue({ id: 4, categoryId: 1, unitId: 2 });
       (prisma as any).item.findFirst.mockResolvedValue(null);
       (prisma as any).itemCategory.findUnique.mockResolvedValue({ isActive: false });
@@ -192,7 +193,7 @@ describe('ItemsService', () => {
 
     it('rejects switching to a different, inactive category', async () => {
       const prisma = createPrismaMock();
-      const service = new ItemsService(prisma as never);
+      const service = new ItemsService(prisma as never, new AuditService(prisma as never));
       (prisma as any).item.findUnique.mockResolvedValue({ id: 4, categoryId: 9, unitId: 2 });
       (prisma as any).item.findFirst.mockResolvedValue(null);
       (prisma as any).itemCategory.findUnique.mockResolvedValue({ isActive: false });
@@ -203,7 +204,7 @@ describe('ItemsService', () => {
 
     it('rejects changing the name to one used by another item', async () => {
       const prisma = createPrismaMock();
-      const service = new ItemsService(prisma as never);
+      const service = new ItemsService(prisma as never, new AuditService(prisma as never));
       (prisma as any).item.findUnique.mockResolvedValue({ id: 4, categoryId: 1, unitId: 2 });
       (prisma as any).item.findFirst.mockResolvedValue({ code: 'OTHER', name: 'شیر پاستوریزه' });
 
@@ -213,7 +214,7 @@ describe('ItemsService', () => {
 
     it('reports a missing item without modifying data', async () => {
       const prisma = createPrismaMock();
-      const service = new ItemsService(prisma as never);
+      const service = new ItemsService(prisma as never, new AuditService(prisma as never));
       (prisma as any).item.findUnique.mockResolvedValue(null);
 
       await expect(service.update(999, baseDto)).rejects.toBeInstanceOf(NotFoundException);
@@ -225,7 +226,7 @@ describe('ItemsService', () => {
   describe('remove', () => {
     it('deletes an existing item and writes an ITEM_DELETED audit entry carrying its code', async () => {
       const prisma = createPrismaMock();
-      const service = new ItemsService(prisma as never);
+      const service = new ItemsService(prisma as never, new AuditService(prisma as never));
       (prisma as any).item.findUnique.mockResolvedValue({ id: 2, code: 'ITM2' });
 
       await expect(service.remove(2, 3)).resolves.toEqual({ success: true });
@@ -237,7 +238,7 @@ describe('ItemsService', () => {
 
     it('turns a foreign-key restriction into a Conflict instead of a 500', async () => {
       const prisma = createPrismaMock();
-      const service = new ItemsService(prisma as never);
+      const service = new ItemsService(prisma as never, new AuditService(prisma as never));
       (prisma as any).item.findUnique.mockResolvedValue({ id: 2, code: 'ITM2' });
       (prisma as any).item.delete.mockRejectedValue(
         new Prisma.PrismaClientKnownRequestError('fk', { code: 'P2003', clientVersion: 'test' }),
@@ -249,7 +250,7 @@ describe('ItemsService', () => {
 
     it('reports a missing item', async () => {
       const prisma = createPrismaMock();
-      const service = new ItemsService(prisma as never);
+      const service = new ItemsService(prisma as never, new AuditService(prisma as never));
       (prisma as any).item.findUnique.mockResolvedValue(null);
 
       await expect(service.remove(999)).rejects.toBeInstanceOf(NotFoundException);

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore, type FormEvent } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Paperclip, Plus, Trash2 } from "lucide-react";
@@ -16,6 +16,7 @@ import {
   DOCUMENT_TYPES,
   PURCHASE_SOURCE_TYPES,
   PURCHASE_STATUSES,
+  RequiredMark,
   StatusBadge,
   purchasePaymentStatusLabels,
   purchasePaymentStatusTone,
@@ -126,6 +127,20 @@ type PrefillPayload = {
   purchaseRequestId: number;
   items: { name: string; quantity: number; unitId: number; purchaseRequestItemId: number }[];
 };
+
+// The page URL's query string, read through useSyncExternalStore so the
+// server render (and hydration) see null and the client sees the real value
+// right after — no hydration mismatch, no effect. The query string never
+// changes while this form is mounted, so there is nothing to subscribe to.
+function subscribeToNothing() {
+  return () => {};
+}
+function readLocationSearch() {
+  return window.location.search;
+}
+function readServerLocationSearch() {
+  return null;
+}
 
 function readPrefill(raw: string | null): PrefillPayload | null {
   if (!raw) return null;
@@ -260,29 +275,35 @@ export function PurchaseForm(props: Props) {
   // originating request are filled in, but everything else (supplier,
   // buyer, price, ...) is still entered normally, and quantity stays fully
   // editable before saving.
-  useEffect(() => {
-    if (props.mode !== "create") return;
-    // Read directly from window.location rather than next/navigation's
-    // useSearchParams() — this is a one-time, client-only read on mount, and
-    // it avoids opting this form (used on a plain client-rendered page) into
-    // next/navigation's Suspense-boundary requirement just for this.
-    const prefill = readPrefill(new URLSearchParams(window.location.search).get("prefill"));
-    if (!prefill) return;
-    setForm((current) => ({
-      ...current,
-      purchaseRequestId: String(prefill.purchaseRequestId),
-      items: prefill.items.map((item) => ({
-        key: crypto.randomUUID(),
-        name: item.name,
-        quantity: String(item.quantity),
-        unitId: String(item.unitId),
-        unitPrice: "",
-        totalPrice: "",
-        purchaseRequestItemId: String(item.purchaseRequestItemId),
-      })),
-    }));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [props.mode]);
+  //
+  // Read directly from window.location rather than next/navigation's
+  // useSearchParams() — this is a one-time, client-only read, and it avoids
+  // opting this form (used on a plain client-rendered page) into
+  // next/navigation's Suspense-boundary requirement just for this. Applied
+  // once, during render (React's "adjusting state when props change"
+  // pattern) as soon as the client-side query string is available, instead
+  // of in an effect — so there's no extra render with an empty form.
+  const locationSearch = useSyncExternalStore(subscribeToNothing, readLocationSearch, readServerLocationSearch);
+  const [prefillChecked, setPrefillChecked] = useState(false);
+  if (props.mode === "create" && locationSearch !== null && !prefillChecked) {
+    setPrefillChecked(true);
+    const prefill = readPrefill(new URLSearchParams(locationSearch).get("prefill"));
+    if (prefill) {
+      setForm((current) => ({
+        ...current,
+        purchaseRequestId: String(prefill.purchaseRequestId),
+        items: prefill.items.map((item) => ({
+          key: crypto.randomUUID(),
+          name: item.name,
+          quantity: String(item.quantity),
+          unitId: String(item.unitId),
+          unitPrice: "",
+          totalPrice: "",
+          purchaseRequestItemId: String(item.purchaseRequestItemId),
+        })),
+      }));
+    }
+  }
 
   useEffect(() => {
     if (props.mode !== "edit") return;
@@ -682,11 +703,11 @@ export function PurchaseForm(props: Props) {
                 </select>
               </div>
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="purchase-date-year">تاریخ خرید</Label>
+                <Label htmlFor="purchase-date-year">تاریخ خرید<RequiredMark /></Label>
                 <JalaliDateInput idPrefix="purchase-date" value={form.purchaseDate} onChange={(value) => update("purchaseDate", value)} required />
               </div>
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="purchase-type">نوع خرید</Label>
+                <Label htmlFor="purchase-type">نوع خرید<RequiredMark /></Label>
                 <div className="flex gap-2">
                   <select
                     id="purchase-type"
@@ -708,7 +729,7 @@ export function PurchaseForm(props: Props) {
                 </div>
               </div>
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="purchase-supplier">تأمین‌کننده</Label>
+                <Label htmlFor="purchase-supplier">تأمین‌کننده<RequiredMark /></Label>
                 <select
                   id="purchase-supplier"
                   className={selectClass}
@@ -727,7 +748,7 @@ export function PurchaseForm(props: Props) {
               </div>
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="purchase-department">
-                  دپارتمان درخواست‌کننده{form.sourceType === "HISTORICAL_IMPORT" ? " (اختیاری)" : ""}
+                  دپارتمان درخواست‌کننده{form.sourceType === "OPERATIONAL" ? <RequiredMark /> : null}
                 </Label>
                 <select
                   id="purchase-department"
@@ -746,7 +767,7 @@ export function PurchaseForm(props: Props) {
               </div>
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="purchase-buyer">
-                  کارمند خریدار{form.sourceType === "HISTORICAL_IMPORT" ? " (اختیاری)" : ""}
+                  کارمند خریدار{form.sourceType === "OPERATIONAL" ? <RequiredMark /> : null}
                 </Label>
                 <select
                   id="purchase-buyer"
@@ -769,7 +790,7 @@ export function PurchaseForm(props: Props) {
                   workflow. Two columns wide since its labels are long. */}
               {form.sourceType === "OPERATIONAL" ? (
                 <div className="flex flex-col gap-1.5 sm:col-span-2">
-                  <Label htmlFor="purchase-request">درخواست خرید مرتبط (اختیاری)</Label>
+                  <Label htmlFor="purchase-request">درخواست خرید مرتبط</Label>
                   <select
                     id="purchase-request"
                     className={selectClass}
@@ -817,11 +838,11 @@ export function PurchaseForm(props: Props) {
                 <table className="w-full min-w-[48rem] text-right text-sm">
                   <thead className="bg-muted/40 text-xs text-muted-foreground">
                     <tr>
-                      <th className="px-2 py-1.5 font-medium">نام / شرح</th>
-                      <th className="w-28 px-2 py-1.5 font-medium">مقدار</th>
-                      <th className="w-36 px-2 py-1.5 font-medium">واحد</th>
-                      <th className="w-40 px-2 py-1.5 font-medium">قیمت واحد (اختیاری)</th>
-                      <th className="w-40 px-2 py-1.5 font-medium">قیمت کل</th>
+                      <th className="px-2 py-1.5 font-medium">نام / شرح<RequiredMark /></th>
+                      <th className="w-28 px-2 py-1.5 font-medium">مقدار<RequiredMark /></th>
+                      <th className="w-36 px-2 py-1.5 font-medium">واحد<RequiredMark /></th>
+                      <th className="w-40 px-2 py-1.5 font-medium">قیمت واحد</th>
+                      <th className="w-40 px-2 py-1.5 font-medium">قیمت کل<RequiredMark /></th>
                       <th className="w-12 px-2 py-1.5 font-medium"></th>
                     </tr>
                   </thead>
@@ -860,7 +881,7 @@ export function PurchaseForm(props: Props) {
                         </td>
                         <td className="px-2 py-1">
                           <Input
-                            aria-label="قیمت واحد (اختیاری)"
+                            aria-label="قیمت واحد"
                             inputMode="decimal"
                             placeholder="-"
                             value={item.unitPrice}
@@ -916,7 +937,7 @@ export function PurchaseForm(props: Props) {
                 className={`${textareaClass} w-full`}
                 value={form.note}
                 onChange={(event) => update("note", event.target.value)}
-                placeholder="یادداشت یا توضیحات تکمیلی (اختیاری)"
+                placeholder="یادداشت یا توضیحات تکمیلی"
               />
             </FormSection>
 

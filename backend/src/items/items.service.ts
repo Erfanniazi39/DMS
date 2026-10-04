@@ -2,6 +2,7 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException }
 import { ItemStatus, Prisma } from '@prisma/client';
 import { toSkipTake, type PaginationParams } from '../common/pagination';
 import { PrismaService } from '../prisma/prisma.service';
+import { AuditService } from '../audit/audit.service';
 import type { CreateItemDto, UpdateItemDto } from './dto/item.dto';
 
 export type ItemListFilters = { q?: string; status?: string; categoryId?: string };
@@ -15,7 +16,10 @@ const itemInclude = {
 
 @Injectable()
 export class ItemsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly audit: AuditService,
+  ) {}
 
   // Same opt-in pagination contract as SuppliersService.list(): without
   // `pagination` returns a plain array (for a future Sales item dropdown);
@@ -73,7 +77,7 @@ export class ItemsService {
       },
       include: itemInclude,
     });
-    await this.writeAuditLog(userId, ipAddress, 'ITEM_CREATED', created.id, created.code);
+    await this.audit.log({ userId, ipAddress, action: 'ITEM_CREATED', entityType: 'Item', entityId: created.id, details: created.code });
     return created;
   }
 
@@ -94,7 +98,7 @@ export class ItemsService {
       },
       include: itemInclude,
     });
-    await this.writeAuditLog(userId, ipAddress, 'ITEM_UPDATED', id, updated.code);
+    await this.audit.log({ userId, ipAddress, action: 'ITEM_UPDATED', entityType: 'Item', entityId: id, details: updated.code });
     return updated;
   }
 
@@ -111,7 +115,7 @@ export class ItemsService {
       }
       throw error;
     }
-    await this.writeAuditLog(userId, ipAddress, 'ITEM_DELETED', id, item.code);
+    await this.audit.log({ userId, ipAddress, action: 'ITEM_DELETED', entityType: 'Item', entityId: id, details: item.code });
     return { success: true };
   }
 
@@ -146,19 +150,4 @@ export class ItemsService {
     }
   }
 
-  // Minimal write to the shared AUDIT_LOG table, same shape as
-  // PurchasesService.writeAuditLog(). details carries the item code so a
-  // deleted item's entry stays readable.
-  private async writeAuditLog(userId: number | null, ipAddress: string | undefined, action: string, itemId: number, details?: string) {
-    await this.prisma.auditLog.create({
-      data: {
-        userId: userId ?? undefined,
-        action,
-        entityType: 'Item',
-        entityId: String(itemId),
-        details,
-        ipAddress: ipAddress ?? undefined,
-      },
-    });
-  }
 }

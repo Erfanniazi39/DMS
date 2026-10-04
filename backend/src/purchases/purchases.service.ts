@@ -5,6 +5,7 @@ import { join } from 'path';
 import { randomUUID } from 'crypto';
 import { toSkipTake, type PaginationParams } from '../common/pagination';
 import { PrismaService } from '../prisma/prisma.service';
+import { AuditService } from '../audit/audit.service';
 import { PurchaseRequestsService } from '../purchase-requests/purchase-requests.service';
 import type {
   CreatePurchaseDocumentDto,
@@ -67,6 +68,7 @@ export class PurchasesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly purchaseRequestsService: PurchaseRequestsService,
+    private readonly audit: AuditService,
   ) {}
 
   // Without `pagination` this returns the full filtered array (original
@@ -171,7 +173,7 @@ export class PurchasesService {
     });
 
     const action = dto.sourceType === 'HISTORICAL_IMPORT' ? 'HISTORICAL_PURCHASE_IMPORTED' : 'PURCHASE_CREATED';
-    await this.writeAuditLog(userId, ipAddress, action, created.id);
+    await this.audit.log({ userId, ipAddress, action, entityType: 'Purchase', entityId: created.id });
     // A new Purchase linked to a request may fulfill (part of) it — let the
     // request re-derive its own progress (APPROVED ⇄ PARTIALLY_PURCHASED ⇄
     // COMPLETED) from the actual quantities now on record.
@@ -239,7 +241,7 @@ export class PurchasesService {
       action = dto.status === 'CANCELLED' ? 'PURCHASE_CANCELLED' : 'PURCHASE_STATUS_CHANGED';
       details = `از ${existing.status} به ${dto.status}`;
     }
-    await this.writeAuditLog(userId, ipAddress, action, id, details);
+    await this.audit.log({ userId, ipAddress, action, entityType: 'Purchase', entityId: id, details });
 
     // Items were just replaced wholesale and/or the linked request may have
     // changed — recompute progress for whichever request(s) the purchase
@@ -273,7 +275,7 @@ export class PurchasesService {
       throw new ConflictException('این خرید دارای پرداخت، سند یا برگشت ثبت‌شده است و قابل حذف نیست. ابتدا آن‌ها را حذف کنید.');
     }
     await this.prisma.purchase.delete({ where: { id } });
-    await this.writeAuditLog(userId, ipAddress, 'PURCHASE_DELETED', id, purchase.purchaseNumber);
+    await this.audit.log({ userId, ipAddress, action: 'PURCHASE_DELETED', entityType: 'Purchase', entityId: id, details: purchase.purchaseNumber });
     if (purchase.purchaseRequestId) await this.purchaseRequestsService.recomputeStatus(purchase.purchaseRequestId, userId, ipAddress);
     return { success: true };
   }
@@ -290,7 +292,7 @@ export class PurchasesService {
     // there's no separate mark-as-completed step (see PurchasePayment) — so
     // a payment created already COMPLETED logs as completed directly.
     const action = payment.status === 'COMPLETED' ? 'PAYMENT_COMPLETED' : 'PAYMENT_ADDED';
-    await this.writeAuditLog(userId, ipAddress, action, purchaseId, `${payment.amount} ریال`);
+    await this.audit.log({ userId, ipAddress, action, entityType: 'Purchase', entityId: purchaseId, details: `${payment.amount} ریال` });
     return this.get(purchaseId);
   }
 
@@ -300,7 +302,7 @@ export class PurchasesService {
     if (!payment) throw new NotFoundException('پرداخت پیدا نشد');
     await this.prisma.purchasePayment.delete({ where: { id: paymentId } });
     await this.recomputePaymentTotals(purchaseId, Number(purchase.totalAmount));
-    await this.writeAuditLog(userId, ipAddress, 'PAYMENT_REMOVED', purchaseId, `${payment.amount} ریال`);
+    await this.audit.log({ userId, ipAddress, action: 'PAYMENT_REMOVED', entityType: 'Purchase', entityId: purchaseId, details: `${payment.amount} ریال` });
     return this.get(purchaseId);
   }
 
@@ -314,7 +316,7 @@ export class PurchasesService {
   async addDocument(purchaseId: number, dto: CreatePurchaseDocumentDto, userId: number | null, ipAddress?: string) {
     await this.get(purchaseId);
     const document = await this.prisma.purchaseDocument.create({ data: { purchaseId, ...dto } });
-    await this.writeAuditLog(userId, ipAddress, 'DOCUMENT_ADDED', purchaseId, document.documentType);
+    await this.audit.log({ userId, ipAddress, action: 'DOCUMENT_ADDED', entityType: 'Purchase', entityId: purchaseId, details: document.documentType });
     return document;
   }
 
@@ -323,7 +325,7 @@ export class PurchasesService {
     if (!document) throw new NotFoundException('سند پیدا نشد');
     if (document.filePath) this.deleteUploadedFile(document.filePath);
     await this.prisma.purchaseDocument.delete({ where: { id: documentId } });
-    await this.writeAuditLog(userId, ipAddress, 'DOCUMENT_REMOVED', purchaseId, document.documentType);
+    await this.audit.log({ userId, ipAddress, action: 'DOCUMENT_REMOVED', entityType: 'Purchase', entityId: purchaseId, details: document.documentType });
     return this.get(purchaseId);
   }
 
@@ -401,7 +403,7 @@ export class PurchasesService {
       return tx.purchaseReturn.update({ where: { id: record.id }, data: { returnNumber }, include: purchaseReturnInclude });
     });
 
-    await this.writeAuditLog(userId, ipAddress, 'PURCHASE_RETURN_CREATED', purchaseId, created.returnNumber);
+    await this.audit.log({ userId, ipAddress, action: 'PURCHASE_RETURN_CREATED', entityType: 'Purchase', entityId: purchaseId, details: created.returnNumber });
     return created;
   }
 
@@ -427,7 +429,7 @@ export class PurchasesService {
     const purchaseReturn = await this.prisma.purchaseReturn.findFirst({ where: { id: returnId, purchaseId } });
     if (!purchaseReturn) throw new NotFoundException('برگشت پیدا نشد');
     await this.prisma.purchaseReturn.delete({ where: { id: returnId } });
-    await this.writeAuditLog(userId, ipAddress, 'PURCHASE_RETURN_DELETED', purchaseId, purchaseReturn.returnNumber);
+    await this.audit.log({ userId, ipAddress, action: 'PURCHASE_RETURN_DELETED', entityType: 'Purchase', entityId: purchaseId, details: purchaseReturn.returnNumber });
     return { success: true };
   }
 
@@ -445,21 +447,6 @@ export class PurchasesService {
     await this.prisma.purchase.update({ where: { id: purchaseId }, data: { paidAmount, paymentStatus } });
   }
 
-  // Minimal, local write to the project's one shared AUDIT_LOG table — not
-  // a separate audit system, and not an elaborate event taxonomy (see
-  // database_plan.txt's own note on AUDIT_LOG: keep this simple for now).
-  private async writeAuditLog(userId: number | null, ipAddress: string | undefined, action: string, purchaseId: number, details?: string) {
-    await this.prisma.auditLog.create({
-      data: {
-        userId: userId ?? undefined,
-        action,
-        entityType: 'Purchase',
-        entityId: String(purchaseId),
-        details,
-        ipAddress: ipAddress ?? undefined,
-      },
-    });
-  }
 
   private async ensurePurchaseRequest(id: number) {
     const purchaseRequest = await this.prisma.purchaseRequest.findUnique({ where: { id } });

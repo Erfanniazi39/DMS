@@ -63,14 +63,4 @@ export class AuthService {
       data: { lastLoginAt: new Date() },
     });
   }
-
-  async writeAuditLog(userId: number | null, action: string, ipAddress?: string) {
-    await this.prisma.auditLog.create({
-      data: {
-        userId: userId ?? undefined,
-        action,
-        ipAddress: ipAddress ?? undefined,
-      },
-    });
-  }
 }

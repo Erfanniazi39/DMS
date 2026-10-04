@@ -9,12 +9,16 @@ import {
   Building2,
   ChevronDown,
   ChevronLeft,
+  ClipboardList,
+  FilePlus2,
   LayoutDashboard,
   LogOut,
   Package,
+  Plus,
   ReceiptText,
   Search,
   ShieldCheck,
+  ShoppingBag,
   ShoppingCart,
   Tags,
   Truck,
@@ -36,7 +40,7 @@ export const AdminUserContext = createContext<SessionUser | null>(null);
 // `permission` on a child is checked in addition to the parent's — used to
 // hide create routes from users who can only view (e.g. purchases.view
 // without purchases.manage).
-type NavChild = { label: string; href: string; permission?: string };
+type NavChild = { label: string; href: string; permission?: string; icon?: LucideIcon };
 type NavItem = {
   label: string;
   href: string;
@@ -58,10 +62,10 @@ const navGroups: NavGroup[] = [
         icon: ShoppingCart,
         permission: "purchases.view",
         children: [
-          { label: "ثبت خرید", href: "/purchases/new", permission: "purchases.manage" },
-          { label: "خریدها", href: "/purchases" },
-          { label: "ثبت درخواست خرید", href: "/purchase-requests/new", permission: "purchases.manage" },
-          { label: "درخواست‌های خرید", href: "/purchase-requests" },
+          { label: "ثبت خرید", href: "/purchases/new", permission: "purchases.manage", icon: Plus },
+          { label: "خریدها", href: "/purchases", icon: ShoppingBag },
+          { label: "ثبت درخواست خرید", href: "/purchase-requests/new", permission: "purchases.manage", icon: FilePlus2 },
+          { label: "درخواست‌های خرید", href: "/purchase-requests", icon: ClipboardList },
         ],
       },
       { label: "فروش", href: "/admin/sales", icon: ReceiptText, permission: "sales.manage" },
@@ -191,7 +195,7 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
         <div className="mx-auto flex max-w-[1600px] flex-col lg:flex-row">
           <aside className="border-b border-border bg-sidebar text-sidebar-foreground lg:min-h-[calc(100vh-4rem)] lg:w-64 lg:shrink-0 lg:border-b-0 lg:border-e lg:border-sidebar-border">
             <nav className="flex gap-1 overflow-x-auto p-3 lg:sticky lg:top-16 lg:block lg:space-y-5 lg:p-4" aria-label="ناوبری اصلی">
-              <button className={`flex shrink-0 items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium lg:w-full ${pathname === "/admin" ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"}`} onClick={() => router.push("/admin")}>
+              <button className={`flex shrink-0 items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium lg:w-full ${pathname === "/main" ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"}`} onClick={() => router.push("/main")}>
                 <LayoutDashboard className="size-4" />
                 داشبورد
               </button>
@@ -227,12 +231,14 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
                               <div className="mt-1 space-y-1 pe-3">
                                 {item.children.map((child) => {
                                   const childActive = pathname === child.href;
+                                  const ChildIcon = child.icon;
                                   return (
                                     <button
                                       className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm ${childActive ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-sidebar-foreground/75 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"}`}
                                       key={child.href}
                                       onClick={() => router.push(child.href)}
                                     >
+                                      {ChildIcon ? <ChildIcon className="size-4" /> : null}
                                       {child.label}
                                     </button>
                                   );

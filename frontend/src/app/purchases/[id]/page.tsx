@@ -17,6 +17,7 @@ import {
   DOCUMENT_TYPES,
   PAYMENT_METHODS,
   PAYMENT_RECORD_STATUSES,
+  RequiredMark,
   StatusBadge,
   documentTypeLabels,
   employeeFullName,
@@ -157,6 +158,7 @@ export default function PurchaseDetailPage() {
   const [returnForm, setReturnForm] = useState<ReturnFormState>(emptyReturnForm);
   const [savingReturn, setSavingReturn] = useState(false);
 
+  // Explicit reload after an action on this page (shows the loading state).
   async function loadPurchase() {
     setLoading(true);
     try {
@@ -168,11 +170,35 @@ export default function PurchaseDetailPage() {
     }
   }
 
+  // Navigating to a different purchase shows the loading state again —
+  // adjusted during render rather than set inside the effect. (`loading`
+  // already starts as true on first mount.)
+  const [loadingPurchaseId, setLoadingPurchaseId] = useState(purchaseId);
+  if (loadingPurchaseId !== purchaseId) {
+    setLoadingPurchaseId(purchaseId);
+    setLoading(true);
+  }
+
+  // Initial load / route change. State is only set from the request's own
+  // callbacks (React's fetch-in-effect pattern), and a response that
+  // arrives after the purchase id changed is ignored.
   useEffect(() => {
     if (!canView) return;
-    void loadPurchase();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [purchaseId, canView]);
+    let ignore = false;
+    apiFetch<PurchaseDetail>(`/purchases/${purchaseId}`)
+      .then((data) => {
+        if (!ignore) setPurchase(data);
+      })
+      .catch((reason: unknown) => {
+        if (!ignore) pushError((reason as ApiError).message ?? "دریافت اطلاعات خرید ناموفق بود.");
+      })
+      .finally(() => {
+        if (!ignore) setLoading(false);
+      });
+    return () => {
+      ignore = true;
+    };
+  }, [purchaseId, canView, pushError]);
 
   async function loadReturns() {
     setReturnsLoading(true);
@@ -791,7 +817,7 @@ export default function PurchaseDetailPage() {
           <DialogBody>
             <form id="payment-form" className="grid gap-4" onSubmit={submitPayment} noValidate>
               <div className="flex flex-col gap-2">
-                <Label htmlFor="payment-date-year">تاریخ</Label>
+                <Label htmlFor="payment-date-year">تاریخ<RequiredMark /></Label>
                 <JalaliDateInput
                   idPrefix="payment-date"
                   value={paymentForm.paymentDate}
@@ -800,7 +826,7 @@ export default function PurchaseDetailPage() {
                 />
               </div>
               <div className="flex flex-col gap-2">
-                <Label htmlFor="payment-amount">مبلغ (ریال)</Label>
+                <Label htmlFor="payment-amount">مبلغ (ریال)<RequiredMark /></Label>
                 <Input
                   id="payment-amount"
                   inputMode="decimal"
@@ -875,7 +901,7 @@ export default function PurchaseDetailPage() {
             <form id="return-form" className="grid gap-4" onSubmit={submitReturn} noValidate>
               <div className="grid gap-4 sm:grid-cols-2">
                 <div className="flex flex-col gap-2">
-                  <Label htmlFor="return-date-year">تاریخ برگشت</Label>
+                  <Label htmlFor="return-date-year">تاریخ برگشت<RequiredMark /></Label>
                   <JalaliDateInput
                     idPrefix="return-date"
                     value={returnForm.returnDate}
@@ -884,7 +910,7 @@ export default function PurchaseDetailPage() {
                   />
                 </div>
                 <div className="flex flex-col gap-2">
-                  <Label htmlFor="return-reason">علت برگشت</Label>
+                  <Label htmlFor="return-reason">علت برگشت<RequiredMark /></Label>
                   <Input
                     id="return-reason"
                     value={returnForm.reason}
@@ -900,9 +926,9 @@ export default function PurchaseDetailPage() {
                   <table className="w-full min-w-[40rem] text-right text-sm">
                     <thead className="bg-muted/40 text-xs text-muted-foreground">
                       <tr>
-                        <th className="px-3 py-2 font-medium">قلم خرید</th>
-                        <th className="w-28 px-3 py-2 font-medium">مقدار برگشتی</th>
-                        <th className="w-32 px-3 py-2 font-medium">مبلغ اعتبار (ریال)</th>
+                        <th className="px-3 py-2 font-medium">قلم خرید<RequiredMark /></th>
+                        <th className="w-28 px-3 py-2 font-medium">مقدار برگشتی<RequiredMark /></th>
+                        <th className="w-32 px-3 py-2 font-medium">مبلغ اعتبار (ریال)<RequiredMark /></th>
                         <th className="px-3 py-2 font-medium">یادداشت</th>
                         <th className="w-12 px-3 py-2 font-medium"></th>
                       </tr>
@@ -1032,7 +1058,7 @@ export default function PurchaseDetailPage() {
                 />
               </div>
               <div className="flex flex-col gap-2">
-                <Label htmlFor="document-date-year">تاریخ</Label>
+                <Label htmlFor="document-date-year">تاریخ<RequiredMark /></Label>
                 <JalaliDateInput
                   idPrefix="document-date"
                   value={documentForm.date}
@@ -1050,7 +1076,7 @@ export default function PurchaseDetailPage() {
                 />
               </div>
               <div className="flex flex-col gap-2">
-                <Label htmlFor="document-file">فایل (اختیاری)</Label>
+                <Label htmlFor="document-file">فایل</Label>
                 <input
                   id="document-file"
                   type="file"
