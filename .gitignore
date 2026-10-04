@@ -37,3 +37,10 @@ uploads/
 
 # Graphify generated files
 graphify-out/
+
+# Local-only project docs/config — kept on disk for Claude Code sessions,
+# deliberately not pushed to the remote (explicit user decision, 2026-10-04).
+docs/
+AI_reports/
+CLAUDE.md
+.claude/
