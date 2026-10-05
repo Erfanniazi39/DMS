@@ -1,15 +1,8 @@
 import { z } from 'zod';
+import { emptyToUndefined, optionalEmail, optionalTrimmedString } from '../../common/zod-fields';
 
-// Same "empty string means not provided" convention used by the other DTOs
-// in this project (see employee.dto.ts) — an empty form field should be
-// treated as omitted, not validated as an empty value.
-function emptyToUndefined(value: unknown) {
-  return typeof value === 'string' && value.trim() === '' ? undefined : value;
-}
-
-function optionalTrimmedString(maxLength: number) {
-  return z.preprocess(emptyToUndefined, z.string().trim().max(maxLength).optional());
-}
+// Shared "empty string means not provided" convention (common/zod-fields.ts)
+// — an empty form field is treated as omitted, not validated as empty.
 
 // Digits only, 6–15 characters — lenient enough for a landline, a mobile
 // number, or a foreign supplier's number with a country code, without
@@ -18,8 +11,6 @@ const optionalPhone = z.preprocess(
   emptyToUndefined,
   z.string().trim().regex(/^[0-9]{6,15}$/, 'تلفن معتبر نیست').optional(),
 );
-
-const optionalEmail = z.preprocess(emptyToUndefined, z.string().trim().email('ایمیل معتبر نیست').optional());
 
 // شناسه ملی — 10 digits for an individual (همان فرمت کد ملی), 11 for a legal
 // entity. A supplier can be either, so both lengths are accepted.

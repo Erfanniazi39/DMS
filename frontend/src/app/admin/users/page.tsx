@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { apiFetch, type ApiError } from "@/lib/api";
+import { ROLE_LABELS, roleLabel } from "@/lib/roles";
 
 type UserStatus = "ACTIVE" | "DISABLED" | "LOCKED";
 type UserRole = "ADMIN" | "DATA_OPERATOR" | "PURCHASE_MANAGER" | "SALES_MANAGER" | "VIEWER";
@@ -27,14 +28,6 @@ const statusLabels: Record<UserStatus, string> = {
   ACTIVE: "فعال",
   DISABLED: "غیرفعال",
   LOCKED: "قفل‌شده",
-};
-
-const roleLabels: Record<string, string> = {
-  ADMIN: "مدیر سیستم",
-  DATA_OPERATOR: "اپراتور داده",
-  PURCHASE_MANAGER: "مسئول خرید",
-  SALES_MANAGER: "مسئول فروش",
-  VIEWER: "مشاهده‌گر",
 };
 
 const roleOptions: UserRole[] = ["ADMIN", "DATA_OPERATOR", "PURCHASE_MANAGER", "SALES_MANAGER", "VIEWER"];
@@ -172,7 +165,7 @@ export default function UsersPage() {
                 <span className="sr-only">جستجوی کاربر</span>
                 <input className="min-w-0 flex-1 bg-transparent pe-3 text-sm outline-none placeholder:text-muted-foreground" placeholder="جستجو بر اساس نام کاربری، ایمیل یا تلفن" value={query} onChange={(event) => updateFilter(setQuery, event.target.value)} />
               </label>
-              <select className="h-9 rounded-lg border border-input bg-background px-3 text-sm" value={role} onChange={(event) => updateFilter(setRole, event.target.value)}><option value="all">همه نقش‌ها</option>{roles.map((value) => <option key={value} value={value}>{roleLabels[value] ?? value}</option>)}</select>
+              <select className="h-9 rounded-lg border border-input bg-background px-3 text-sm" value={role} onChange={(event) => updateFilter(setRole, event.target.value)}><option value="all">همه نقش‌ها</option>{roles.map((value) => <option key={value} value={value}>{roleLabel(value)}</option>)}</select>
               <select className="h-9 rounded-lg border border-input bg-background px-3 text-sm" value={status} onChange={(event) => updateFilter(setStatus, event.target.value)}><option value="all">همه وضعیت‌ها</option>{Object.entries(statusLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select>
             </div>
 
@@ -202,7 +195,7 @@ export default function UsersPage() {
                           <td className="px-4 py-3">{user.username}</td>
                           <td className="px-4 py-3 text-muted-foreground">{user.email || "وارد نشده"}</td>
                           <td className="px-4 py-3 text-muted-foreground">{user.phone || "وارد نشده"}</td>
-                          <td className="px-4 py-3">{roleLabels[user.role] ?? user.role}</td>
+                          <td className="px-4 py-3">{roleLabel(user.role)}</td>
                           <td className="px-4 py-3 text-muted-foreground">{formatDate(user.lastLoginAt)}</td>
                           <td className="px-4 py-3"><span className="font-medium">{statusLabels[user.status]}</span></td>
                           <td className="px-4 py-3">
@@ -253,7 +246,7 @@ export default function UsersPage() {
                                     value={editForm.roleName}
                                     onChange={(event) => setEditForm((current) => ({ ...current, roleName: event.target.value as UserRole }))}
                                   >
-                                    {roleOptions.map((value) => <option key={value} value={value}>{roleLabels[value]}</option>)}
+                                    {roleOptions.map((value) => <option key={value} value={value}>{ROLE_LABELS[value]}</option>)}
                                   </select>
                                 </div>
                                 <div className="flex flex-col gap-2">

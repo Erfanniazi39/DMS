@@ -13,7 +13,6 @@ import {
   RotateCw,
   ShoppingCart,
   Wallet,
-  Warehouse,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -21,9 +20,9 @@ import { JalaliDateInput } from "@/components/ui/jalali-date-input";
 import { apiFetch, type ApiError } from "@/lib/api";
 import { formatJalali, toPersianDigits } from "@/lib/jalali";
 import { useAdminUser } from "./layout";
+import { StatusBadge } from "@/components/ui/status-badge";
+import { formatMoney } from "@/lib/format";
 import {
-  StatusBadge,
-  formatMoney,
   purchasePaymentStatusLabels,
   purchasePaymentStatusTone,
   purchaseStatusLabels,
@@ -57,17 +56,17 @@ const periodOptions: { key: PeriodKey; label: string }[] = [
   { key: "custom", label: "بازه دلخواه" },
 ];
 
-type KpiKey = "purchases" | "sales" | "inventory" | "unpaid" | "openRequests";
+type KpiKey = "purchases" | "sales" | "unpaid" | "openRequests";
 
-// sales.manage / inventory.view gating on the Sales and Inventory cards is
-// a known, deliberately-deferred issue (see docs/project-knowledge-archive.md
-// §2.2/§2.11) — those two cards stay placeholder-only until their modules
-// exist. The three purchase cards share the permission the backend's
-// /dashboard/purchases-summary endpoint requires.
+// The Sales card is placeholder-only until the Sales module exists. An
+// Inventory card used to be listed here gated on `inventory.view`, a
+// permission that does not exist in PERMISSION_CATALOG, so it could never
+// render for anyone — it was removed; add it back (with a real catalog
+// permission) once Inventory is built. The three purchase cards share the
+// permission the backend's /dashboard/purchases-summary endpoint requires.
 const kpis: { key: KpiKey; label: string; icon: typeof ShoppingCart; permission: string }[] = [
   { key: "purchases", label: "مجموع خریدها", icon: ShoppingCart, permission: "purchases.manage" },
   { key: "sales", label: "مجموع فروش‌ها", icon: ReceiptText, permission: "sales.manage" },
-  { key: "inventory", label: "موجودی کالا", icon: Warehouse, permission: "inventory.view" },
   { key: "unpaid", label: "پرداخت‌های پرداخت‌نشده", icon: Wallet, permission: "purchases.manage" },
   { key: "openRequests", label: "درخواست‌های خرید باز", icon: ClipboardList, permission: "purchases.manage" },
 ];
@@ -396,7 +395,7 @@ export default function AdminDashboardPage() {
         : null;
 
   function renderKpiBody(key: KpiKey) {
-    if (key === "sales" || key === "inventory") {
+    if (key === "sales") {
       return <p className="mt-3 text-sm font-medium text-muted-foreground">اطلاعاتی برای نمایش وجود ندارد</p>;
     }
     if (error && !rangeInvalid) return <p className="mt-3 text-sm font-medium text-destructive">{error}</p>;

@@ -3,7 +3,9 @@ import { Prisma, PurchaseRequestPriority, PurchaseRequestStatus } from '@prisma/
 import { randomUUID } from 'crypto';
 import { toSkipTake, type PaginationParams } from '../common/pagination';
 import { PrismaService } from '../prisma/prisma.service';
-import { AuditService } from '../audit/audit.service';
+import { ACTIVE_DEPARTMENT_STATUS } from '../departments/department-rules';
+import { ensureActiveUnits } from '../units/unit-rules';
+import { AUDIT_ENTITY, AuditService } from '../audit/audit.service';
 import { PurchaseQuantitiesService } from '../purchases/purchase-quantities.service';
 import { isSameVersion, recordModifiedConflict } from '../common/optimistic-lock';
 import type { CreatePurchaseRequestDto, UpdatePurchaseRequestDto } from './dto/purchase-request.dto';
@@ -182,7 +184,7 @@ export class PurchaseRequestsService {
     if (nextStatus === request.status) return;
 
     await this.prisma.purchaseRequest.update({ where: { id: requestId }, data: { status: nextStatus } });
-    await this.audit.log({ userId, ipAddress, action: 'PURCHASE_REQUEST_STATUS_CHANGED', entityType: 'PurchaseRequest', entityId: requestId, details: `از ${request.status} به ${nextStatus} (خودکار، بر اساس مقدار خریداری‌شده)` });
+    await this.audit.log({ userId, ipAddress, action: 'PURCHASE_REQUEST_STATUS_CHANGED', entityType: AUDIT_ENTITY.PURCHASE_REQUEST, entityId: requestId, details: `از ${request.status} به ${nextStatus} (خودکار، بر اساس مقدار خریداری‌شده)` });
   }
 
   // Same placeholder-then-fix pattern as PurchasesService.create() —
@@ -214,7 +216,7 @@ export class PurchaseRequestsService {
       });
     });
 
-    await this.audit.log({ userId, ipAddress, action: 'PURCHASE_REQUEST_CREATED', entityType: 'PurchaseRequest', entityId: created.id });
+    await this.audit.log({ userId, ipAddress, action: 'PURCHASE_REQUEST_CREATED', entityType: AUDIT_ENTITY.PURCHASE_REQUEST, entityId: created.id });
     // Same response shape as get() (purchasedQuantity/remainingQuantity on
     // every item) — a brand-new request has nothing purchased yet.
     return this.withItemQuantities(created);
@@ -283,7 +285,7 @@ export class PurchaseRequestsService {
 
     const action = existing.status !== dto.status ? 'PURCHASE_REQUEST_STATUS_CHANGED' : 'PURCHASE_REQUEST_UPDATED';
     const details = existing.status !== dto.status ? `از ${existing.status} به ${dto.status}` : undefined;
-    await this.audit.log({ userId, ipAddress, action, entityType: 'PurchaseRequest', entityId: id, details });
+    await this.audit.log({ userId, ipAddress, action, entityType: AUDIT_ENTITY.PURCHASE_REQUEST, entityId: id, details });
     await this.recomputeStatus(id, userId, ipAddress);
     // Same shape as get() (purchasedQuantity/remainingQuantity attached) and
     // re-read after recomputeStatus() so the returned status is current —
@@ -377,7 +379,7 @@ export class PurchaseRequestsService {
 
   private async ensureDepartment(id: number) {
     const department = await this.prisma.department.findUnique({ where: { id } });
-    if (!department || department.status !== 'active') throw new ConflictException('دپارتمان درخواست‌کننده انتخاب‌شده فعال نیست');
+    if (!department || department.status !== ACTIVE_DEPARTMENT_STATUS) throw new ConflictException('دپارتمان درخواست‌کننده انتخاب‌شده فعال نیست');
   }
 
   private async ensureEmployee(id: number) {
@@ -389,10 +391,6 @@ export class PurchaseRequestsService {
   // request's lines already use (`alreadyAssigned`, on update) may stay even
   // if deactivated since — same rule as ItemsService.ensureReferences().
   private async ensureUnits(unitIds: number[], alreadyAssigned: number[] = []) {
-    const kept = new Set(alreadyAssigned);
-    const toCheck = [...new Set(unitIds)].filter((id) => !kept.has(id));
-    if (toCheck.length === 0) return;
-    const count = await this.prisma.unit.count({ where: { id: { in: toCheck }, isActive: true } });
-    if (count !== toCheck.length) throw new ConflictException('یکی از واحدهای انتخاب‌شده برای اقلام درخواست معتبر یا فعال نیست');
+    await ensureActiveUnits(this.prisma, unitIds, alreadyAssigned, 'یکی از واحدهای انتخاب‌شده برای اقلام درخواست معتبر یا فعال نیست');
   }
 }

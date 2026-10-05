@@ -17,7 +17,7 @@ export const COUNTABLE_PURCHASE_WHERE = { status: { not: 'CANCELLED' } } satisfi
 export const OPEN_PURCHASE_STATUSES: PurchaseStatus[] = ['DRAFT', 'CONFIRMED', 'RECEIVED'];
 
 // Payment statuses that mean money is still owed (see derivePaymentStatus()
-// in purchases.service.ts, which is the only place these are assigned).
+// in purchase-totals.ts, which is the only place these are assigned).
 export const OUTSTANDING_PAYMENT_STATUSES: PurchasePaymentStatus[] = ['UNPAID', 'PARTIAL'];
 
 // A non-cancelled purchase with money still owed on it.
@@ -35,3 +35,13 @@ export const PAYABLE_PURCHASE_STATUSES: PurchaseStatus[] = ['CONFIRMED', 'RECEIV
 // Business decision 2026-10-05: a return represents goods that were actually
 // received, so only a RECEIVED or CLOSED purchase can have one.
 export const RETURNABLE_PURCHASE_STATUSES: PurchaseStatus[] = ['RECEIVED', 'CLOSED'];
+
+// Persian status names for the user-facing errors the payment and return
+// status gates above raise (PurchasePaymentsService / PurchaseReturnsService).
+export const PURCHASE_STATUS_LABELS_FA: Record<PurchaseStatus, string> = {
+  DRAFT: 'پیش‌نویس',
+  CONFIRMED: 'تأییدشده',
+  RECEIVED: 'دریافت‌شده',
+  CLOSED: 'بسته‌شده',
+  CANCELLED: 'لغوشده',
+};

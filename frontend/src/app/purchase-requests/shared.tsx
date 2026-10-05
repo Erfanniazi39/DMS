@@ -1,10 +1,11 @@
 // Shared types, Persian labels, and small display helpers for the Purchase
 // Request module (list, create/edit form, detail). Generic UI helpers
-// (StatusBadge, selectClass, formatMoney, employeeFullName, and the
-// DepartmentOption/EmployeeOption/UnitOption option shapes) are already
-// defined in the Purchase module's own shared.tsx and are reused from
-// there rather than duplicated — Purchase Request is a small satellite of
-// the Purchase module, not a separate system.
+// (StatusBadge/BadgeTone in components/ui/status-badge.tsx, selectClass/
+// RequiredMark in components/ui/form-field.tsx, formatMoney in
+// lib/format.ts) and master-data option shapes (lib/reference-options.ts)
+// are imported from their app-wide homes rather than duplicated here.
+
+import type { BadgeTone } from "@/components/ui/status-badge";
 
 // PARTIALLY_PURCHASED is normally set automatically — see
 // PurchaseRequestsService.recomputeStatus() on the backend — as a request's
@@ -23,6 +24,14 @@ export const PURCHASE_REQUEST_STATUSES: PurchaseRequestStatus[] = [
   "CANCELLED",
   "COMPLETED",
 ];
+// Statuses a Purchase may be linked to / created from — mirrors the backend's
+// LINKABLE_PURCHASE_REQUEST_STATUSES (purchase-request-rules.ts), which is
+// authoritative. Used by the purchase form's request picker and the request
+// detail page's "ثبت خرید" button.
+export const LINKABLE_PURCHASE_REQUEST_STATUSES: readonly PurchaseRequestStatus[] = ["APPROVED", "PARTIALLY_PURCHASED"];
+export function isLinkablePurchaseRequestStatus(status: PurchaseRequestStatus): boolean {
+  return LINKABLE_PURCHASE_REQUEST_STATUSES.includes(status);
+}
 export const PURCHASE_REQUEST_PRIORITIES: PurchaseRequestPriority[] = ["LOW", "NORMAL", "HIGH", "URGENT"];
 
 export const purchaseRequestStatusLabels: Record<PurchaseRequestStatus, string> = {
@@ -41,8 +50,6 @@ export const purchaseRequestPriorityLabels: Record<PurchaseRequestPriority, stri
   HIGH: "بالا",
   URGENT: "فوری",
 };
-
-type BadgeTone = "primary" | "secondary" | "muted" | "accent" | "destructive" | "success" | "warning";
 
 export const purchaseRequestStatusTone: Record<PurchaseRequestStatus, BadgeTone> = {
   DRAFT: "secondary",

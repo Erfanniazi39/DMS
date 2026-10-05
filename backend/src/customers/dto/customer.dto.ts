@@ -1,20 +1,11 @@
 import { z } from 'zod';
+import { optionalEmail, optionalTrimmedString } from '../../common/zod-fields';
 
-// Same "empty string means not provided" convention used by the other DTOs
-// in this project (see supplier.dto.ts / employee.dto.ts) — an empty form
-// field should be treated as omitted, not validated as an empty value.
-function emptyToUndefined(value: unknown) {
-  return typeof value === 'string' && value.trim() === '' ? undefined : value;
-}
-
-function optionalTrimmedString(maxLength: number) {
-  return z.preprocess(emptyToUndefined, z.string().trim().max(maxLength).optional());
-}
+// Shared "empty string means not provided" convention (common/zod-fields.ts)
+// — an empty form field is treated as omitted, not validated as empty.
 
 // Confirmed list — must match the Prisma CustomerType enum.
 export const CUSTOMER_TYPES = ['retail', 'wholesale', 'distributor', 'other'] as const;
-
-const optionalEmail = z.preprocess(emptyToUndefined, z.string().trim().email('ایمیل معتبر نیست').optional());
 
 // Phone is required for a customer (database_plan.txt does not mark it
 // "blank allowed", unlike email/address/note). Same digits-only 6–15 rule as

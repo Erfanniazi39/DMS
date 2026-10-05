@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { AUDIT_ENTITY, AuditService } from '../audit/audit.service';
 import { OPEN_PURCHASE_REQUEST_WHERE } from '../purchase-requests/purchase-request-rules';
 import { COUNTABLE_PURCHASE_WHERE, OPEN_PURCHASE_WHERE, OUTSTANDING_PURCHASE_WHERE } from '../purchases/purchase-rules';
 import type { DashboardPeriod, PurchasesSummaryQueryDto } from './dto/purchases-summary.dto';
@@ -39,7 +40,7 @@ const REQUEST_AGING_BUCKETS = [
 // LOGOUT, LOGIN_FAILED:<username>:<reason>) are deliberately left out —
 // they carry attempted usernames and belong to user administration, not
 // to everyone who manages purchases.
-const ACTIVITY_ENTITY_TYPES = ['Purchase', 'PurchaseRequest'] as const;
+const ACTIVITY_ENTITY_TYPES = [AUDIT_ENTITY.PURCHASE, AUDIT_ENTITY.PURCHASE_REQUEST] as const;
 
 // What counts as "open", "outstanding", or "countable" (CANCELLED excluded)
 // is never defined here — it comes from the owning modules' rule files
@@ -133,7 +134,10 @@ export function resolvePeriodRange(query: PurchasesSummaryQueryDto, now: Date = 
 // paymentStatus) are only read, exactly as PurchasesService persisted them.
 @Injectable()
 export class DashboardService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly audit: AuditService,
+  ) {}
 
   async getPurchasesSummary(query: PurchasesSummaryQueryDto, now: Date = new Date()) {
     const range = resolvePeriodRange(query, now);
@@ -354,20 +358,7 @@ export class DashboardService {
   // number is resolved with one batched lookup per entity type; a deleted
   // row simply resolves to null (PURCHASE_DELETED keeps its number in details).
   async getRecentActivity() {
-    const entries = await this.prisma.auditLog.findMany({
-      where: { entityType: { in: [...ACTIVITY_ENTITY_TYPES] } },
-      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-      take: RECENT_ACTIVITY_LIMIT,
-      select: {
-        id: true,
-        action: true,
-        entityType: true,
-        entityId: true,
-        details: true,
-        createdAt: true,
-        user: { select: { id: true, username: true } },
-      },
-    });
+    const entries = await this.audit.listRecent({ entityTypes: ACTIVITY_ENTITY_TYPES, limit: RECENT_ACTIVITY_LIMIT });
 
     const idsOf = (entityType: string) => [
       ...new Set(
@@ -377,8 +368,8 @@ export class DashboardService {
           .filter((id) => Number.isInteger(id)),
       ),
     ];
-    const purchaseIds = idsOf('Purchase');
-    const requestIds = idsOf('PurchaseRequest');
+    const purchaseIds = idsOf(AUDIT_ENTITY.PURCHASE);
+    const requestIds = idsOf(AUDIT_ENTITY.PURCHASE_REQUEST);
 
     const [purchases, requests] = await Promise.all([
       purchaseIds.length
@@ -394,7 +385,7 @@ export class DashboardService {
     return entries.map((entry) => ({
       ...entry,
       entityNumber:
-        (entry.entityType === 'Purchase'
+        (entry.entityType === AUDIT_ENTITY.PURCHASE
           ? purchaseNumbers.get(entry.entityId ?? '')
           : requestNumbers.get(entry.entityId ?? '')) ?? null,
     }));

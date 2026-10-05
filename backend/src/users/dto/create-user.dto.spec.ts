@@ -46,4 +46,19 @@ describe('createUserSchema', () => {
     expect(result.success).toBe(true);
     if (result.success) expect(result.data.status).toBe('DISABLED');
   });
+
+  it('treats blank email/phone as not provided', () => {
+    const result = createUserSchema.safeParse({
+      username: 'test-user',
+      password: '12345678',
+      roleName: 'VIEWER',
+      email: '   ',
+      phone: '',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.email).toBeUndefined();
+      expect(result.data.phone).toBeUndefined();
+    }
+  });
 });

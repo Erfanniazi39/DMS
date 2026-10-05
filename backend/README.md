@@ -1,118 +1,61 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# DMS backend (NestJS + Prisma 6 + Zod)
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+Navigation aid for the backend. Hard rules live in the repo-root `CLAUDE.md`. Module
+history and business rules live in `docs/project-knowledge-archive.md`. Both files are
+local-only (gitignored). Read them before any non-trivial change.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+## Module map (`src/`)
 
-## Description
+Each folder is one NestJS module with `*.controller.ts`, `*.service.ts`, `dto/` and
+`*.spec.ts`. They are all registered in `app.module.ts`.
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+- `prisma/`: `PrismaService` (global).
+- `audit/`: `AuditService` (global). `log()` is the single writer for `AuditLog`, and `listRecent()` reads activity feeds.
+- `auth/`: session login/logout/me, `SessionAuthGuard`, `PermissionsGuard`, `@RequirePermissions`. See `src/auth/README.md`.
+- `access/`: roles, permissions, `PERMISSION_CATALOG`. Also covered by `src/auth/README.md`.
+- `users/`: user accounts. These have no relation to Employee (CLAUDE.md rule 1).
+- `departments/`: departments, plus `department-rules.ts` (`ACTIVE_DEPARTMENT_STATUS`).
+- `employees/`: employee master data and photo/contract uploads. See `src/employees/README.md`.
+- `suppliers/`, `customers/`, `items/`, `item-categories/`, `purchase-types/`: master data.
+- `units/`: units of measure, plus `unit-rules.ts` (`ACTIVE_UNIT_WHERE`, `ensureActiveUnits`).
+- `purchases/`: purchase lifecycle, payments, documents, returns. See `src/purchases/README.md`.
+- `purchase-requests/`: purchase requests and their auto-status. See `src/purchase-requests/README.md`.
+- `dashboard/`: read-only analytics. See `src/dashboard/README.md`.
 
-## Project setup
+`main.ts` sets up the session store (`connect-pg-simple`, table `user_sessions`), creates
+`uploads/employees` and `uploads/purchases`, and statically serves `/uploads/employees` only.
 
-```bash
-$ npm install
-```
+## `src/common/`: shared, DI-free helpers
 
-## Compile and run the project
+- `zod-validation.pipe.ts`: `ZodValidationPipe`, used on every module's bodies and queries. `auth/zod-validation.pipe.ts` is a re-export kept for older imports. New code should import from `common/`.
+- `zod-fields.ts`: strict field builders (`requiredMoney`, `requiredQuantity`, `requiredBusinessDate`, `optionalTrimmedString`, `emptyToUndefined`, `enumField`, ...) and column bounds (`MAX_MONEY`, `MAX_QUANTITY`). Use these instead of bare `z.coerce.*`.
+- `optimistic-lock.ts`: `recordModifiedConflict()` (409 `RECORD_MODIFIED`) and `isSameVersion()`. Purchases and Purchase Requests full-record PATCHes use them.
+- `file-signature.ts`: `matchesFileSignature()`, a magic-byte check for PDF/PNG/JPEG. Purchase documents use it. Employee uploads do not use it yet.
+- `pagination.ts`: `parsePagination()` makes pagination opt-in. Without `page`/`pageSize` the request returns a plain array; with them it returns `{ items, total, page, pageSize }`. `MAX_PAGE_SIZE` is 100.
 
-```bash
-# development
-$ npm run start
+Cross-module "rule files" (`purchases/purchase-rules.ts`,
+`purchase-requests/purchase-request-rules.ts`, `departments/department-rules.ts`,
+`units/unit-rules.ts`) are pure values with no DI. Import them instead of re-deriving
+another module's rule (CLAUDE.md rule 11).
 
-# watch mode
-$ npm run start:dev
-
-# production mode
-$ npm run start:prod
-```
-
-## Run tests
+## Commands (run from `backend/`)
 
 ```bash
-# unit tests
-$ npm run test
-
-# e2e tests
-$ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
+npm run start:dev                 # http://localhost:3001 (Postgres via `docker compose up`)
+npm run build
+npm test                          # all unit specs
+npm test -- purchases             # one module's specs (Jest path pattern)
+npm run test:e2e                  # test/*.e2e-spec.ts
 ```
 
-## Deployment
+**Node 24 is required for `npm test`** (`.nvmrc` pins 24). On Node 22, Jest fails with
+"Must use import to load ES Module". That is an environment problem, not a test failure.
+Workaround: `PATH=~/.nvm/versions/node/v24.21.0/bin:$PATH npm test`.
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+## Database / migrations
 
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
-
-```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
-```
-
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
-
-## Observability
-
-In production applications, observability is essential for understanding how your system behaves, detecting issues early, and maintaining reliable performance.
-
-[NestJS Observe](https://observe.nestjs.com) automatically instruments your NestJS application, giving you deep visibility into your system with minimal setup:
-
-- **Distributed tracing:** Follow requests across services and understand how they flow through your system.
-- **Waterfall analysis:** Visualize request execution and identify slow operations, bottlenecks, and unexpected delays.
-- **Performance analysis:** Analyze application performance in real time and quickly pinpoint areas that need optimization.
-- **Metrics:** Track key application and infrastructure metrics to understand system health and performance trends.
-- **Logging:** Centralize and correlate logs with traces and other telemetry to make debugging easier.
-- **Error tracking:** Detect errors quickly and investigate their root causes with the surrounding context.
-- **SLA monitoring:** Track service-level objectives and identify when your application is approaching or exceeding defined thresholds.
-- **Alarms and alerts:** Set up alerts for critical errors, performance degradation, SLA violations, and other anomalies so your team can react quickly.
-
-This project is already instrumented. Create a free account at [observe.nestjs.com](https://observe.nestjs.com), add an application, and paste the generated app key and secret into the `ObserveModule.forRoot()` call in `src/app.module.ts`.
-
-The free plan needs no payment details and covers 300,000 events a month. You can also browse the [live demo](https://www.observe-demo.nestjs.com/dashboard) first - the whole dashboard over a busy service's data, with nothing to install.
-
-## Resources
-
-Check out a few resources that may come in handy when working with NestJS:
-
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Auto-instrument your application with [NestJS Observe](https://observe.nestjs.com). Distributed tracing, metrics, and logging made easy. Error tracking and performance monitoring for your NestJS applications.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
-
-## Support
-
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+- Prisma is **pinned to major version 6**. Do not upgrade (see CLAUDE.md rule 4).
+- Schema: `prisma/schema.prisma`. Seed: `prisma/seed.ts`, which has its own permission list. Keep it in sync with `PERMISSION_CATALOG`.
+- Before creating a migration, run `npx prisma migrate status`. Then run `npx prisma migrate dev --name <snake_case>`, one migration at a time.
+- **Never** run `prisma migrate reset`, `db push --force-reset`, or any DROP without explicit user confirmation right beforehand. This is real data.
+- Drift on `user_sessions` is expected: it is `@@ignore`d and owned by `connect-pg-simple`. Do not "fix" it by resetting.

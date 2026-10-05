@@ -1,18 +1,16 @@
 import { z } from 'zod';
+import { emptyToUndefined, optionalEmail } from '../../common/zod-fields';
 
 // Partial-update DTO for editing an existing USER account.
 // Every field is optional — the caller sends only what changed.
 // This intentionally mirrors create-user.dto.ts's validation rules,
 // so the same username/password/email/phone rules apply on edit.
-const optionalEmail = z.preprocess(
-  (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
-  z.string().trim().email('ایمیل معتبر نیست').optional(),
-);
+// optionalEmail / emptyToUndefined: common/zod-fields.ts.
 
 // Phone numbers are exactly 11 digits, Latin numerals only — no symbols,
 // spaces, or Persian/Arabic-indic digits.
 const optionalPhone = z.preprocess(
-  (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+  emptyToUndefined,
   z
     .string()
     .trim()

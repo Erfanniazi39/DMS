@@ -7,17 +7,10 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { apiFetch, type ApiError } from "@/lib/api";
+import { ROLE_LABELS, type RoleName } from "@/lib/roles";
 
-type Role = "ADMIN" | "DATA_OPERATOR" | "PURCHASE_MANAGER" | "SALES_MANAGER" | "VIEWER";
+type Role = RoleName;
 type AccountStatus = "ACTIVE" | "DISABLED" | "LOCKED";
-
-const roleLabels: Record<Role, string> = {
-  ADMIN: "مدیر سیستم",
-  DATA_OPERATOR: "اپراتور داده",
-  PURCHASE_MANAGER: "مسئول خرید",
-  SALES_MANAGER: "مسئول فروش",
-  VIEWER: "مشاهده‌گر",
-};
 
 const statusLabels: Record<AccountStatus, string> = {
   ACTIVE: "فعال",
@@ -157,7 +150,7 @@ export default function AddUsersPage() {
                   value={form.roleName}
                   onChange={(event) => update("roleName", event.target.value as Role)}
                 >
-                  {Object.entries(roleLabels).map(([value, label]) => (
+                  {Object.entries(ROLE_LABELS).map(([value, label]) => (
                     <option key={value} value={value}>
                       {label}
                     </option>

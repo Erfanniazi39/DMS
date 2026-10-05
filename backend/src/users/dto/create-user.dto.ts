@@ -1,16 +1,14 @@
 import { z } from 'zod';
+import { emptyToUndefined, optionalEmail } from '../../common/zod-fields';
 
 // USER is created independently of EMPLOYEE — no employee reference is
 // accepted here. See docs/database_plan.txt for the current model.
-const optionalEmail = z.preprocess(
-  (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
-  z.string().trim().email('ایمیل معتبر نیست').optional(),
-);
+// optionalEmail / emptyToUndefined: common/zod-fields.ts.
 
 // Phone numbers are exactly 11 digits, Latin numerals only — no symbols,
 // spaces, or Persian/Arabic-indic digits.
 const optionalPhone = z.preprocess(
-  (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+  emptyToUndefined,
   z
     .string()
     .trim()

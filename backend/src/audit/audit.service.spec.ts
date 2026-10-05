@@ -4,7 +4,7 @@ import { AuditService } from './audit.service';
 // per-module writeAuditLog() helpers produced.
 
 function createPrismaMock() {
-  return { auditLog: { create: jest.fn() } };
+  return { auditLog: { create: jest.fn(), findMany: jest.fn() } };
 }
 
 describe('AuditService', () => {
@@ -39,5 +39,22 @@ describe('AuditService', () => {
     // No entity columns at all for auth events.
     expect(prisma.auditLog.create.mock.calls[0][0].data).not.toHaveProperty('entityType');
     expect(prisma.auditLog.create.mock.calls[0][0].data).not.toHaveProperty('entityId');
+  });
+
+  it('listRecent filters by entity type, newest first, limited, and never selects ipAddress', async () => {
+    const prisma = createPrismaMock();
+    const service = new AuditService(prisma as never);
+    prisma.auditLog.findMany.mockResolvedValue([]);
+
+    await service.listRecent({ entityTypes: ['Purchase', 'PurchaseRequest'], limit: 10 });
+
+    expect(prisma.auditLog.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { entityType: { in: ['Purchase', 'PurchaseRequest'] } },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        take: 10,
+      }),
+    );
+    expect(prisma.auditLog.findMany.mock.calls[0][0].select).not.toHaveProperty('ipAddress');
   });
 });

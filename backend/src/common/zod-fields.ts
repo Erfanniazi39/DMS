@@ -153,6 +153,10 @@ export function optionalTrimmedString(maxLength: number) {
   );
 }
 
+// Optional email: blank → undefined (not provided), otherwise trimmed and
+// format-checked. Shared by every DTO with an optional email field.
+export const optionalEmail = z.preprocess(emptyToUndefined, z.string().trim().email('ایمیل معتبر نیست').optional());
+
 export function enumField<const T extends readonly [string, ...string[]]>(values: T, message: string) {
   return z.enum(values, { error: message });
 }

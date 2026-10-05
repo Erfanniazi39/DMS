@@ -5,7 +5,26 @@
 // `page.tsx`/`layout.tsx` name, so Next.js does not treat it as one.
 
 import { formatJalali } from "@/lib/jalali";
+import type { BadgeTone } from "@/components/ui/status-badge";
+import type { PurchaseTypeOption, UnitOption } from "@/lib/reference-options";
 import type { PurchaseRequestStatus } from "@/app/purchase-requests/shared";
+
+// Generic UI primitives and master-data option shapes used to live in this
+// file. They now have canonical homes (components/ui/status-badge.tsx,
+// components/ui/form-field.tsx, lib/format.ts, lib/reference-options.ts) and
+// are re-exported here only so existing Purchases-module imports keep
+// working. New code should import them from the canonical locations.
+export { StatusBadge, ColorLegend, toneCellClasses, type BadgeTone } from "@/components/ui/status-badge";
+export { RequiredMark, selectClass, textareaClass } from "@/components/ui/form-field";
+export { formatMoney } from "@/lib/format";
+export {
+  employeeFullName,
+  type DepartmentOption,
+  type EmployeeOption,
+  type PurchaseTypeOption,
+  type SupplierOption,
+  type UnitOption,
+} from "@/lib/reference-options";
 
 export type PurchaseStatus = "DRAFT" | "CONFIRMED" | "RECEIVED" | "CLOSED" | "CANCELLED";
 export type PurchasePaymentStatus = "UNPAID" | "PARTIAL" | "PAID";
@@ -70,18 +89,6 @@ export const purchaseSourceTypeLabels: Record<PurchaseSourceType, string> = {
   HISTORICAL_IMPORT: "ثبت تاریخی",
 };
 
-type BadgeTone = "primary" | "secondary" | "muted" | "accent" | "destructive" | "success" | "warning";
-
-const toneClasses: Record<BadgeTone, string> = {
-  primary: "border-primary/30 bg-primary/10 text-primary",
-  secondary: "border-secondary-foreground/15 bg-secondary text-secondary-foreground",
-  muted: "border-border bg-muted text-muted-foreground",
-  accent: "border-accent-foreground/15 bg-accent text-accent-foreground",
-  destructive: "border-destructive/30 bg-destructive/10 text-destructive",
-  success: "border-success/30 bg-success/10 text-success",
-  warning: "border-warning/30 bg-warning/10 text-warning",
-};
-
 export const purchaseStatusTone: Record<PurchaseStatus, BadgeTone> = {
   DRAFT: "secondary",
   CONFIRMED: "primary",
@@ -107,76 +114,7 @@ export const purchaseSourceTypeTone: Record<PurchaseSourceType, BadgeTone> = {
   HISTORICAL_IMPORT: "muted",
 };
 
-export function StatusBadge({ label, tone }: { label: string; tone: BadgeTone }) {
-  return (
-    <span className={`inline-flex items-center whitespace-nowrap rounded-full border px-2.5 py-0.5 text-xs font-medium ${toneClasses[tone]}`}>
-      {label}
-    </span>
-  );
-}
-
-// A light full-cell tint (same colors/opacity as the badge above, just
-// without the border/pill shape) — used on list tables so a status/payment
-// column reads as a color block at a glance, not just a small chip.
-export const toneCellClasses: Record<BadgeTone, string> = {
-  primary: "bg-primary/10",
-  secondary: "bg-secondary",
-  muted: "bg-muted",
-  accent: "bg-accent",
-  destructive: "bg-destructive/10",
-  success: "bg-success/10",
-  warning: "bg-warning/10",
-};
-
-// A small "what does this color mean" key, placed once above/below a list
-// whose columns use toneCellClasses/StatusBadge tones — so the coloring is
-// explained rather than left for the user to guess.
-export function ColorLegend({ title, items }: { title: string; items: { label: string; tone: BadgeTone }[] }) {
-  return (
-    <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 text-xs">
-      <span className="font-medium text-muted-foreground">{title}:</span>
-      {items.map((item) => (
-        <StatusBadge key={item.label} label={item.label} tone={item.tone} />
-      ))}
-    </div>
-  );
-}
-
-/** Rial amounts arrive from the API as Prisma Decimal → JSON strings. */
-export function formatMoney(value: string | number | null | undefined): string {
-  if (value === null || value === undefined || value === "") return "-";
-  return Number(value).toLocaleString("fa-IR");
-}
-
-export const textareaClass =
-  "min-h-16 rounded-md border border-input bg-transparent px-3 py-2 text-sm outline-none placeholder:text-muted-foreground";
-export const selectClass = "h-9 rounded-md border border-input bg-transparent px-3 text-sm";
-
-// Only required fields are marked (a red asterisk after the label) —
-// optional fields get no marker at all, same convention as
-// app/employees/page.tsx's own RequiredMark. Replaces this module's older
-// "(اختیاری)" suffix on optional-field labels.
-export function RequiredMark() {
-  return <span className="text-destructive"> *</span>;
-}
-
 // --- Shared API record shapes -------------------------------------------
-
-export type PurchaseTypeOption = { id: number; code: string; nameFa: string; nameEn: string };
-export type UnitOption = { id: number; code: string; nameFa: string; nameEn: string };
-export type SupplierOption = { id: number; code: string; name: string; status: "active" | "inactive" | "blacklisted" };
-export type DepartmentOption = { id: number; code: string; name: string; status: "active" | "inactive" };
-export type EmployeeOption = {
-  id: number;
-  code: string;
-  firstName: string;
-  lastName: string;
-  status: "active" | "on_leave" | "terminated";
-};
-
-export function employeeFullName(employee: { firstName: string; lastName: string }): string {
-  return `${employee.firstName} ${employee.lastName}`;
-}
 
 // A Purchase Request as offered in the Purchase form's optional "originating
 // request" picker — just enough to identify it, full detail lives on its

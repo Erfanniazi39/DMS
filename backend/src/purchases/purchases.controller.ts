@@ -39,12 +39,22 @@ import {
   type UpdatePurchaseDto,
   type UpdatePurchasePaymentDto,
 } from './dto/purchase.dto';
-import { ALLOWED_DOCUMENT_EXTENSIONS, PurchasesService } from './purchases.service';
+import { PurchasesService } from './purchases.service';
+import { PurchasePaymentsService } from './purchase-payments.service';
+import { ALLOWED_DOCUMENT_EXTENSIONS, PurchaseDocumentsService } from './purchase-documents.service';
+import { PurchaseReturnsService } from './purchase-returns.service';
 
 @Controller('purchases')
 @UseGuards(SessionAuthGuard, PermissionsGuard)
 export class PurchasesController {
-  constructor(private readonly purchasesService: PurchasesService) {}
+  // Each sub-resource is served by its own service; routes, permissions and
+  // request/response shapes are unchanged by that split.
+  constructor(
+    private readonly purchasesService: PurchasesService,
+    private readonly paymentsService: PurchasePaymentsService,
+    private readonly documentsService: PurchaseDocumentsService,
+    private readonly returnsService: PurchaseReturnsService,
+  ) {}
 
   @Get()
   @RequirePermissions('purchases.view')
@@ -104,7 +114,7 @@ export class PurchasesController {
     @Body(new ZodValidationPipe(createPurchasePaymentSchema)) dto: CreatePurchasePaymentDto,
     @Req() req: Request,
   ) {
-    return this.purchasesService.addPayment(id, dto, req.session.userId ?? null, req.ip);
+    return this.paymentsService.addPayment(id, dto, req.session.userId ?? null, req.ip);
   }
 
   // Edit a payment in place — same permission as adding/removing one.
@@ -116,13 +126,13 @@ export class PurchasesController {
     @Body(new ZodValidationPipe(updatePurchasePaymentSchema)) dto: UpdatePurchasePaymentDto,
     @Req() req: Request,
   ) {
-    return this.purchasesService.updatePayment(id, paymentId, dto, req.session.userId ?? null, req.ip);
+    return this.paymentsService.updatePayment(id, paymentId, dto, req.session.userId ?? null, req.ip);
   }
 
   @Delete(':id/payments/:paymentId')
   @RequirePermissions('purchases.manage')
   removePayment(@Param('id', ParseIntPipe) id: number, @Param('paymentId', ParseIntPipe) paymentId: number, @Req() req: Request) {
-    return this.purchasesService.removePayment(id, paymentId, req.session.userId ?? null, req.ip);
+    return this.paymentsService.removePayment(id, paymentId, req.session.userId ?? null, req.ip);
   }
 
   // Return to Vendor — sub-resource of a Purchase, same shape as payments.
@@ -131,13 +141,13 @@ export class PurchasesController {
   @Get(':id/returns')
   @RequirePermissions('purchases.view')
   listReturns(@Param('id', ParseIntPipe) id: number) {
-    return this.purchasesService.listReturns(id);
+    return this.returnsService.listReturns(id);
   }
 
   @Get(':id/returns/:returnId')
   @RequirePermissions('purchases.view')
   getReturn(@Param('id', ParseIntPipe) id: number, @Param('returnId', ParseIntPipe) returnId: number) {
-    return this.purchasesService.getReturn(id, returnId);
+    return this.returnsService.getReturn(id, returnId);
   }
 
   @Post(':id/returns')
@@ -147,13 +157,13 @@ export class PurchasesController {
     @Body(new ZodValidationPipe(createPurchaseReturnSchema)) dto: CreatePurchaseReturnDto,
     @Req() req: Request,
   ) {
-    return this.purchasesService.createReturn(id, dto, req.session.userId ?? null, req.ip);
+    return this.returnsService.createReturn(id, dto, req.session.userId ?? null, req.ip);
   }
 
   @Delete(':id/returns/:returnId')
   @RequirePermissions('purchases.manage')
   removeReturn(@Param('id', ParseIntPipe) id: number, @Param('returnId', ParseIntPipe) returnId: number, @Req() req: Request) {
-    return this.purchasesService.removeReturn(id, returnId, req.session.userId ?? null, req.ip);
+    return this.returnsService.removeReturn(id, returnId, req.session.userId ?? null, req.ip);
   }
 
   @Post(':id/documents')
@@ -163,20 +173,20 @@ export class PurchasesController {
     @Body(new ZodValidationPipe(createPurchaseDocumentSchema)) dto: CreatePurchaseDocumentDto,
     @Req() req: Request,
   ) {
-    return this.purchasesService.addDocument(id, dto, req.session.userId ?? null, req.ip);
+    return this.documentsService.addDocument(id, dto, req.session.userId ?? null, req.ip);
   }
 
   @Delete(':id/documents/:documentId')
   @RequirePermissions('documents.upload')
   removeDocument(@Param('id', ParseIntPipe) id: number, @Param('documentId', ParseIntPipe) documentId: number, @Req() req: Request) {
-    return this.purchasesService.removeDocument(id, documentId, req.session.userId ?? null, req.ip);
+    return this.documentsService.removeDocument(id, documentId, req.session.userId ?? null, req.ip);
   }
 
   // File attached to a document record created just above — same
   // metadata-then-file two-step upload pattern as the Employee endpoints.
   //
   // Held in memory (10 MB cap) rather than streamed straight to disk, so
-  // PurchasesService.setDocumentFile() can verify the purchase/document pair
+  // PurchaseDocumentsService.setDocumentFile() can verify the purchase/document pair
   // and the file's actual content (magic bytes, not just the extension)
   // BEFORE anything is written — a mismatched id pair or a renamed .exe never
   // leaves an orphan file in uploads/purchases.
@@ -203,7 +213,7 @@ export class PurchasesController {
     @UploadedFile() file?: Express.Multer.File,
   ) {
     if (!file) throw new BadRequestException('فایلی ارسال نشده است');
-    return this.purchasesService.setDocumentFile(
+    return this.documentsService.setDocumentFile(
       id,
       documentId,
       { originalName: file.originalname, buffer: file.buffer },

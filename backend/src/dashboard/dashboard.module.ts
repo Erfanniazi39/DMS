@@ -7,6 +7,7 @@ import { DashboardService } from './dashboard.service';
 // and never goes through their write/recompute logic. Every business rule it
 // filters on ("open", "outstanding", CANCELLED exclusion) is imported from
 // the owning module's rule file, never redefined here (CLAUDE.md rule 11).
+// Audit-log reads (recent activity) go through the global AuditService.
 @Module({
   controllers: [DashboardController],
   providers: [DashboardService],

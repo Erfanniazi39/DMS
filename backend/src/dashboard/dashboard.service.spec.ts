@@ -1,6 +1,7 @@
 import { Prisma } from '@prisma/client';
 import { DashboardService, resolvePeriodRange } from './dashboard.service';
 import { purchasesSummaryQuerySchema } from './dto/purchases-summary.dto';
+import { AuditService } from '../audit/audit.service';
 
 // Admin dashboard's purchases summary — read-only aggregates only. Same
 // hand-rolled Prisma mock style as the Purchases/PurchaseRequests specs.
@@ -15,6 +16,12 @@ function createPrismaMock() {
 }
 
 type PrismaMock = ReturnType<typeof createPrismaMock>;
+
+// A real AuditService over the same mock, so recent-activity assertions
+// still see the underlying auditLog.findMany call.
+function createService(prisma: PrismaMock) {
+  return new DashboardService(prisma as never, new AuditService(prisma as never));
+}
 
 // purchase.groupBy serves three queries: the per-day trend, per-supplier
 // period spend, and per-supplier outstanding — dispatch on the arguments.
@@ -81,12 +88,16 @@ describe('purchasesSummaryQuerySchema', () => {
     expect(purchasesSummaryQuerySchema.safeParse({ period: 'custom', from: '2024-01-01', to: '2026-01-01' }).success).toBe(false);
     expect(purchasesSummaryQuerySchema.safeParse({ period: 'yesterday' }).success).toBe(false);
   });
+
+  it('treats blank period/from/to as not provided', () => {
+    expect(parse({ period: '', from: '', to: '  ' })).toEqual({ period: 'month', from: undefined, to: undefined });
+  });
 });
 
 describe('DashboardService.getPurchasesSummary', () => {
   it('aggregates the period excluding CANCELLED, buckets the trend, and computes outstanding across all purchases', async () => {
     const prisma = createPrismaMock();
-    const service = new DashboardService(prisma as never);
+    const service = createService(prisma);
 
     prisma.purchase.aggregate
       .mockResolvedValueOnce({ _sum: { totalAmount: new Prisma.Decimal(3500) }, _count: { _all: 3 } })
@@ -137,7 +148,7 @@ describe('DashboardService.getPurchasesSummary', () => {
 
   it('returns zeros (not nulls) for an empty period and no outstanding purchases', async () => {
     const prisma = createPrismaMock();
-    const service = new DashboardService(prisma as never);
+    const service = createService(prisma);
     prisma.purchase.aggregate.mockResolvedValue({ _sum: { totalAmount: null, paidAmount: null }, _count: { _all: 0 } });
     mockGroupBy(prisma, {});
     prisma.purchaseRequest.count.mockResolvedValue(0);
@@ -152,7 +163,7 @@ describe('DashboardService.getPurchasesSummary', () => {
 
   it('folds days into 7-day buckets for long custom ranges', async () => {
     const prisma = createPrismaMock();
-    const service = new DashboardService(prisma as never);
+    const service = createService(prisma);
     prisma.purchase.aggregate.mockResolvedValue({ _sum: { totalAmount: null, paidAmount: null }, _count: { _all: 0 } });
     mockGroupBy(prisma, {
       trend: [
@@ -176,7 +187,7 @@ describe('DashboardService.getPurchasesSummary', () => {
 describe('DashboardService.getPurchasesSummary — top suppliers by spend', () => {
   it('ranks suppliers by period spend and attaches their current outstanding balance', async () => {
     const prisma = createPrismaMock();
-    const service = new DashboardService(prisma as never);
+    const service = createService(prisma);
     prisma.purchase.aggregate.mockResolvedValue({ _sum: { totalAmount: null, paidAmount: null }, _count: { _all: 0 } });
     prisma.purchaseRequest.count.mockResolvedValue(0);
     prisma.purchase.findMany.mockResolvedValue([]);
@@ -224,7 +235,7 @@ describe('DashboardService.getPurchasesSummary — top suppliers by spend', () =
 
   it('returns an empty list and skips the follow-up lookups when nothing was bought in the period', async () => {
     const prisma = createPrismaMock();
-    const service = new DashboardService(prisma as never);
+    const service = createService(prisma);
     prisma.purchase.aggregate.mockResolvedValue({ _sum: { totalAmount: null, paidAmount: null }, _count: { _all: 0 } });
     prisma.purchaseRequest.count.mockResolvedValue(0);
     prisma.purchase.findMany.mockResolvedValue([]);
@@ -244,7 +255,7 @@ describe('DashboardService.getOpenItems', () => {
 
   it('buckets unpaid balances and open requests by age, and lists the oldest open items', async () => {
     const prisma = createPrismaMock();
-    const service = new DashboardService(prisma as never);
+    const service = createService(prisma);
     prisma.purchase.aggregate
       .mockResolvedValueOnce({ _sum: { totalAmount: new Prisma.Decimal(1000), paidAmount: new Prisma.Decimal(400) }, _count: { _all: 2 } })
       .mockResolvedValueOnce(emptyAggregate())
@@ -336,7 +347,7 @@ describe('DashboardService.getOpenItems', () => {
 
   it('never reports a negative age for a future-dated record', async () => {
     const prisma = createPrismaMock();
-    const service = new DashboardService(prisma as never);
+    const service = createService(prisma);
     prisma.purchase.aggregate.mockResolvedValue(emptyAggregate());
     prisma.purchaseRequest.count.mockResolvedValue(0);
     prisma.purchase.count.mockResolvedValue(1);
@@ -364,7 +375,7 @@ describe('DashboardService.getOpenItems', () => {
 describe('DashboardService.getRecentActivity', () => {
   it('returns the latest purchase/purchase-request audit entries with their document numbers', async () => {
     const prisma = createPrismaMock();
-    const service = new DashboardService(prisma as never);
+    const service = createService(prisma);
     const createdAt = new Date('2026-09-30T08:00:00Z');
     prisma.auditLog.findMany.mockResolvedValue([
       { id: 3, action: 'PURCHASE_CREATED', entityType: 'Purchase', entityId: '12', details: null, createdAt, user: { id: 1, username: 'ali' } },
@@ -391,7 +402,7 @@ describe('DashboardService.getRecentActivity', () => {
 
   it('skips the number lookups when there is no activity', async () => {
     const prisma = createPrismaMock();
-    const service = new DashboardService(prisma as never);
+    const service = createService(prisma);
     prisma.auditLog.findMany.mockResolvedValue([]);
 
     await expect(service.getRecentActivity()).resolves.toEqual([]);

@@ -12,14 +12,9 @@ import { useToasts, ToastViewport } from "@/components/ui/toast";
 import { toJalali } from "@/lib/jalali";
 import { apiFetch, type ApiError } from "@/lib/api";
 import { parseNumberInput } from "@/lib/number-input";
-import {
-  RequiredMark,
-  selectClass,
-  textareaClass,
-  type DepartmentOption,
-  type EmployeeOption,
-  type UnitOption,
-} from "../purchases/shared";
+import { RequiredMark, selectClass, textareaClass } from "@/components/ui/form-field";
+import { todayIso } from "@/lib/format";
+import type { DepartmentOption, EmployeeOption, UnitOption } from "@/lib/reference-options";
 import {
   PURCHASE_REQUEST_PRIORITIES,
   PURCHASE_REQUEST_STATUSES,
@@ -45,11 +40,6 @@ type ItemFormRow = {
 
 function emptyItemRow(): ItemFormRow {
   return { key: crypto.randomUUID(), name: "", quantity: "", unitId: "", requiredDate: "", note: "" };
-}
-
-function todayIso(): string {
-  const now = new Date();
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
 }
 
 // "Required by" looks forward in time, unlike the other dates in this app —

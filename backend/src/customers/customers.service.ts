@@ -2,7 +2,7 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException }
 import { CustomerType, type Prisma } from '@prisma/client';
 import { toSkipTake, type PaginationParams } from '../common/pagination';
 import { PrismaService } from '../prisma/prisma.service';
-import { AuditService } from '../audit/audit.service';
+import { AUDIT_ENTITY, AuditService } from '../audit/audit.service';
 import type { CreateCustomerDto, UpdateCustomerDto } from './dto/customer.dto';
 
 export type CustomerListFilters = { q?: string; customerType?: string };
@@ -63,7 +63,7 @@ export class CustomersService {
         note: dto.note,
       },
     });
-    await this.audit.log({ userId, ipAddress, action: 'CUSTOMER_CREATED', entityType: 'Customer', entityId: created.id, details: created.code });
+    await this.audit.log({ userId, ipAddress, action: 'CUSTOMER_CREATED', entityType: AUDIT_ENTITY.CUSTOMER, entityId: created.id, details: created.code });
     return created;
   }
 
@@ -82,7 +82,7 @@ export class CustomersService {
         note: dto.note ?? null,
       },
     });
-    await this.audit.log({ userId, ipAddress, action: 'CUSTOMER_UPDATED', entityType: 'Customer', entityId: id, details: updated.code });
+    await this.audit.log({ userId, ipAddress, action: 'CUSTOMER_UPDATED', entityType: AUDIT_ENTITY.CUSTOMER, entityId: id, details: updated.code });
     return updated;
   }
 
@@ -92,7 +92,7 @@ export class CustomersService {
   async remove(id: number, userId: number | null = null, ipAddress?: string) {
     const customer = await this.get(id);
     await this.prisma.customer.delete({ where: { id } });
-    await this.audit.log({ userId, ipAddress, action: 'CUSTOMER_DELETED', entityType: 'Customer', entityId: id, details: customer.code });
+    await this.audit.log({ userId, ipAddress, action: 'CUSTOMER_DELETED', entityType: AUDIT_ENTITY.CUSTOMER, entityId: id, details: customer.code });
     return { success: true };
   }
 

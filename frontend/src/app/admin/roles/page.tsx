@@ -4,19 +4,12 @@ import { useEffect, useState, type MouseEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { apiFetch, type ApiError } from "@/lib/api";
+import { roleLabel } from "@/lib/roles";
 import PermissionsSection from "@/components/admin/permissions-section";
 import UserPermissionsSection from "@/components/admin/user-permissions-section";
 
 type RoleRecord = { id: number; name: string; userCount: number; permissions: string[] };
 type PermissionRecord = { id: number; code: string; label: string; module: string };
-
-const roleLabels: Record<string, string> = {
-  ADMIN: "مدیر سیستم",
-  DATA_OPERATOR: "اپراتور داده",
-  PURCHASE_MANAGER: "مسئول خرید",
-  SALES_MANAGER: "مسئول فروش",
-  VIEWER: "مشاهده‌گر",
-};
 
 function RoleSection() {
   const [roles, setRoles] = useState<RoleRecord[]>([]);
@@ -117,7 +110,7 @@ function RoleSection() {
           <CardContent className="space-y-2">
             {loading ? <p className="text-sm text-muted-foreground">در حال بارگذاری...</p> : roles.map((role) => (
               <button key={role.id} className={`w-full rounded-lg border px-3 py-3 text-right transition-colors ${selectedId === role.id ? "border-primary bg-accent" : "border-border hover:bg-muted"}`} onClick={() => { setSelectedId(role.id); setSelectedPermissions(role.permissions); }}>
-                <span className="block text-sm font-medium">{roleLabels[role.name] ?? role.name}</span>
+                <span className="block text-sm font-medium">{roleLabel(role.name)}</span>
                 <span className="mt-1 block text-xs text-muted-foreground">{role.name} · {role.userCount} کاربر</span>
               </button>
             ))}
@@ -131,7 +124,7 @@ function RoleSection() {
           </CardContent>
         </Card>
         <Card>
-          <CardHeader><CardTitle className="text-base">{selectedRole ? roleLabels[selectedRole.name] ?? selectedRole.name : "دسترسی‌های نقش"}</CardTitle></CardHeader>
+          <CardHeader><CardTitle className="text-base">{selectedRole ? roleLabel(selectedRole.name) : "دسترسی‌های نقش"}</CardTitle></CardHeader>
           <CardContent>
             {selectedRole ? <div className="space-y-5">
               {Object.entries(grouped).map(([module, items]) => <fieldset key={module} className="space-y-2"><legend className="mb-2 text-sm font-medium">{module}</legend>{items.map((permission) => <label className="flex items-center gap-3 rounded-md px-2 py-2 text-sm hover:bg-muted" key={permission.code}><input type="checkbox" checked={selectedPermissions.includes(permission.code)} onChange={() => togglePermission(permission.code)} /><span>{permission.label}</span><span className="ms-auto text-xs text-muted-foreground">{permission.code}</span></label>)}</fieldset>)}

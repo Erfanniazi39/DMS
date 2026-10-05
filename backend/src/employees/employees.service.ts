@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto';
 import { existsSync, unlink } from 'fs';
 import { join } from 'path';
 import { PrismaService } from '../prisma/prisma.service';
+import { ACTIVE_DEPARTMENT_STATUS } from '../departments/department-rules';
 import type { CreateEmployeeDto, UpdateEmployeeDto } from './dto/employee.dto';
 
 // EMPLOYEE is an independent Master Data record — it is never joined with
@@ -103,7 +104,7 @@ export class EmployeesService {
 
   private async ensureDepartment(departmentId: number) {
     const department = await this.prisma.department.findUnique({ where: { id: departmentId } });
-    if (!department || department.status !== 'active') throw new ConflictException('واحد سازمانی انتخاب‌شده فعال نیست');
+    if (!department || department.status !== ACTIVE_DEPARTMENT_STATUS) throw new ConflictException('واحد سازمانی انتخاب‌شده فعال نیست');
     return department;
   }
 }

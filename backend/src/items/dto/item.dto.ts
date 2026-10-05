@@ -1,15 +1,8 @@
 import { z } from 'zod';
+import { optionalTrimmedString } from '../../common/zod-fields';
 
-// Same "empty string means not provided" convention used by the other DTOs
-// in this project (see supplier.dto.ts) — an empty form field is treated as
-// omitted, not validated as an empty value.
-function emptyToUndefined(value: unknown) {
-  return typeof value === 'string' && value.trim() === '' ? undefined : value;
-}
-
-function optionalTrimmedString(maxLength: number) {
-  return z.preprocess(emptyToUndefined, z.string().trim().max(maxLength).optional());
-}
+// Shared "empty string means not provided" convention (common/zod-fields.ts)
+// — an empty form field is treated as omitted, not validated as empty.
 
 export const ITEM_STATUSES = ['active', 'inactive'] as const;
 

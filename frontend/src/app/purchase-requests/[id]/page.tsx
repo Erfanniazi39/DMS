@@ -9,8 +9,12 @@ import { useToasts, ToastViewport } from "@/components/ui/toast";
 import { formatJalali } from "@/lib/jalali";
 import { apiFetch, type ApiError } from "@/lib/api";
 import { useAdminUser } from "@/app/admin/layout";
-import { StatusBadge, formatMoney, employeeFullName, purchaseStatusLabels, purchaseStatusTone } from "../../purchases/shared";
+import { StatusBadge } from "@/components/ui/status-badge";
+import { formatMoney } from "@/lib/format";
+import { employeeFullName } from "@/lib/reference-options";
+import { purchaseStatusLabels, purchaseStatusTone } from "../../purchases/shared";
 import {
+  isLinkablePurchaseRequestStatus,
   purchaseRequestPriorityLabels,
   purchaseRequestPriorityTone,
   purchaseRequestStatusLabels,
@@ -173,7 +177,7 @@ export default function PurchaseRequestDetailPage() {
   // backend accepts (Purchase Request stays an optional, non-blocking layer
   // in front of Purchase either way). Creating a purchase also needs
   // purchases.manage (POST /purchases), so the actions are hidden without it.
-  const canCreatePurchases = canManagePurchases && (request.status === "APPROVED" || request.status === "PARTIALLY_PURCHASED");
+  const canCreatePurchases = canManagePurchases && isLinkablePurchaseRequestStatus(request.status);
   const itemsWithRemaining = request.items.filter((item) => item.remainingQuantity > 0);
   // "تایید" is a shortcut for the DRAFT/SUBMITTED → APPROVED step — the same
   // transition the edit form's status field already allows.

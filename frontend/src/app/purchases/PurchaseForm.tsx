@@ -3,8 +3,7 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Select as SelectPrimitive } from "@base-ui/react/select";
-import { ChevronDown, Paperclip, Plus, Trash2 } from "lucide-react";
+import { Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogBody, DialogCloseButton, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -13,15 +12,14 @@ import { JalaliDateInput } from "@/components/ui/jalali-date-input";
 import { useToasts, ToastViewport } from "@/components/ui/toast";
 import { apiFetch, apiUpload, type ApiError } from "@/lib/api";
 import { parseNumberInput } from "@/lib/number-input";
+import { todayIso } from "@/lib/format";
 import { useAdminUser } from "@/app/admin/layout";
 import {
-  purchaseRequestStatusLabels,
-  purchaseRequestStatusTone,
+  isLinkablePurchaseRequestStatus,
   type PurchaseRequestDetail,
   type PurchaseRequestStatus,
 } from "@/app/purchase-requests/shared";
 import {
-  DOCUMENT_TYPES,
   PURCHASE_SOURCE_TYPES,
   PURCHASE_CREATE_STATUSES,
   RequiredMark,
@@ -34,10 +32,7 @@ import {
   textareaClass,
   formatMoney,
   employeeFullName,
-  documentTypeLabels,
-  purchaseRequestOptionLabel,
   type DepartmentOption,
-  type DocumentType,
   type EmployeeOption,
   type PurchaseDetail,
   type PurchasePaymentStatus,
@@ -48,80 +43,10 @@ import {
   type SupplierOption,
   type UnitOption,
 } from "./shared";
-
-// Section chrome shared across the four blocks below — a plain bordered
-// surface with a small uppercase label, not a heavy decorative Card. Kept
-// local to this form rather than added to ./shared, since it's specific to
-// this page's layout.
-function FormSection({
-  title,
-  description,
-  children,
-}: {
-  title: string;
-  description?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <section className="overflow-hidden rounded-lg border border-border bg-card">
-      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 border-b border-border px-4 py-2">
-        <h2 className="text-sm font-semibold">{title}</h2>
-        {description ? <p className="text-xs text-muted-foreground">{description}</p> : null}
-      </div>
-      <div className="px-4 py-3">{children}</div>
-    </section>
-  );
-}
-
-type ItemFormRow = {
-  key: string;
-  name: string;
-  quantity: string;
-  unitId: string;
-  unitPrice: string;
-  totalPrice: string;
-  // Set when this line was pre-filled from (or, in edit mode, was already
-  // linked to) a Purchase Request item — see the "ایجاد خرید"/"خرید
-  // باقی‌مانده" actions on the Purchase Request detail page. Empty for a
-  // normal, manually-added line.
-  purchaseRequestItemId: string;
-};
-
-// A file picked on the create form, held locally until the purchase itself
-// has been saved (a PurchaseDocument needs a purchase id to attach to — see
-// POST /purchases/:id/documents + POST /purchases/:id/documents/:documentId/file,
-// the same two-step endpoints the purchase detail page uses). Uploaded right
-// after the purchase is created, inside the same submit flow.
-type StagedDocument = {
-  key: string;
-  file: File;
-  documentType: DocumentType;
-  documentNumber: string;
-  state: "pending" | "uploading" | "done" | "failed";
-  error?: string;
-};
-
-// Mirrors the backend's FileInterceptor limits on
-// POST /purchases/:id/documents/:documentId/file (ALLOWED_DOCUMENT_EXTENSIONS,
-// 10 MB) — checked up front so a bad file is rejected at pick time, not
-// only after the purchase has already been saved.
-const ALLOWED_DOCUMENT_EXTENSIONS = [".pdf", ".png", ".jpg", ".jpeg"];
-const MAX_DOCUMENT_BYTES = 10 * 1024 * 1024;
-
-function documentFileProblem(file: File): string | null {
-  const dot = file.name.lastIndexOf(".");
-  const ext = dot >= 0 ? file.name.slice(dot).toLowerCase() : "";
-  if (!ALLOWED_DOCUMENT_EXTENSIONS.includes(ext)) return `«${file.name}»: فقط فایل PDF یا تصویر با فرمت jpg، jpeg یا png مجاز است.`;
-  if (file.size > MAX_DOCUMENT_BYTES) return `«${file.name}»: حجم فایل نباید بیشتر از ۱۰ مگابایت باشد.`;
-  return null;
-}
-
-const stagedDocumentStateLabels: Record<StagedDocument["state"], string> = {
-  pending: "",
-  uploading: "در حال بارگذاری...",
-  done: "بارگذاری شد",
-  failed: "ناموفق",
-};
+import { FormSection } from "./_form/FormSection";
+import { ItemsGrid, emptyItemRow, type ItemFormRow } from "./_form/ItemsGrid";
+import { StagedDocuments, type StagedDocument } from "./_form/StagedDocuments";
+import { RequestPicker } from "./_form/RequestPicker";
 
 // Sort order for the "درخواست خرید مرتبط" picker — requests it actually
 // makes sense to buy against (APPROVED/PARTIALLY_PURCHASED) float to the
@@ -149,9 +74,6 @@ type RequestOverage = {
   excess: number;
 };
 
-function emptyItemRow(): ItemFormRow {
-  return { key: crypto.randomUUID(), name: "", quantity: "", unitId: "", unitPrice: "", totalPrice: "", purchaseRequestItemId: "" };
-}
 
 // What the Purchase Request detail page encodes into the ?prefill= query
 // param when the user clicks "ایجاد خرید" / "خرید باقی‌مانده" / "ایجاد خرید
@@ -189,14 +111,10 @@ function readPrefill(raw: string | null): PrefillPayload | null {
   }
 }
 
-// Same pattern as the Purchase Request form's todayIso() — the common case
+// purchaseDate defaults to todayIso() (lib/format.ts) — the common case
 // is logging a purchase as it happens, not backdating one. Still a plain
 // editable date field afterwards, and HISTORICAL_IMPORT purchases (old
 // paper records) are expected to have this changed to the real date.
-function todayIso(): string {
-  const now = new Date();
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
-}
 
 type FormState = {
   purchaseDate: string;
@@ -436,6 +354,8 @@ export function PurchaseForm(props: Props) {
   // wrapper is left mounted with pointer-events enabled, silently
   // swallowing every click on the page afterwards. A plain inline banner has
   // no portal, no modal, and no exit-animation tracking to collide with.
+  // The picker + banner JSX lives in ./_form/RequestPicker.tsx (presentational
+  // only); this state and the handlers below stay here.
   const [pendingPurchaseRequestId, setPendingPurchaseRequestId] = useState<string | null>(null);
   // Guards against the picker's onValueChange firing more than once for a
   // single selection. Each call stamps its own token; a call only applies
@@ -506,28 +426,8 @@ export function PurchaseForm(props: Props) {
     if (value) void applyPurchaseRequestChange(value);
   }
 
-  function addStagedFiles(files: FileList | null) {
-    if (!files || files.length === 0) return;
-    const accepted: StagedDocument[] = [];
-    const problems: string[] = [];
-    for (const file of Array.from(files)) {
-      const problem = documentFileProblem(file);
-      if (problem) {
-        problems.push(problem);
-        continue;
-      }
-      accepted.push({ key: crypto.randomUUID(), file, documentType: "INVOICE", documentNumber: "", state: "pending" });
-    }
-    if (problems.length) pushErrors(problems);
-    if (accepted.length) setStagedDocuments((current) => [...current, ...accepted]);
-  }
-
   function updateStagedDocument(key: string, patch: Partial<StagedDocument>) {
     setStagedDocuments((current) => current.map((doc) => (doc.key === key ? { ...doc, ...patch } : doc)));
-  }
-
-  function removeStagedDocument(key: string) {
-    setStagedDocuments((current) => current.filter((doc) => doc.key !== key));
   }
 
   // Runs only after the purchase itself was created successfully. Each
@@ -568,40 +468,6 @@ export function PurchaseForm(props: Props) {
     }
     setUploadProgress(null);
     return failed;
-  }
-
-  function updateItem(key: string, patch: Partial<ItemFormRow>) {
-    setForm((current) => ({
-      ...current,
-      items: current.items.map((item) => {
-        if (item.key !== key) return item;
-        const next = { ...item, ...patch };
-        // Auto-suggest the line total from quantity × unit price whenever
-        // either changes — still a plain, directly-editable field
-        // afterwards. The backend never enforces this (Total Price is a
-        // stored field, not a derived one), so a user free to override it
-        // for a case where the arithmetic doesn't apply.
-        if (("quantity" in patch || "unitPrice" in patch) && !("totalPrice" in patch)) {
-          const quantity = parseNumberInput(next.quantity);
-          const unitPrice = parseNumberInput(next.unitPrice);
-          if (next.quantity !== "" && next.unitPrice !== "" && Number.isFinite(quantity) && Number.isFinite(unitPrice)) {
-            next.totalPrice = String(Math.round(quantity * unitPrice));
-          }
-        }
-        return next;
-      }),
-    }));
-  }
-
-  function addItemRow() {
-    setForm((current) => ({ ...current, items: [...current.items, emptyItemRow()] }));
-  }
-
-  function removeItemRow(key: string) {
-    setForm((current) => ({
-      ...current,
-      items: current.items.length > 1 ? current.items.filter((item) => item.key !== key) : current.items,
-    }));
   }
 
   function openTypeDialog() {
@@ -655,7 +521,7 @@ export function PurchaseForm(props: Props) {
   // request (edit mode) is kept even if it's since moved outside this set,
   // so an existing link never silently disappears from its own picker.
   const purchaseRequestOptions = useMemo(() => {
-    const eligible = purchaseRequests.filter((request) => request.status === "APPROVED" || request.status === "PARTIALLY_PURCHASED");
+    const eligible = purchaseRequests.filter((request) => isLinkablePurchaseRequestStatus(request.status));
     const current = purchaseRequests.find((request) => String(request.id) === form.purchaseRequestId);
     if (current && !eligible.some((request) => request.id === current.id)) {
       return [...eligible, current];
@@ -989,68 +855,16 @@ export function PurchaseForm(props: Props) {
                   (old paper record) is never part of the Purchase Request
                   workflow. Two columns wide since its labels are long. */}
               {form.sourceType === "OPERATIONAL" ? (
-                <div className="flex flex-col gap-1.5 sm:col-span-2">
-                  <Label htmlFor="purchase-request">درخواست خرید مرتبط</Label>
-                  {/* A custom popup instead of a native <select> — a plain
-                      <option> can't carry a colored status badge, and the
-                      status (whether it's actually worth buying against
-                      right now) is the main thing this picker needs to
-                      communicate. Sorted via sortedPurchaseRequests so
-                      APPROVED/PARTIALLY_PURCHASED requests float to the top. */}
-                  <SelectPrimitive.Root
-                    value={form.purchaseRequestId || null}
-                    onValueChange={(value) => handlePurchaseRequestChange(value ? String(value) : "")}
-                    disabled={loadingPurchaseRequestItems || pendingPurchaseRequestId !== null}
-                  >
-                    <SelectPrimitive.Trigger id="purchase-request" className={`${selectClass} flex w-full items-center justify-between gap-2`}>
-                      <SelectPrimitive.Value placeholder="بدون درخواست خرید" className="min-w-0 flex-1 truncate text-right">
-                        {(value: string | null) => {
-                          const selected = value ? purchaseRequests.find((request) => String(request.id) === value) : undefined;
-                          return selected ? purchaseRequestOptionLabel(selected) : "بدون درخواست خرید";
-                        }}
-                      </SelectPrimitive.Value>
-                      <SelectPrimitive.Icon className="shrink-0 text-muted-foreground">
-                        <ChevronDown className="size-4" />
-                      </SelectPrimitive.Icon>
-                    </SelectPrimitive.Trigger>
-                    <SelectPrimitive.Portal>
-                      <SelectPrimitive.Positioner className="z-50" sideOffset={4}>
-                        <SelectPrimitive.Popup className="max-h-72 w-(--anchor-width) overflow-auto rounded-lg border border-border bg-card p-1 shadow-lg">
-                          <SelectPrimitive.Item className="flex cursor-pointer items-center rounded-md px-2.5 py-2 text-sm outline-none data-[highlighted]:bg-muted">
-                            <SelectPrimitive.ItemText>بدون درخواست خرید</SelectPrimitive.ItemText>
-                          </SelectPrimitive.Item>
-                          {sortedPurchaseRequests.map((request) => (
-                            <SelectPrimitive.Item
-                              key={request.id}
-                              value={String(request.id)}
-                              className="flex cursor-pointer items-center justify-between gap-2 rounded-md px-2.5 py-2 text-sm outline-none data-[highlighted]:bg-muted"
-                            >
-                              <SelectPrimitive.ItemText className="min-w-0 flex-1 truncate">
-                                {purchaseRequestOptionLabel(request)}
-                              </SelectPrimitive.ItemText>
-                              <StatusBadge label={purchaseRequestStatusLabels[request.status]} tone={purchaseRequestStatusTone[request.status]} />
-                            </SelectPrimitive.Item>
-                          ))}
-                        </SelectPrimitive.Popup>
-                      </SelectPrimitive.Positioner>
-                    </SelectPrimitive.Portal>
-                  </SelectPrimitive.Root>
-                  {/* Plain inline banner, not a modal — see the comment on
-                      pendingPurchaseRequestId above for why. */}
-                  {pendingPurchaseRequestId !== null ? (
-                    <div className="flex flex-wrap items-center gap-2 rounded-md border border-warning/40 bg-warning/10 px-2.5 py-2 text-xs">
-                      <span className="flex-1 text-foreground">
-                        اقلام فعلی فرم با اقلام این درخواست خرید جایگزین می‌شود. ادامه می‌دهید؟
-                      </span>
-                      <Button type="button" size="sm" onClick={confirmPurchaseRequestOverwrite}>
-                        جایگزین کن
-                      </Button>
-                      <Button type="button" size="sm" variant="outline" onClick={() => setPendingPurchaseRequestId(null)}>
-                        انصراف
-                      </Button>
-                    </div>
-                  ) : null}
-                </div>
+                <RequestPicker
+                  value={form.purchaseRequestId}
+                  purchaseRequests={purchaseRequests}
+                  sortedPurchaseRequests={sortedPurchaseRequests}
+                  loadingItems={loadingPurchaseRequestItems}
+                  pendingPurchaseRequestId={pendingPurchaseRequestId}
+                  onChange={handlePurchaseRequestChange}
+                  onConfirmOverwrite={confirmPurchaseRequestOverwrite}
+                  onCancelOverwrite={() => setPendingPurchaseRequestId(null)}
+                />
               ) : null}
               {/* Create mode only — DRAFT/CONFIRMED. Status changes on an
                   existing purchase are dedicated actions on the purchase
@@ -1082,100 +896,12 @@ export function PurchaseForm(props: Props) {
           </FormSection>
 
           {/* Section 2 — اقلام خرید */}
-          <FormSection title="اقلام خرید" description="نام قلم متن آزاد است و به کاتالوگ اقلام شرکت مرتبط نمی‌شود.">
-            <div className="space-y-2">
-              <div className="overflow-x-auto rounded-md border border-border">
-                <table className="w-full min-w-[48rem] text-right text-sm">
-                  <thead className="bg-muted/40 text-xs text-muted-foreground">
-                    <tr>
-                      <th className="px-2 py-1.5 font-medium">نام / شرح<RequiredMark /></th>
-                      <th className="w-28 px-2 py-1.5 font-medium">مقدار<RequiredMark /></th>
-                      <th className="w-36 px-2 py-1.5 font-medium">واحد<RequiredMark /></th>
-                      <th className="w-40 px-2 py-1.5 font-medium">قیمت واحد</th>
-                      <th className="w-40 px-2 py-1.5 font-medium">قیمت کل<RequiredMark /></th>
-                      <th className="w-12 px-2 py-1.5 font-medium"></th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-border">
-                    {form.items.map((item) => (
-                      <tr key={item.key}>
-                        <td className="px-2 py-1">
-                          <Input
-                            aria-label="نام یا شرح قلم"
-                            value={item.name}
-                            onChange={(event) => updateItem(item.key, { name: event.target.value })}
-                          />
-                        </td>
-                        <td className="px-2 py-1">
-                          <Input
-                            aria-label="مقدار"
-                            inputMode="decimal"
-                            value={item.quantity}
-                            onChange={(event) => updateItem(item.key, { quantity: event.target.value })}
-                          />
-                        </td>
-                        <td className="px-2 py-1">
-                          <select
-                            aria-label="واحد"
-                            className={`${selectClass} w-full`}
-                            value={item.unitId}
-                            onChange={(event) => updateItem(item.key, { unitId: event.target.value })}
-                          >
-                            <option value="">-</option>
-                            {units.map((unit) => (
-                              <option key={unit.id} value={unit.id}>
-                                {unit.nameFa}
-                              </option>
-                            ))}
-                          </select>
-                        </td>
-                        <td className="px-2 py-1">
-                          <Input
-                            aria-label="قیمت واحد"
-                            inputMode="decimal"
-                            placeholder="-"
-                            value={item.unitPrice}
-                            onChange={(event) => updateItem(item.key, { unitPrice: event.target.value })}
-                          />
-                        </td>
-                        <td className="px-2 py-1">
-                          <Input
-                            aria-label="قیمت کل"
-                            inputMode="decimal"
-                            value={item.totalPrice}
-                            onChange={(event) => updateItem(item.key, { totalPrice: event.target.value })}
-                          />
-                        </td>
-                        <td className="px-2 py-1">
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon"
-                            aria-label="حذف قلم"
-                            onClick={() => removeItemRow(item.key)}
-                            disabled={form.items.length === 1}
-                          >
-                            <Trash2 className="size-4" />
-                          </Button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                  <tfoot>
-                    <tr className="border-t border-border bg-muted/30 font-medium">
-                      <td className="px-2 py-1.5" colSpan={4}>جمع کل اقلام</td>
-                      <td className="px-2 py-1.5 tabular-nums">{formatMoney(itemsTotal)} ریال</td>
-                      <td className="px-2 py-1.5"></td>
-                    </tr>
-                  </tfoot>
-                </table>
-              </div>
-              <Button type="button" variant="outline" size="sm" onClick={addItemRow}>
-                <Plus className="size-4" aria-hidden="true" />
-                افزودن قلم
-              </Button>
-            </div>
-          </FormSection>
+          <ItemsGrid
+            items={form.items}
+            setItems={(updateItems) => setForm((current) => ({ ...current, items: updateItems(current.items) }))}
+            units={units}
+            itemsTotal={itemsTotal}
+          />
 
           {/* Sections 3 & 4 — یادداشت and (create mode) اسناد side by side
               on desktop, rather than stacked, to save another block of height. */}
@@ -1192,83 +918,13 @@ export function PurchaseForm(props: Props) {
             </FormSection>
 
             {props.mode === "create" && canUploadDocuments ? (
-              <FormSection title="اسناد" description="فایل‌ها پس از ثبت خرید بارگذاری می‌شوند (PDF یا تصویر، حداکثر ۱۰ مگابایت).">
-                <div className="space-y-2">
-                  {stagedDocuments.length > 0 ? (
-                    <ul className="divide-y divide-border rounded-md border border-border" aria-label="اسناد انتخاب‌شده">
-                      {stagedDocuments.map((doc) => (
-                        <li key={doc.key} className="flex flex-wrap items-center gap-2 px-2 py-1.5 text-sm">
-                          <Paperclip className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-                          <span className="min-w-0 flex-1 truncate" title={doc.file.name}>{doc.file.name}</span>
-                          <select
-                            aria-label={`نوع سند ${doc.file.name}`}
-                            className={`${selectClass} h-8 w-32`}
-                            value={doc.documentType}
-                            disabled={doc.state !== "pending"}
-                            onChange={(event) => updateStagedDocument(doc.key, { documentType: event.target.value as DocumentType })}
-                          >
-                            {DOCUMENT_TYPES.map((type) => (
-                              <option key={type} value={type}>{documentTypeLabels[type]}</option>
-                            ))}
-                          </select>
-                          <Input
-                            aria-label={`شماره سند ${doc.file.name}`}
-                            placeholder="شماره سند"
-                            className="h-8 w-28"
-                            value={doc.documentNumber}
-                            disabled={doc.state !== "pending"}
-                            onChange={(event) => updateStagedDocument(doc.key, { documentNumber: event.target.value })}
-                          />
-                          {doc.state !== "pending" ? (
-                            <span
-                              className={`text-xs ${doc.state === "failed" ? "text-destructive" : doc.state === "done" ? "text-success" : "text-muted-foreground"}`}
-                              title={doc.error}
-                            >
-                              {stagedDocumentStateLabels[doc.state]}
-                              {doc.state === "failed" && doc.error ? `: ${doc.error}` : ""}
-                            </span>
-                          ) : (
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="icon"
-                              className="size-8"
-                              aria-label={`حذف ${doc.file.name}`}
-                              onClick={() => removeStagedDocument(doc.key)}
-                            >
-                              <Trash2 className="size-4" />
-                            </Button>
-                          )}
-                        </li>
-                      ))}
-                    </ul>
-                  ) : null}
-                  {!savedWithDocumentFailures ? (
-                    // The native file input's own button/label text follows
-                    // the browser's UI language (often English), so it's
-                    // visually hidden behind a Persian label-as-button.
-                    <label
-                      htmlFor="purchase-documents"
-                      className="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-md border border-input px-3 text-sm hover:bg-muted focus-within:ring-2 focus-within:ring-ring"
-                    >
-                      <Paperclip className="size-4" aria-hidden="true" />
-                      افزودن فایل سند
-                      <input
-                        id="purchase-documents"
-                        type="file"
-                        multiple
-                        accept=".pdf,.png,.jpg,.jpeg"
-                        className="sr-only"
-                        onChange={(event) => {
-                          addStagedFiles(event.target.files);
-                          // Reset so picking the same file again still fires onChange.
-                          event.target.value = "";
-                        }}
-                      />
-                    </label>
-                  ) : null}
-                </div>
-              </FormSection>
+              <StagedDocuments
+                stagedDocuments={stagedDocuments}
+                setStagedDocuments={setStagedDocuments}
+                updateStagedDocument={updateStagedDocument}
+                savedWithDocumentFailures={savedWithDocumentFailures !== null}
+                pushErrors={pushErrors}
+              />
             ) : null}
           </div>
         </form>

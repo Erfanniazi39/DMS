@@ -101,7 +101,7 @@ export const createPurchaseSchema = purchaseBaseSchema
 
 // paymentStatus is NOT part of this form — it, along with the total/paid
 // amounts, is derived automatically from items and payments (see
-// PurchasesService) rather than set directly.
+// purchase-totals.ts) rather than set directly.
 //
 // updatedAt is the optimistic-locking token: the Purchase.updatedAt the
 // client loaded. If the record has changed since, the update is refused
@@ -115,8 +115,8 @@ export const updatePurchaseSchema = purchaseBaseSchema
 
 export const createPurchasePaymentSchema = z.object({
   amount: requiredMoney('مبلغ', { positive: true }),
-  // Must not be before the purchase date (checked in PurchasesService); a
-  // future date is fine — post-dated cheques.
+  // Must not be before the purchase date (checked in PurchasePaymentsService);
+  // a future date is fine — post-dated cheques.
   paymentDate: requiredBusinessDate('تاریخ پرداخت معتبر نیست'),
   method: enumField(PAYMENT_METHODS, 'روش پرداخت نامعتبر است'),
   referenceNumber: optionalTrimmedString(60),
@@ -143,7 +143,7 @@ export const createPurchaseDocumentSchema = z.object({
 
 // Return-to-Vendor. Each line names the exact PurchaseItem being returned;
 // whether that item belongs to this purchase, and whether the quantity fits
-// within what's still returnable, is checked in PurchasesService (needs the
+// within what's still returnable, is checked in PurchaseReturnsService (needs the
 // database). creditAmount is entered directly — never derived from
 // quantity × unit price, same philosophy as PurchaseItem.totalPrice.
 const purchaseReturnItemSchema = z.object({
@@ -156,7 +156,7 @@ const purchaseReturnItemSchema = z.object({
 // returnNumber is never accepted from the client — it's server-generated
 // (RTN-000001), same as purchaseNumber.
 export const createPurchaseReturnSchema = z.object({
-  // Must not be before the purchase date (checked in PurchasesService).
+  // Must not be before the purchase date (checked in PurchaseReturnsService).
   returnDate: requiredBusinessDate('تاریخ برگشت معتبر نیست'),
   reason: requiredText(500, 'علت برگشت الزامی است'),
   note: optionalTrimmedString(1000),

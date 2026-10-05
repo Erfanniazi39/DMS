@@ -2,6 +2,18 @@ import { Injectable } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 
+// The entityType values written to AUDIT_LOG today. Shared because each one
+// is written by its owning module and read back elsewhere (Dashboard's
+// recent-activity feed filters on Purchase/PurchaseRequest). Deliberately
+// just the existing values, not an event taxonomy — `action` strings stay
+// owned by (and local to) each writing module.
+export const AUDIT_ENTITY = {
+  PURCHASE: 'Purchase',
+  PURCHASE_REQUEST: 'PurchaseRequest',
+  CUSTOMER: 'Customer',
+  ITEM: 'Item',
+} as const;
+
 export type AuditEntry = {
   userId: number | null;
   action: string;
@@ -38,6 +50,27 @@ export class AuditService {
         ...(entry.entityId !== undefined ? { entityId: String(entry.entityId) } : {}),
         ...(entry.details !== undefined ? { details: entry.details } : {}),
         ipAddress: entry.ipAddress ?? undefined,
+      },
+    });
+  }
+
+  // Newest-first read of entries about the given entity types, for activity
+  // feeds. Never selects ipAddress. Rows without an entityType (auth events:
+  // LOGIN/LOGOUT/LOGIN_FAILED) can't match an entityTypes filter, so they're
+  // never included.
+  async listRecent(options: { entityTypes: readonly string[]; limit: number }) {
+    return this.prisma.auditLog.findMany({
+      where: { entityType: { in: [...options.entityTypes] } },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: options.limit,
+      select: {
+        id: true,
+        action: true,
+        entityType: true,
+        entityId: true,
+        details: true,
+        createdAt: true,
+        user: { select: { id: true, username: true } },
       },
     });
   }

@@ -11,7 +11,9 @@ import { useToasts, ToastViewport } from "@/components/ui/toast";
 import { formatJalali } from "@/lib/jalali";
 import { apiFetch, type ApiError } from "@/lib/api";
 import { useAdminUser } from "@/app/admin/layout";
-import { ColorLegend, StatusBadge, selectClass, employeeFullName, toneCellClasses, type DepartmentOption } from "../purchases/shared";
+import { ColorLegend, StatusBadge, toneCellClasses } from "@/components/ui/status-badge";
+import { selectClass } from "@/components/ui/form-field";
+import { employeeFullName, type DepartmentOption } from "@/lib/reference-options";
 import {
   PURCHASE_REQUEST_PRIORITIES,
   PURCHASE_REQUEST_STATUSES,

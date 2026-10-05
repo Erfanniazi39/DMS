@@ -2,7 +2,7 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException }
 import { ItemStatus, Prisma } from '@prisma/client';
 import { toSkipTake, type PaginationParams } from '../common/pagination';
 import { PrismaService } from '../prisma/prisma.service';
-import { AuditService } from '../audit/audit.service';
+import { AUDIT_ENTITY, AuditService } from '../audit/audit.service';
 import type { CreateItemDto, UpdateItemDto } from './dto/item.dto';
 
 export type ItemListFilters = { q?: string; status?: string; categoryId?: string };
@@ -77,7 +77,7 @@ export class ItemsService {
       },
       include: itemInclude,
     });
-    await this.audit.log({ userId, ipAddress, action: 'ITEM_CREATED', entityType: 'Item', entityId: created.id, details: created.code });
+    await this.audit.log({ userId, ipAddress, action: 'ITEM_CREATED', entityType: AUDIT_ENTITY.ITEM, entityId: created.id, details: created.code });
     return created;
   }
 
@@ -98,7 +98,7 @@ export class ItemsService {
       },
       include: itemInclude,
     });
-    await this.audit.log({ userId, ipAddress, action: 'ITEM_UPDATED', entityType: 'Item', entityId: id, details: updated.code });
+    await this.audit.log({ userId, ipAddress, action: 'ITEM_UPDATED', entityType: AUDIT_ENTITY.ITEM, entityId: id, details: updated.code });
     return updated;
   }
 
@@ -115,7 +115,7 @@ export class ItemsService {
       }
       throw error;
     }
-    await this.audit.log({ userId, ipAddress, action: 'ITEM_DELETED', entityType: 'Item', entityId: id, details: item.code });
+    await this.audit.log({ userId, ipAddress, action: 'ITEM_DELETED', entityType: AUDIT_ENTITY.ITEM, entityId: id, details: item.code });
     return { success: true };
   }
 

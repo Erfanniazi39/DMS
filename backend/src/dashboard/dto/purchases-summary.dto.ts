@@ -1,10 +1,7 @@
 import { z } from 'zod';
+import { emptyToUndefined } from '../../common/zod-fields';
 
-// Same "empty string means not provided" convention used by the other DTOs
-// in this project (see purchase.dto.ts / employee.dto.ts).
-function emptyToUndefined(value: unknown) {
-  return typeof value === 'string' && value.trim() === '' ? undefined : value;
-}
+// emptyToUndefined: shared "empty string means not provided" convention.
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const MS_PER_DAY = 86_400_000;

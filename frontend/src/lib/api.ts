@@ -12,6 +12,40 @@ function collectZodMessages(data: unknown): string[] {
   return [...formMessages, ...fieldMessages];
 }
 
+// Builds the ApiError thrown by both apiFetch and apiUpload from a non-OK
+// response, so every caller gets the same shape: the backend's message (or
+// joined message array), its machine-readable `code`/`details`, and Zod's
+// per-field messages when present.
+async function parseApiError(res: Response, fallbackMessage: string): Promise<ApiError> {
+  let message = fallbackMessage;
+  let messages: string[] | undefined;
+  let code: string | undefined;
+  let details: unknown;
+  try {
+    const data = await res.json();
+    if (typeof data?.code === "string") code = data.code;
+    details = data?.details;
+    if (typeof data?.message === "string") {
+      message = data.message;
+    } else if (Array.isArray(data?.message)) {
+      messages = data.message;
+      message = data.message.join("، ");
+    }
+    // Zod validation failures (see ZodValidationPipe) carry the specific,
+    // per-field messages under `errors`, not in `message`. Surface those
+    // individually when present so the user sees exactly what was wrong,
+    // not just a generic "invalid data" sentence.
+    const zodMessages = collectZodMessages(data);
+    if (zodMessages.length > 0) {
+      messages = zodMessages;
+      message = zodMessages.join("، ");
+    }
+  } catch {
+    // ignore JSON parse errors, fall back to the default message
+  }
+  return { message, messages, status: res.status, code, details };
+}
+
 export async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
   const res = await fetch(`/api${path}`, {
     ...options,
@@ -22,35 +56,7 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}): Prom
     credentials: "include",
   });
 
-  if (!res.ok) {
-    let message = "خطایی رخ داد. لطفاً دوباره تلاش کنید.";
-    let messages: string[] | undefined;
-    let code: string | undefined;
-    let details: unknown;
-    try {
-      const data = await res.json();
-      if (typeof data?.code === "string") code = data.code;
-      details = data?.details;
-      if (typeof data?.message === "string") {
-        message = data.message;
-      } else if (Array.isArray(data?.message)) {
-        messages = data.message;
-        message = data.message.join("، ");
-      }
-      // Zod validation failures (see ZodValidationPipe) carry the specific,
-      // per-field messages under `errors`, not in `message`. Surface those
-      // individually when present so the user sees exactly what was wrong,
-      // not just a generic "invalid data" sentence.
-      const zodMessages = collectZodMessages(data);
-      if (zodMessages.length > 0) {
-        messages = zodMessages;
-        message = zodMessages.join("، ");
-      }
-    } catch {
-      // ignore JSON parse errors, fall back to the default message
-    }
-    throw { message, messages, status: res.status, code, details } satisfies ApiError;
-  }
+  if (!res.ok) throw await parseApiError(res, "خطایی رخ داد. لطفاً دوباره تلاش کنید.");
 
   if (res.status === 204) {
     return undefined as T;
@@ -73,22 +79,7 @@ export async function apiUpload<T>(path: string, file: File, fieldName = "file")
     credentials: "include",
   });
 
-  if (!res.ok) {
-    let message = "بارگذاری فایل ناموفق بود.";
-    let messages: string[] | undefined;
-    try {
-      const data = await res.json();
-      if (typeof data?.message === "string") {
-        message = data.message;
-      } else if (Array.isArray(data?.message)) {
-        messages = data.message;
-        message = data.message.join("، ");
-      }
-    } catch {
-      // ignore JSON parse errors, fall back to the default message
-    }
-    throw { message, messages, status: res.status } satisfies ApiError;
-  }
+  if (!res.ok) throw await parseApiError(res, "بارگذاری فایل ناموفق بود.");
 
   if (res.status === 204) {
     return undefined as T;
