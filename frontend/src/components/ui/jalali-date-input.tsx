@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { JALALI_MONTH_NAMES, jalaliMonthLength, toGregorian, toJalali, toPersianDigits } from "@/lib/jalali";
+import { JALALI_MAX_YEAR, JALALI_MIN_YEAR, JALALI_MONTH_NAMES, jalaliMonthLength, safeToJalali, toGregorian, toJalali, toPersianDigits } from "@/lib/jalali";
 
 type JalaliDateInputProps = {
   /** ISO date string "YYYY-MM-DD", or "" when empty. */
@@ -15,7 +15,9 @@ type JalaliDateInputProps = {
 
 function parseIso(value: string) {
   if (!value) return null;
-  return toJalali(new Date(`${value}T00:00:00`));
+  // A stored date outside the convertible Jalali range (e.g. 9999-12-31)
+  // shows as unselected rather than crashing the form.
+  return safeToJalali(new Date(`${value}T00:00:00`));
 }
 
 // Three plain <select> dropdowns (year/month/day) backed by the Jalali
@@ -31,12 +33,14 @@ function parseIso(value: string) {
 // looked like it "didn't select" anything. Local state remembers each
 // selection immediately; `onChange` only fires up to the parent once a full
 // date can be computed.
-export function JalaliDateInput({ value, onChange, idPrefix, required, minYear = 1300, maxYear }: JalaliDateInputProps) {
+export function JalaliDateInput({ value, onChange, idPrefix, required, minYear = JALALI_MIN_YEAR, maxYear }: JalaliDateInputProps) {
   const currentJalaliYear = toJalali(new Date()).jy;
   // Dates in this app (birth date, hire date) are never in the future, so
   // the year list stops at the current Jalali year unless the caller says
-  // otherwise.
-  const effectiveMaxYear = maxYear ?? currentJalaliYear;
+  // otherwise. Either way the list never leaves the plausible business range
+  // (JALALI_MIN_YEAR–JALALI_MAX_YEAR) the backend accepts.
+  const effectiveMinYear = Math.max(minYear, JALALI_MIN_YEAR);
+  const effectiveMaxYear = Math.min(maxYear ?? currentJalaliYear, JALALI_MAX_YEAR);
 
   const initial = parseIso(value);
   const [jy, setJy] = useState<number | null>(initial?.jy ?? null);
@@ -59,7 +63,7 @@ export function JalaliDateInput({ value, onChange, idPrefix, required, minYear =
   }
 
   const years: number[] = [];
-  for (let year = effectiveMaxYear; year >= minYear; year -= 1) years.push(year);
+  for (let year = effectiveMaxYear; year >= effectiveMinYear; year -= 1) years.push(year);
 
   const dayCount = jy !== null && jm !== null ? jalaliMonthLength(jy, jm) : 31;
   const days = Array.from({ length: dayCount }, (_, index) => index + 1);

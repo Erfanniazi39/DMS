@@ -27,3 +27,11 @@ export const OUTSTANDING_PURCHASE_WHERE = {
 } satisfies Prisma.PurchaseWhereInput;
 
 export const OPEN_PURCHASE_WHERE = { status: { in: OPEN_PURCHASE_STATUSES } } satisfies Prisma.PurchaseWhereInput;
+
+// Business decision 2026-10-05: money can only be recorded against a
+// purchase that's actually been committed to — never a DRAFT or CANCELLED one.
+export const PAYABLE_PURCHASE_STATUSES: PurchaseStatus[] = ['CONFIRMED', 'RECEIVED', 'CLOSED'];
+
+// Business decision 2026-10-05: a return represents goods that were actually
+// received, so only a RECEIVED or CLOSED purchase can have one.
+export const RETURNABLE_PURCHASE_STATUSES: PurchaseStatus[] = ['RECEIVED', 'CLOSED'];

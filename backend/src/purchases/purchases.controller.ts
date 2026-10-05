@@ -16,9 +16,8 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import type { Request } from 'express';
-import { randomUUID } from 'crypto';
-import { diskStorage } from 'multer';
-import { extname, join } from 'path';
+import { memoryStorage } from 'multer';
+import { extname } from 'path';
 import { parsePagination } from '../common/pagination';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
@@ -29,16 +28,18 @@ import {
   createPurchasePaymentSchema,
   createPurchaseReturnSchema,
   createPurchaseSchema,
+  purchaseListQuerySchema,
+  updatePurchasePaymentSchema,
   updatePurchaseSchema,
   type CreatePurchaseDocumentDto,
   type CreatePurchaseDto,
   type CreatePurchasePaymentDto,
   type CreatePurchaseReturnDto,
+  type PurchaseListQuery,
   type UpdatePurchaseDto,
+  type UpdatePurchasePaymentDto,
 } from './dto/purchase.dto';
-import { PurchasesService } from './purchases.service';
-
-const ALLOWED_DOCUMENT_EXTENSIONS = new Set(['.pdf', '.png', '.jpg', '.jpeg']);
+import { ALLOWED_DOCUMENT_EXTENSIONS, PurchasesService } from './purchases.service';
 
 @Controller('purchases')
 @UseGuards(SessionAuthGuard, PermissionsGuard)
@@ -47,30 +48,22 @@ export class PurchasesController {
 
   @Get()
   @RequirePermissions('purchases.view')
-  list(
-    @Query('q') q?: string,
-    @Query('purchaseTypeId') purchaseTypeId?: string,
-    @Query('status') status?: string,
-    @Query('paymentStatus') paymentStatus?: string,
-    @Query('supplierId') supplierId?: string,
-    @Query('dateFrom') dateFrom?: string,
-    @Query('dateTo') dateTo?: string,
-    // All / Operational / Historical reporting — omitted returns both kinds.
-    @Query('sourceType') sourceType?: string,
-    // Opt-in pagination — see parsePagination(). Omitted = full array.
-    @Query('page') page?: string,
-    @Query('pageSize') pageSize?: string,
-  ) {
-    const pagination = parsePagination(page, pageSize);
+  // Filters are validated by purchaseListQuerySchema (unknown enum values,
+  // unparseable dates or non-numeric ids → 400, not a raw 500). sourceType:
+  // All / Operational / Historical reporting — omitted returns both kinds.
+  // page/pageSize: opt-in pagination — see parsePagination(). Omitted = full
+  // array.
+  list(@Query(new ZodValidationPipe(purchaseListQuerySchema)) query: PurchaseListQuery) {
+    const pagination = parsePagination(query.page, query.pageSize);
     return this.purchasesService.list({
-      q: q || undefined,
-      purchaseTypeId: purchaseTypeId ? Number(purchaseTypeId) : undefined,
-      status: status || undefined,
-      paymentStatus: paymentStatus || undefined,
-      supplierId: supplierId ? Number(supplierId) : undefined,
-      dateFrom: dateFrom ? new Date(dateFrom) : undefined,
-      dateTo: dateTo ? new Date(dateTo) : undefined,
-      sourceType: sourceType || undefined,
+      q: query.q || undefined,
+      purchaseTypeId: query.purchaseTypeId,
+      status: query.status,
+      paymentStatus: query.paymentStatus,
+      supplierId: query.supplierId,
+      dateFrom: query.dateFrom,
+      dateTo: query.dateTo,
+      sourceType: query.sourceType,
     }, pagination);
   }
 
@@ -114,6 +107,18 @@ export class PurchasesController {
     return this.purchasesService.addPayment(id, dto, req.session.userId ?? null, req.ip);
   }
 
+  // Edit a payment in place — same permission as adding/removing one.
+  @Patch(':id/payments/:paymentId')
+  @RequirePermissions('purchases.manage')
+  updatePayment(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('paymentId', ParseIntPipe) paymentId: number,
+    @Body(new ZodValidationPipe(updatePurchasePaymentSchema)) dto: UpdatePurchasePaymentDto,
+    @Req() req: Request,
+  ) {
+    return this.purchasesService.updatePayment(id, paymentId, dto, req.session.userId ?? null, req.ip);
+  }
+
   @Delete(':id/payments/:paymentId')
   @RequirePermissions('purchases.manage')
   removePayment(@Param('id', ParseIntPipe) id: number, @Param('paymentId', ParseIntPipe) paymentId: number, @Req() req: Request) {
@@ -121,15 +126,16 @@ export class PurchasesController {
   }
 
   // Return to Vendor — sub-resource of a Purchase, same shape as payments.
-  // All four routes (reads included) require purchases.manage.
+  // Reading needs only purchases.view; creating/deleting needs
+  // purchases.manage specifically (business decision 2026-10-05).
   @Get(':id/returns')
-  @RequirePermissions('purchases.manage')
+  @RequirePermissions('purchases.view')
   listReturns(@Param('id', ParseIntPipe) id: number) {
     return this.purchasesService.listReturns(id);
   }
 
   @Get(':id/returns/:returnId')
-  @RequirePermissions('purchases.manage')
+  @RequirePermissions('purchases.view')
   getReturn(@Param('id', ParseIntPipe) id: number, @Param('returnId', ParseIntPipe) returnId: number) {
     return this.purchasesService.getReturn(id, returnId);
   }
@@ -168,17 +174,17 @@ export class PurchasesController {
 
   // File attached to a document record created just above — same
   // metadata-then-file two-step upload pattern as the Employee endpoints.
+  //
+  // Held in memory (10 MB cap) rather than streamed straight to disk, so
+  // PurchasesService.setDocumentFile() can verify the purchase/document pair
+  // and the file's actual content (magic bytes, not just the extension)
+  // BEFORE anything is written — a mismatched id pair or a renamed .exe never
+  // leaves an orphan file in uploads/purchases.
   @Post(':id/documents/:documentId/file')
   @RequirePermissions('documents.upload')
   @UseInterceptors(
     FileInterceptor('file', {
-      storage: diskStorage({
-        destination: join(process.cwd(), 'uploads', 'purchases'),
-        filename: (_request, file, callback) => {
-          const ext = extname(file.originalname).toLowerCase();
-          callback(null, `${randomUUID()}${ext}`);
-        },
-      }),
+      storage: memoryStorage(),
       fileFilter: (_request, file, callback) => {
         const ext = extname(file.originalname).toLowerCase();
         if (!ALLOWED_DOCUMENT_EXTENSIONS.has(ext)) {
@@ -193,9 +199,16 @@ export class PurchasesController {
   uploadDocumentFile(
     @Param('id', ParseIntPipe) id: number,
     @Param('documentId', ParseIntPipe) documentId: number,
+    @Req() req: Request,
     @UploadedFile() file?: Express.Multer.File,
   ) {
     if (!file) throw new BadRequestException('فایلی ارسال نشده است');
-    return this.purchasesService.setDocumentFile(id, documentId, `/uploads/purchases/${file.filename}`);
+    return this.purchasesService.setDocumentFile(
+      id,
+      documentId,
+      { originalName: file.originalname, buffer: file.buffer },
+      req.session.userId ?? null,
+      req.ip,
+    );
   }
 }

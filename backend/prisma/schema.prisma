@@ -450,6 +450,10 @@ model Purchase {
   paidAmount    Decimal               @default(0) @map("paid_amount") @db.Decimal(15, 0)
   note          String?
   createdAt     DateTime              @default(now()) @map("created_at")
+  // Optimistic-locking token for PATCH /purchases/:id (the client sends back
+  // the updatedAt it loaded; a mismatch is a 409). @default(now()) so the
+  // column could be added to a table that already has rows.
+  updatedAt     DateTime              @default(now()) @updatedAt @map("updated_at")
 
   items     PurchaseItem[]
   payments  PurchasePayment[]

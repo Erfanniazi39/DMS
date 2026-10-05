@@ -16,6 +16,16 @@ async function openListPage(page: Page) {
   await expect(page.getByRole("heading", { name: "درخواست‌های خرید" })).toBeVisible();
 }
 
+// The list is paginated (newest requestDate first) and these tests date
+// their requests 1404-01-01, so a freshly created row is generally NOT on
+// page 1. Narrow the list to it via the search box (matches the request
+// number) instead of assuming it's visible on the first page.
+async function openListFilteredTo(page: Page, requestNumber: string) {
+  await openListPage(page);
+  await page.getByPlaceholder("جستجو بر اساس شماره درخواست").fill(requestNumber);
+  await expect(page.locator("tbody tr").filter({ hasText: requestNumber })).toHaveCount(1);
+}
+
 async function openCreatePage(page: Page) {
   // Scoped to <main> — the sidebar nav has its own "ثبت درخواست خرید" link
   // alongside this page's own button with the same accessible name.
@@ -47,7 +57,9 @@ async function fillFirstItem(page: Page, values: { name: string; quantity: strin
   await unitSelect.selectOption(unitValue);
 }
 
-async function createPurchaseRequest(page: Page, itemName: string) {
+// Returns the server-generated request number (read from the detail page
+// heading the form redirects to).
+async function createPurchaseRequest(page: Page, itemName: string): Promise<string> {
   await openCreatePage(page);
   await selectJalaliDate(page, "request-date", { year: 1404, month: 1, day: 1 });
   await selectFirstDepartment(page);
@@ -60,6 +72,8 @@ async function createPurchaseRequest(page: Page, itemName: string) {
     page.getByRole("status").filter({ hasText: "درخواست خرید جدید با موفقیت ثبت شد." }),
   ).toBeVisible();
   await page.waitForURL(/\/\/[^/]+\/purchase-requests\/\d+$/);
+  const heading = await page.getByRole("heading", { level: 1, name: /^درخواست خرید REQ-\d+$/ }).innerText();
+  return heading.replace("درخواست خرید", "").trim();
 }
 
 test.beforeEach(async ({ page }) => {
@@ -68,9 +82,9 @@ test.beforeEach(async ({ page }) => {
 
 test("1) creating a purchase request with valid data succeeds and appears in the list", async ({ page }) => {
   const itemName = `قلم آزمایشی ${uniqueSuffix()}`;
-  await createPurchaseRequest(page, itemName);
+  const requestNumber = await createPurchaseRequest(page, itemName);
 
-  await openListPage(page);
+  await openListFilteredTo(page, requestNumber);
   const row = page.locator("tbody tr").filter({ hasText: itemName });
   await expect(row).toHaveCount(1);
   // A server-generated REQ-###### number, not something the client supplied.
@@ -104,9 +118,9 @@ test("2b) leaving the date and department empty shows the app's Persian message,
 
 test("3) editing a purchase request's note and priority succeeds and persists", async ({ page }) => {
   const itemName = `قلم ویرایش ${uniqueSuffix()}`;
-  await createPurchaseRequest(page, itemName);
+  const requestNumber = await createPurchaseRequest(page, itemName);
 
-  await openListPage(page);
+  await openListFilteredTo(page, requestNumber);
   const row = page.locator("tbody tr").filter({ hasText: itemName }).first();
   await row.getByRole("button", { name: "ویرایش" }).click();
   await expect(page.getByRole("heading", { name: "ویرایش درخواست خرید" })).toBeVisible();
@@ -120,7 +134,7 @@ test("3) editing a purchase request's note and priority succeeds and persists", 
     page.getByRole("status").filter({ hasText: "درخواست خرید با موفقیت ویرایش شد." }),
   ).toBeVisible();
 
-  await openListPage(page);
+  await openListFilteredTo(page, requestNumber);
   const updatedRow = page.locator("tbody tr").filter({ hasText: itemName }).first();
   await expect(updatedRow).toContainText("فوری");
 });

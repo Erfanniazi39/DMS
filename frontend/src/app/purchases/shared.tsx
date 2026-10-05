@@ -5,6 +5,7 @@
 // `page.tsx`/`layout.tsx` name, so Next.js does not treat it as one.
 
 import { formatJalali } from "@/lib/jalali";
+import type { PurchaseRequestStatus } from "@/app/purchase-requests/shared";
 
 export type PurchaseStatus = "DRAFT" | "CONFIRMED" | "RECEIVED" | "CLOSED" | "CANCELLED";
 export type PurchasePaymentStatus = "UNPAID" | "PARTIAL" | "PAID";
@@ -18,6 +19,10 @@ export type DocumentType = "INVOICE" | "CONTRACT" | "DELIVERY_NOTE" | "WARRANTY"
 export type PurchaseSourceType = "OPERATIONAL" | "HISTORICAL_IMPORT";
 
 export const PURCHASE_STATUSES: PurchaseStatus[] = ["DRAFT", "CONFIRMED", "RECEIVED", "CLOSED", "CANCELLED"];
+// The only statuses offered when creating a purchase (mirrors the backend's
+// createPurchaseSchema): CONFIRMED is the default — the decision to buy is
+// already made — and DRAFT stays available for staging an unfinished entry.
+export const PURCHASE_CREATE_STATUSES: PurchaseStatus[] = ["DRAFT", "CONFIRMED"];
 export const PURCHASE_PAYMENT_STATUSES: PurchasePaymentStatus[] = ["UNPAID", "PARTIAL", "PAID"];
 export const PAYMENT_METHODS: PaymentMethod[] = ["CASH", "BANK_TRANSFER", "CHECK", "CARD"];
 export const PAYMENT_RECORD_STATUSES: PaymentRecordStatus[] = ["PENDING", "COMPLETED", "CANCELLED"];
@@ -110,6 +115,33 @@ export function StatusBadge({ label, tone }: { label: string; tone: BadgeTone })
   );
 }
 
+// A light full-cell tint (same colors/opacity as the badge above, just
+// without the border/pill shape) — used on list tables so a status/payment
+// column reads as a color block at a glance, not just a small chip.
+export const toneCellClasses: Record<BadgeTone, string> = {
+  primary: "bg-primary/10",
+  secondary: "bg-secondary",
+  muted: "bg-muted",
+  accent: "bg-accent",
+  destructive: "bg-destructive/10",
+  success: "bg-success/10",
+  warning: "bg-warning/10",
+};
+
+// A small "what does this color mean" key, placed once above/below a list
+// whose columns use toneCellClasses/StatusBadge tones — so the coloring is
+// explained rather than left for the user to guess.
+export function ColorLegend({ title, items }: { title: string; items: { label: string; tone: BadgeTone }[] }) {
+  return (
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 text-xs">
+      <span className="font-medium text-muted-foreground">{title}:</span>
+      {items.map((item) => (
+        <StatusBadge key={item.label} label={item.label} tone={item.tone} />
+      ))}
+    </div>
+  );
+}
+
 /** Rial amounts arrive from the API as Prisma Decimal → JSON strings. */
 export function formatMoney(value: string | number | null | undefined): string {
   if (value === null || value === undefined || value === "") return "-";
@@ -157,6 +189,7 @@ export type PurchaseRequestOption = { id: number; requestNumber: string };
 // needs a backend change: the list response already carries all of it.
 export type PurchaseRequestPickerOption = PurchaseRequestOption & {
   requestDate: string;
+  status: PurchaseRequestStatus;
   requesterDepartment: { id: number; name: string } | null;
   items: { name: string }[];
   _count: { items: number };
@@ -278,6 +311,9 @@ export type PurchaseDetail = {
   paidAmount: string;
   note: string | null;
   createdAt: string;
+  // Optimistic-locking token — sent back on PATCH; a mismatch is a 409
+  // with code RECORD_MODIFIED (someone else saved in between).
+  updatedAt: string;
   purchaseType: PurchaseTypeOption;
   // Nullable for the same HISTORICAL_IMPORT reason as buyerEmployee below.
   requesterDepartment: { id: number; code: string; name: string } | null;
@@ -288,7 +324,10 @@ export type PurchaseDetail = {
     lastName: string;
     department: { id: number; name: string };
   } | null;
-  supplier: { id: number; code: string; name: string; phone: string | null; email: string | null };
+  // Display fields only — GET /purchases/:id no longer returns supplier
+  // contact/bank/national-ID fields (PII narrowed to purchases.view, QA
+  // 2026-10-05).
+  supplier: { id: number; code: string; name: string };
   purchaseRequest: PurchaseRequestOption | null;
   items: PurchaseItemRow[];
   payments: PurchasePaymentRow[];

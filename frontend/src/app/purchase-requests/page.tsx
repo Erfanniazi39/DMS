@@ -11,7 +11,7 @@ import { useToasts, ToastViewport } from "@/components/ui/toast";
 import { formatJalali } from "@/lib/jalali";
 import { apiFetch, type ApiError } from "@/lib/api";
 import { useAdminUser } from "@/app/admin/layout";
-import { StatusBadge, selectClass, employeeFullName, type DepartmentOption } from "../purchases/shared";
+import { ColorLegend, StatusBadge, selectClass, employeeFullName, toneCellClasses, type DepartmentOption } from "../purchases/shared";
 import {
   PURCHASE_REQUEST_PRIORITIES,
   PURCHASE_REQUEST_STATUSES,
@@ -228,7 +228,14 @@ export default function PurchaseRequestsPage() {
                 درخواست خریدی با این مشخصات یافت نشد.
               </p>
             ) : (
-              <div className="overflow-x-auto rounded-lg border border-border">
+              <div className="space-y-2">
+                <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
+                  <ColorLegend
+                    title="رنگ ردیف‌ها بر اساس وضعیت"
+                    items={PURCHASE_REQUEST_STATUSES.map((status) => ({ label: purchaseRequestStatusLabels[status], tone: purchaseRequestStatusTone[status] }))}
+                  />
+                </div>
+                <div className="overflow-x-auto rounded-lg border border-border">
                 <table className="w-full text-right text-sm">
                   <thead className="bg-muted/50 text-muted-foreground">
                     <tr>
@@ -247,7 +254,7 @@ export default function PurchaseRequestsPage() {
                     {requests.map((request) => (
                       <tr
                         key={request.id}
-                        className="cursor-pointer hover:bg-muted/30"
+                        className={`cursor-pointer transition-colors hover:brightness-95 ${toneCellClasses[purchaseRequestStatusTone[request.status]]}`}
                         onClick={() => router.push(`/purchase-requests/${request.id}`)}
                       >
                         <td className="px-4 py-3 text-muted-foreground">{formatJalali(request.requestDate)}</td>
@@ -282,6 +289,7 @@ export default function PurchaseRequestsPage() {
                     ))}
                   </tbody>
                 </table>
+                </div>
               </div>
             )}
             {requests.length > 0 ? (

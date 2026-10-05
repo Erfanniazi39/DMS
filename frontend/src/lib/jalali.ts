@@ -127,6 +127,12 @@ export const JALALI_MONTH_NAMES = [
   "اسفند",
 ];
 
+// The plausible business-date range the backend accepts (Jalali 1300–1499,
+// see backend common/zod-fields.ts MIN/MAX_BUSINESS_DATE). JalaliDateInput
+// never offers a year outside it, so an implausible date can't be picked.
+export const JALALI_MIN_YEAR = 1300;
+export const JALALI_MAX_YEAR = 1499;
+
 const PERSIAN_DIGITS = ["۰", "۱", "۲", "۳", "۴", "۵", "۶", "۷", "۸", "۹"];
 
 /** Render a number using Persian digits, e.g. 1405 -> "۱۴۰۵". */
@@ -134,11 +140,32 @@ export function toPersianDigits(value: number | string): string {
   return String(value).replace(/[0-9]/g, (digit) => PERSIAN_DIGITS[Number(digit)]);
 }
 
-/** Format a date as "۱۵ شهریور ۱۴۰۵" for display. Returns "" for null/undefined. */
+/**
+ * toJalali() that never throws: returns null for an invalid date or one
+ * outside the supported Jalali range (e.g. a stored 9999-12-31). Use this
+ * wherever a date from the database is rendered — one implausible record
+ * must never crash a whole list/dashboard page for every user.
+ */
+export function safeToJalali(date: Date): JalaliDate | null {
+  if (Number.isNaN(date.getTime())) return null;
+  try {
+    return toJalali(date);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Format a date as "۱۵ شهریور ۱۴۰۵" for display. Returns "" for
+ * null/undefined/invalid. A date outside the convertible Jalali range is
+ * shown as its raw Gregorian ISO date (e.g. "9999-12-31") instead of throwing.
+ */
 export function formatJalali(date: Date | string | null | undefined): string {
   if (!date) return "";
   const d = typeof date === "string" ? new Date(date) : date;
   if (Number.isNaN(d.getTime())) return "";
-  const { jy, jm, jd } = toJalali(d);
+  const jalali = safeToJalali(d);
+  if (!jalali) return d.toISOString().slice(0, 10);
+  const { jy, jm, jd } = jalali;
   return `${toPersianDigits(jd)} ${JALALI_MONTH_NAMES[jm - 1]} ${toPersianDigits(jy)}`;
 }

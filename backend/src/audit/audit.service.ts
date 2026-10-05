@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 
 export type AuditEntry = {
@@ -24,8 +25,12 @@ export type AuditEntry = {
 export class AuditService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async log(entry: AuditEntry) {
-    await this.prisma.auditLog.create({
+  // `client` lets a caller write the audit row inside its own $transaction,
+  // so the business change and its audit entry commit (or roll back)
+  // together. Omitted = the plain PrismaService, as before.
+  async log(entry: AuditEntry, client?: Prisma.TransactionClient) {
+    const db = client ?? this.prisma;
+    await db.auditLog.create({
       data: {
         userId: entry.userId ?? undefined,
         action: entry.action,

@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useState, useSyncExternalStore, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Paperclip, Plus, Trash2 } from "lucide-react";
+import { Select as SelectPrimitive } from "@base-ui/react/select";
+import { ChevronDown, Paperclip, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogBody, DialogCloseButton, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -11,11 +12,18 @@ import { Label } from "@/components/ui/label";
 import { JalaliDateInput } from "@/components/ui/jalali-date-input";
 import { useToasts, ToastViewport } from "@/components/ui/toast";
 import { apiFetch, apiUpload, type ApiError } from "@/lib/api";
+import { parseNumberInput } from "@/lib/number-input";
 import { useAdminUser } from "@/app/admin/layout";
+import {
+  purchaseRequestStatusLabels,
+  purchaseRequestStatusTone,
+  type PurchaseRequestDetail,
+  type PurchaseRequestStatus,
+} from "@/app/purchase-requests/shared";
 import {
   DOCUMENT_TYPES,
   PURCHASE_SOURCE_TYPES,
-  PURCHASE_STATUSES,
+  PURCHASE_CREATE_STATUSES,
   RequiredMark,
   StatusBadge,
   purchasePaymentStatusLabels,
@@ -115,6 +123,32 @@ const stagedDocumentStateLabels: Record<StagedDocument["state"], string> = {
   failed: "ناموفق",
 };
 
+// Sort order for the "درخواست خرید مرتبط" picker — requests it actually
+// makes sense to buy against (APPROVED/PARTIALLY_PURCHASED) float to the
+// top, then ones still pending a decision (SUBMITTED/DRAFT), then the
+// terminal states, which are rarely what someone is looking for here but
+// are kept selectable since a purchase may still reference one historically.
+const PURCHASE_REQUEST_PICKER_SORT_ORDER: Record<PurchaseRequestStatus, number> = {
+  APPROVED: 0,
+  PARTIALLY_PURCHASED: 1,
+  SUBMITTED: 2,
+  DRAFT: 3,
+  COMPLETED: 4,
+  REJECTED: 5,
+  CANCELLED: 6,
+};
+
+// One line of the backend's PURCHASE_QUANTITY_EXCEEDS_REQUEST error details.
+type RequestOverage = {
+  purchaseRequestItemId: number;
+  name: string;
+  requested: number;
+  alreadyPurchased: number;
+  remaining: number;
+  purchasing: number;
+  excess: number;
+};
+
 function emptyItemRow(): ItemFormRow {
   return { key: crypto.randomUUID(), name: "", quantity: "", unitId: "", unitPrice: "", totalPrice: "", purchaseRequestItemId: "" };
 }
@@ -155,6 +189,15 @@ function readPrefill(raw: string | null): PrefillPayload | null {
   }
 }
 
+// Same pattern as the Purchase Request form's todayIso() — the common case
+// is logging a purchase as it happens, not backdating one. Still a plain
+// editable date field afterwards, and HISTORICAL_IMPORT purchases (old
+// paper records) are expected to have this changed to the real date.
+function todayIso(): string {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+}
+
 type FormState = {
   purchaseDate: string;
   purchaseTypeId: string;
@@ -177,14 +220,16 @@ type FormState = {
 
 function emptyForm(): FormState {
   return {
-    purchaseDate: "",
+    purchaseDate: todayIso(),
     purchaseTypeId: "",
     sourceType: "OPERATIONAL",
     requesterDepartmentId: "",
     buyerEmployeeId: "",
     supplierId: "",
     purchaseRequestId: "",
-    status: "DRAFT",
+    // New purchases default to CONFIRMED (business decision 2026-10-05) so
+    // payments can be recorded straight away; DRAFT is still selectable.
+    status: "CONFIRMED",
     note: "",
     items: [emptyItemRow()],
   };
@@ -200,10 +245,9 @@ type Props = { mode: "create" } | { mode: "edit"; purchaseId: number };
 
 // Used by both /purchases/new and /purchases/[id]/edit — a
 // dedicated full page in both cases, not a modal, per the module spec.
-// Status is only shown once a purchase exists (edit mode): a new purchase
-// always starts as DRAFT (see PurchasesService.create()), and the status
-// lifecycle (CONFIRMED/RECEIVED/CLOSED/CANCELLED) only makes sense to move
-// through afterwards.
+// Status is only chosen on create (DRAFT/CONFIRMED); the later lifecycle
+// (CONFIRMED → RECEIVED → CLOSED, or CANCELLED) is moved through via the
+// dedicated actions on the purchase detail page, never via this form.
 export function PurchaseForm(props: Props) {
   const router = useRouter();
   const { toasts, pushError, pushErrors, pushSuccess, dismiss } = useToasts();
@@ -212,6 +256,15 @@ export function PurchaseForm(props: Props) {
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState<FormState>(emptyForm);
   const [purchaseNumber, setPurchaseNumber] = useState<string | null>(null);
+  // Optimistic locking (edit mode): the purchase's updatedAt as loaded, sent
+  // back on save. `staleRecord` = the backend answered RECORD_MODIFIED —
+  // someone else saved in between — so saving stays blocked until a reload.
+  const [loadedUpdatedAt, setLoadedUpdatedAt] = useState<string | null>(null);
+  const [staleRecord, setStaleRecord] = useState(false);
+  // Buying more than a linked request line still needs: the backend's
+  // PURCHASE_QUANTITY_EXCEEDS_REQUEST details plus the payload to resubmit
+  // with confirmOverage once the user explicitly confirms.
+  const [pendingOverage, setPendingOverage] = useState<{ overages: RequestOverage[]; payload: Record<string, unknown> } | null>(null);
   const [paymentSummary, setPaymentSummary] = useState<PaymentSummary | null>(null);
 
   const [purchaseTypes, setPurchaseTypes] = useState<PurchaseTypeOption[]>([]);
@@ -313,6 +366,7 @@ export function PurchaseForm(props: Props) {
       try {
         const purchase = await apiFetch<PurchaseDetail>(`/purchases/${props.purchaseId}`);
         setPurchaseNumber(purchase.purchaseNumber);
+        setLoadedUpdatedAt(purchase.updatedAt);
         setPaymentSummary({ status: purchase.paymentStatus, totalAmount: purchase.totalAmount, paidAmount: purchase.paidAmount });
         setForm({
           purchaseDate: purchase.purchaseDate.slice(0, 10),
@@ -362,6 +416,94 @@ export function PurchaseForm(props: Props) {
       sourceType,
       purchaseRequestId: sourceType === "OPERATIONAL" ? current.purchaseRequestId : "",
     }));
+  }
+
+  // Manually picking a request here (as opposed to arriving via the
+  // Purchase Request detail page's "ثبت خرید"/"ایجاد خرید" actions, which
+  // already pre-fill through the ?prefill= flow above) should have the same
+  // effect: fetch that request's remaining items and fill Section 2 with
+  // them. A request whose items are all fully purchased already is kept as
+  // the link but leaves the items table untouched (nothing left to pull in).
+  const [loadingPurchaseRequestItems, setLoadingPurchaseRequestItems] = useState(false);
+  // Set while waiting on the inline overwrite-confirmation banner below the
+  // picker (rendered in plain JSX, not a portal/modal) — two things were
+  // already tried and rejected here: `window.confirm()` freezes the tab
+  // while the Select's own popup is still mid-close, so the queued
+  // pointer/keyboard events replay once it unblocks, duplicating the
+  // selection; and a `Dialog` (Base UI, portal-based) opened from inside the
+  // Select's onValueChange collides with the Select's own closing-animation
+  // tracking and gets permanently stuck mid-close — its full-viewport
+  // wrapper is left mounted with pointer-events enabled, silently
+  // swallowing every click on the page afterwards. A plain inline banner has
+  // no portal, no modal, and no exit-animation tracking to collide with.
+  const [pendingPurchaseRequestId, setPendingPurchaseRequestId] = useState<string | null>(null);
+  // Guards against the picker's onValueChange firing more than once for a
+  // single selection. Each call stamps its own token; a call only applies
+  // what it fetched if it's still the most recent one when the fetch
+  // finishes — an outdated call is a no-op instead of layering its result on
+  // top of whichever call wins the race.
+  const purchaseRequestChangeToken = useRef(0);
+
+  async function applyPurchaseRequestChange(value: string) {
+    const token = ++purchaseRequestChangeToken.current;
+    setLoadingPurchaseRequestItems(true);
+    try {
+      const requestDetail = await apiFetch<PurchaseRequestDetail>(`/purchase-requests/${value}`);
+      if (purchaseRequestChangeToken.current !== token) return;
+      const itemsWithRemaining = requestDetail.items.filter((item) => item.remainingQuantity > 0);
+      if (itemsWithRemaining.length === 0) {
+        pushError("همه اقلام این درخواست خریداری شده است.");
+        update("purchaseRequestId", value);
+        return;
+      }
+      setForm((current) => ({
+        ...current,
+        purchaseRequestId: value,
+        items: itemsWithRemaining.map((item) => ({
+          key: crypto.randomUUID(),
+          name: item.name,
+          quantity: String(item.remainingQuantity),
+          unitId: String(item.unit.id),
+          unitPrice: "",
+          totalPrice: "",
+          purchaseRequestItemId: String(item.id),
+        })),
+      }));
+    } catch (reason) {
+      if (purchaseRequestChangeToken.current === token) {
+        pushError((reason as ApiError).message ?? "دریافت اطلاعات درخواست خرید ناموفق بود.");
+      }
+    } finally {
+      if (purchaseRequestChangeToken.current === token) setLoadingPurchaseRequestItems(false);
+    }
+  }
+
+  function handlePurchaseRequestChange(value: string) {
+    if (value === form.purchaseRequestId) return;
+    if (!value) {
+      purchaseRequestChangeToken.current += 1;
+      // "بدون درخواست خرید": also drop every row's link to a request item —
+      // otherwise the save is refused ("select a purchase request first")
+      // even though the user just explicitly chose none.
+      setForm((current) => ({
+        ...current,
+        purchaseRequestId: "",
+        items: current.items.map((item) => ({ ...item, purchaseRequestItemId: "" })),
+      }));
+      return;
+    }
+    const hasManualContent = form.items.some((item) => item.name.trim() !== "");
+    if (hasManualContent) {
+      setPendingPurchaseRequestId(value);
+      return;
+    }
+    void applyPurchaseRequestChange(value);
+  }
+
+  function confirmPurchaseRequestOverwrite() {
+    const value = pendingPurchaseRequestId;
+    setPendingPurchaseRequestId(null);
+    if (value) void applyPurchaseRequestChange(value);
   }
 
   function addStagedFiles(files: FileList | null) {
@@ -440,8 +582,8 @@ export function PurchaseForm(props: Props) {
         // stored field, not a derived one), so a user free to override it
         // for a case where the arithmetic doesn't apply.
         if (("quantity" in patch || "unitPrice" in patch) && !("totalPrice" in patch)) {
-          const quantity = Number(next.quantity);
-          const unitPrice = Number(next.unitPrice);
+          const quantity = parseNumberInput(next.quantity);
+          const unitPrice = parseNumberInput(next.unitPrice);
           if (next.quantity !== "" && next.unitPrice !== "" && Number.isFinite(quantity) && Number.isFinite(unitPrice)) {
             next.totalPrice = String(Math.round(quantity * unitPrice));
           }
@@ -500,8 +642,33 @@ export function PurchaseForm(props: Props) {
   }
 
   const itemsTotal = useMemo(
-    () => form.items.reduce((sum, item) => sum + (Number(item.totalPrice) || 0), 0),
+    () => form.items.reduce((sum, item) => sum + (parseNumberInput(item.totalPrice) || 0), 0),
     [form.items],
+  );
+
+  // Only requests it actually makes sense to buy against — same eligibility
+  // rule as canCreatePurchases on the Purchase Request detail page (status
+  // APPROVED or PARTIALLY_PURCHASED). A DRAFT/SUBMITTED request isn't
+  // approved yet, and REJECTED/CANCELLED/COMPLETED have nothing left to
+  // offer — listing them here just invited picking something you then
+  // couldn't actually do anything with. The purchase's already-linked
+  // request (edit mode) is kept even if it's since moved outside this set,
+  // so an existing link never silently disappears from its own picker.
+  const purchaseRequestOptions = useMemo(() => {
+    const eligible = purchaseRequests.filter((request) => request.status === "APPROVED" || request.status === "PARTIALLY_PURCHASED");
+    const current = purchaseRequests.find((request) => String(request.id) === form.purchaseRequestId);
+    if (current && !eligible.some((request) => request.id === current.id)) {
+      return [...eligible, current];
+    }
+    return eligible;
+  }, [purchaseRequests, form.purchaseRequestId]);
+
+  const sortedPurchaseRequests = useMemo(
+    () =>
+      [...purchaseRequestOptions].sort(
+        (a, b) => PURCHASE_REQUEST_PICKER_SORT_ORDER[a.status] - PURCHASE_REQUEST_PICKER_SORT_ORDER[b.status],
+      ),
+    [purchaseRequestOptions],
   );
 
   // Active employees, plus — in edit mode — the purchase's current buyer
@@ -577,7 +744,7 @@ export function PurchaseForm(props: Props) {
       }
     }
 
-    const payload = {
+    const payload: Record<string, unknown> = {
       purchaseDate: form.purchaseDate,
       purchaseTypeId: Number(form.purchaseTypeId),
       sourceType: form.sourceType,
@@ -590,15 +757,24 @@ export function PurchaseForm(props: Props) {
       note: form.note.trim(),
       items: items.map((item) => ({
         name: item.name.trim(),
-        quantity: Number(item.quantity),
+        quantity: parseNumberInput(item.quantity),
         unitId: Number(item.unitId),
-        unitPrice: item.unitPrice === "" ? undefined : Number(item.unitPrice),
-        totalPrice: Number(item.totalPrice),
+        unitPrice: item.unitPrice === "" ? undefined : parseNumberInput(item.unitPrice),
+        totalPrice: parseNumberInput(item.totalPrice),
         purchaseRequestItemId: item.purchaseRequestItemId === "" ? undefined : Number(item.purchaseRequestItemId),
       })),
-      ...(props.mode === "edit" ? { status: form.status } : {}),
+      // Create: the chosen DRAFT/CONFIRMED (default CONFIRMED). Edit: the
+      // status as loaded, sent back unchanged — PATCH requires the whole
+      // record, but this form no longer changes status (that's the detail
+      // page's status actions); updatedAt guarantees it's still current.
+      status: form.status,
+      ...(props.mode === "edit" ? { updatedAt: loadedUpdatedAt } : {}),
     };
 
+    await savePurchase(payload);
+  }
+
+  async function savePurchase(payload: Record<string, unknown>) {
     setSaving(true);
     try {
       const saved = await apiFetch<PurchaseDetail>(props.mode === "edit" ? `/purchases/${props.purchaseId}` : "/purchases", {
@@ -621,7 +797,13 @@ export function PurchaseForm(props: Props) {
       router.push(`/purchases/${saved.id}`);
     } catch (reason) {
       const apiError = reason as ApiError;
-      if (apiError.messages?.length) {
+      if (apiError.code === "RECORD_MODIFIED") {
+        setStaleRecord(true);
+        pushError(apiError.message);
+      } else if (apiError.code === "PURCHASE_QUANTITY_EXCEEDS_REQUEST") {
+        const overages = (apiError.details as { overages?: RequestOverage[] } | undefined)?.overages ?? [];
+        setPendingOverage({ overages, payload });
+      } else if (apiError.messages?.length) {
         pushErrors(apiError.messages);
       } else {
         pushError(apiError.message ?? "ذخیره خرید ناموفق بود.");
@@ -629,6 +811,12 @@ export function PurchaseForm(props: Props) {
     } finally {
       setSaving(false);
     }
+  }
+
+  function confirmOverage() {
+    const pending = pendingOverage;
+    setPendingOverage(null);
+    if (pending) void savePurchase({ ...pending.payload, confirmOverage: true });
   }
 
   if (loading) {
@@ -670,6 +858,18 @@ export function PurchaseForm(props: Props) {
             </div>
           ) : null}
         </div>
+
+        {staleRecord ? (
+          <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-2.5 text-sm">
+            <span>
+              این خرید پس از باز شدن این فرم توسط کاربر دیگری تغییر کرده است. برای جلوگیری از بازنویسی تغییرات او، ابتدا صفحه را بازخوانی کنید
+              (تغییرات واردشده در این فرم از بین می‌رود).
+            </span>
+            <Button type="button" size="sm" variant="outline" onClick={() => window.location.reload()}>
+              بازخوانی صفحه
+            </Button>
+          </div>
+        ) : null}
 
         {savedWithDocumentFailures ? (
           <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-warning/40 bg-warning/10 px-4 py-2.5 text-sm">
@@ -791,22 +991,72 @@ export function PurchaseForm(props: Props) {
               {form.sourceType === "OPERATIONAL" ? (
                 <div className="flex flex-col gap-1.5 sm:col-span-2">
                   <Label htmlFor="purchase-request">درخواست خرید مرتبط</Label>
-                  <select
-                    id="purchase-request"
-                    className={selectClass}
-                    value={form.purchaseRequestId}
-                    onChange={(event) => update("purchaseRequestId", event.target.value)}
+                  {/* A custom popup instead of a native <select> — a plain
+                      <option> can't carry a colored status badge, and the
+                      status (whether it's actually worth buying against
+                      right now) is the main thing this picker needs to
+                      communicate. Sorted via sortedPurchaseRequests so
+                      APPROVED/PARTIALLY_PURCHASED requests float to the top. */}
+                  <SelectPrimitive.Root
+                    value={form.purchaseRequestId || null}
+                    onValueChange={(value) => handlePurchaseRequestChange(value ? String(value) : "")}
+                    disabled={loadingPurchaseRequestItems || pendingPurchaseRequestId !== null}
                   >
-                    <option value="">بدون درخواست خرید</option>
-                    {purchaseRequests.map((request) => (
-                      <option key={request.id} value={request.id}>
-                        {purchaseRequestOptionLabel(request)}
-                      </option>
-                    ))}
-                  </select>
+                    <SelectPrimitive.Trigger id="purchase-request" className={`${selectClass} flex w-full items-center justify-between gap-2`}>
+                      <SelectPrimitive.Value placeholder="بدون درخواست خرید" className="min-w-0 flex-1 truncate text-right">
+                        {(value: string | null) => {
+                          const selected = value ? purchaseRequests.find((request) => String(request.id) === value) : undefined;
+                          return selected ? purchaseRequestOptionLabel(selected) : "بدون درخواست خرید";
+                        }}
+                      </SelectPrimitive.Value>
+                      <SelectPrimitive.Icon className="shrink-0 text-muted-foreground">
+                        <ChevronDown className="size-4" />
+                      </SelectPrimitive.Icon>
+                    </SelectPrimitive.Trigger>
+                    <SelectPrimitive.Portal>
+                      <SelectPrimitive.Positioner className="z-50" sideOffset={4}>
+                        <SelectPrimitive.Popup className="max-h-72 w-(--anchor-width) overflow-auto rounded-lg border border-border bg-card p-1 shadow-lg">
+                          <SelectPrimitive.Item className="flex cursor-pointer items-center rounded-md px-2.5 py-2 text-sm outline-none data-[highlighted]:bg-muted">
+                            <SelectPrimitive.ItemText>بدون درخواست خرید</SelectPrimitive.ItemText>
+                          </SelectPrimitive.Item>
+                          {sortedPurchaseRequests.map((request) => (
+                            <SelectPrimitive.Item
+                              key={request.id}
+                              value={String(request.id)}
+                              className="flex cursor-pointer items-center justify-between gap-2 rounded-md px-2.5 py-2 text-sm outline-none data-[highlighted]:bg-muted"
+                            >
+                              <SelectPrimitive.ItemText className="min-w-0 flex-1 truncate">
+                                {purchaseRequestOptionLabel(request)}
+                              </SelectPrimitive.ItemText>
+                              <StatusBadge label={purchaseRequestStatusLabels[request.status]} tone={purchaseRequestStatusTone[request.status]} />
+                            </SelectPrimitive.Item>
+                          ))}
+                        </SelectPrimitive.Popup>
+                      </SelectPrimitive.Positioner>
+                    </SelectPrimitive.Portal>
+                  </SelectPrimitive.Root>
+                  {/* Plain inline banner, not a modal — see the comment on
+                      pendingPurchaseRequestId above for why. */}
+                  {pendingPurchaseRequestId !== null ? (
+                    <div className="flex flex-wrap items-center gap-2 rounded-md border border-warning/40 bg-warning/10 px-2.5 py-2 text-xs">
+                      <span className="flex-1 text-foreground">
+                        اقلام فعلی فرم با اقلام این درخواست خرید جایگزین می‌شود. ادامه می‌دهید؟
+                      </span>
+                      <Button type="button" size="sm" onClick={confirmPurchaseRequestOverwrite}>
+                        جایگزین کن
+                      </Button>
+                      <Button type="button" size="sm" variant="outline" onClick={() => setPendingPurchaseRequestId(null)}>
+                        انصراف
+                      </Button>
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
-              {props.mode === "edit" ? (
+              {/* Create mode only — DRAFT/CONFIRMED. Status changes on an
+                  existing purchase are dedicated actions on the purchase
+                  detail page (تأیید خرید / ثبت دریافت کالا / بستن خرید /
+                  لغو خرید), not part of this edit form. */}
+              {props.mode === "create" ? (
                 <div className="flex flex-col gap-1.5">
                   <Label htmlFor="purchase-status">وضعیت خرید</Label>
                   <select
@@ -815,7 +1065,7 @@ export function PurchaseForm(props: Props) {
                     value={form.status}
                     onChange={(event) => update("status", event.target.value as PurchaseStatus)}
                   >
-                    {PURCHASE_STATUSES.map((status) => (
+                    {PURCHASE_CREATE_STATUSES.map((status) => (
                       <option key={status} value={status}>
                         {purchaseStatusLabels[status]}
                       </option>
@@ -1026,7 +1276,7 @@ export function PurchaseForm(props: Props) {
         {/* Footer actions — sticky to the bottom of the viewport so saving
             never requires scrolling down past the items first. */}
         <div className="sticky bottom-0 z-10 flex items-center gap-2 rounded-lg border border-border bg-card px-4 py-2.5 shadow-sm">
-          <Button type="submit" form="purchase-form" disabled={saving || savedWithDocumentFailures !== null}>
+          <Button type="submit" form="purchase-form" disabled={saving || savedWithDocumentFailures !== null || staleRecord}>
             {uploadProgress
               ? `در حال بارگذاری اسناد (${uploadProgress.done.toLocaleString("fa-IR")} از ${uploadProgress.total.toLocaleString("fa-IR")})...`
               : saving
@@ -1049,6 +1299,39 @@ export function PurchaseForm(props: Props) {
           </span>
         </div>
       </div>
+
+      {/* Self-confirmation for buying more than the request still needs
+          (business decision 2026-10-05 — a lightweight confirm, not a
+          second approver). */}
+      <Dialog open={pendingOverage !== null} onOpenChange={(open) => (open ? undefined : setPendingOverage(null))}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>خرید بیش از مقدار درخواست‌شده</DialogTitle>
+            <DialogCloseButton />
+          </DialogHeader>
+          <DialogBody>
+            <p className="text-sm">مقدار این خرید برای اقلام زیر از مقدار باقی‌ماندهٔ درخواست خرید بیشتر است. آیا ادامه می‌دهید؟</p>
+            <ul className="mt-3 space-y-1.5 text-sm">
+              {pendingOverage?.overages.map((overage) => (
+                <li key={overage.purchaseRequestItemId} className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2">
+                  <span className="font-medium">{overage.name}</span>
+                  <span className="block text-xs text-muted-foreground tabular-nums">
+                    باقی‌مانده: {formatMoney(overage.remaining)} — این خرید: {formatMoney(overage.purchasing)} — مازاد: {formatMoney(overage.excess)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </DialogBody>
+          <DialogFooter>
+            <Button type="button" onClick={confirmOverage}>
+              بله، خرید مازاد را ثبت کن
+            </Button>
+            <Button type="button" variant="outline" onClick={() => setPendingOverage(null)}>
+              انصراف
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={typeDialogOpen} onOpenChange={(open) => setTypeDialogOpen(open)}>
         <DialogContent>

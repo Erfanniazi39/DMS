@@ -13,7 +13,7 @@ import * as echarts from "echarts/core";
 import { BarChart } from "echarts/charts";
 import { GridComponent, TooltipComponent } from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
-import { JALALI_MONTH_NAMES, formatJalali, toJalali, toPersianDigits } from "@/lib/jalali";
+import { JALALI_MONTH_NAMES, formatJalali, safeToJalali, toPersianDigits } from "@/lib/jalali";
 
 echarts.use([BarChart, GridComponent, TooltipComponent, CanvasRenderer]);
 
@@ -62,7 +62,9 @@ function localDate(isoDate: string) {
 }
 
 function shortJalali(isoDate: string) {
-  const { jm, jd } = toJalali(localDate(isoDate));
+  const jalali = safeToJalali(localDate(isoDate));
+  if (!jalali) return isoDate;
+  const { jm, jd } = jalali;
   return `${toPersianDigits(jd)} ${JALALI_MONTH_NAMES[jm - 1]}`;
 }
 

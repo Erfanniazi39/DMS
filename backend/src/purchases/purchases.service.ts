@@ -1,9 +1,15 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma, PurchasePaymentStatus, PurchaseSourceType, PurchaseStatus } from '@prisma/client';
 import { existsSync, unlink } from 'fs';
-import { join } from 'path';
+import { writeFile } from 'fs/promises';
+import { extname, join } from 'path';
 import { randomUUID } from 'crypto';
 import { toSkipTake, type PaginationParams } from '../common/pagination';
+import { matchesFileSignature } from '../common/file-signature';
+import { MAX_MONEY, toIsoDay } from '../common/zod-fields';
+import { isSameVersion, recordModifiedConflict } from '../common/optimistic-lock';
+import { PAYABLE_PURCHASE_STATUSES, RETURNABLE_PURCHASE_STATUSES } from './purchase-rules';
+import { PurchaseQuantitiesService } from './purchase-quantities.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { PurchaseRequestsService } from '../purchase-requests/purchase-requests.service';
@@ -13,7 +19,20 @@ import type {
   CreatePurchasePaymentDto,
   CreatePurchaseReturnDto,
   UpdatePurchaseDto,
+  UpdatePurchasePaymentDto,
 } from './dto/purchase.dto';
+
+// Distinct, frontend-detectable 409 for "this purchase buys more than the
+// linked request line still needs" — see ensureRequestOverageConfirmed().
+export const PURCHASE_QUANTITY_EXCEEDS_REQUEST = 'PURCHASE_QUANTITY_EXCEEDS_REQUEST';
+
+const PURCHASE_STATUS_LABELS_FA: Record<PurchaseStatus, string> = {
+  DRAFT: 'پیش‌نویس',
+  CONFIRMED: 'تأییدشده',
+  RECEIVED: 'دریافت‌شده',
+  CLOSED: 'بسته‌شده',
+  CANCELLED: 'لغوشده',
+};
 
 export type PurchaseListFilters = {
   q?: string;
@@ -28,14 +47,28 @@ export type PurchaseListFilters = {
   sourceType?: string;
 };
 
+export const ALLOWED_DOCUMENT_EXTENSIONS = new Set(['.pdf', '.png', '.jpg', '.jpeg']);
+const PURCHASE_UPLOAD_DIR = join(process.cwd(), 'uploads', 'purchases');
+// Stored names are always `<uuid><ext>` (see setDocumentFile()) — anything
+// else (path separators, "..", other extensions) is never a valid request.
+const STORED_DOCUMENT_FILENAME = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(pdf|png|jpg|jpeg)$/;
+
 // Shared "everything the detail page needs" include — the list endpoint
 // intentionally uses a lighter one (see list() below): "Keep the main table
 // clean; detailed information belongs in the purchase detail page."
+//
+// buyerEmployee/supplier are narrowed to display fields only: a user with
+// just purchases.view must not receive an Employee's national ID, mobile,
+// salary, bank account or contract path, or a Supplier's national ID / bank
+// details, through this nested include (they'd get a 403 on
+// /employees/:id and /suppliers/:id directly). QA 2026-10-05.
 const purchaseDetailInclude = {
   purchaseType: true,
   requesterDepartment: true,
-  buyerEmployee: { include: { department: true } },
-  supplier: true,
+  buyerEmployee: {
+    select: { id: true, code: true, firstName: true, lastName: true, department: { select: { id: true, name: true } } },
+  },
+  supplier: { select: { id: true, code: true, name: true } },
   purchaseRequest: { select: { id: true, requestNumber: true } },
   items: { include: { unit: true }, orderBy: { id: 'asc' } },
   payments: { orderBy: { paymentDate: 'desc' } },
@@ -50,8 +83,16 @@ const purchaseReturnInclude = {
   createdByUser: { select: { id: true, username: true } },
 } satisfies Prisma.PurchaseReturnInclude;
 
+// Every line is already a whole-Rial amount within Decimal(15,0) (see
+// purchase.dto.ts); the sum can still exceed the column, which used to
+// surface as a raw 500 from Postgres. A purchase must also be worth
+// something: a 0 total is refused (business decision 2026-10-05 — free/gift
+// items are out of scope).
 function sumItemTotals(items: { totalPrice: number }[]): number {
-  return items.reduce((sum, item) => sum + item.totalPrice, 0);
+  const total = items.reduce((sum, item) => sum + item.totalPrice, 0);
+  if (total > MAX_MONEY) throw new BadRequestException('جمع مبلغ اقلام خرید بیش از حد مجاز است');
+  if (total <= 0) throw new BadRequestException('جمع مبلغ اقلام خرید باید بیشتر از صفر باشد');
+  return total;
 }
 
 // UNPAID / PARTIAL / PAID is always derived from totalAmount vs. paidAmount
@@ -65,11 +106,19 @@ function derivePaymentStatus(totalAmount: number, paidAmount: number): PurchaseP
 
 @Injectable()
 export class PurchasesService {
+  // This module's own stateless quantity query helper (also exported, via
+  // PurchaseQuantitiesModule, to Purchase Requests). Built from the same
+  // PrismaService rather than injected — it's Purchases-owned code, and this
+  // keeps PurchasesService's constructor (and its specs) unchanged.
+  private readonly purchaseQuantities: PurchaseQuantitiesService;
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly purchaseRequestsService: PurchaseRequestsService,
     private readonly audit: AuditService,
-  ) {}
+  ) {
+    this.purchaseQuantities = new PurchaseQuantitiesService(prisma);
+  }
 
   // Without `pagination` this returns the full filtered array (original
   // shape, kept for any caller that wants everything). With it, returns one
@@ -142,11 +191,11 @@ export class PurchasesService {
     if (dto.requesterDepartmentId) await this.ensureDepartment(dto.requesterDepartmentId);
     if (dto.buyerEmployeeId) await this.ensureBuyerEmployee(dto.buyerEmployeeId);
     await this.ensureSupplier(dto.supplierId);
-    if (dto.purchaseRequestId) await this.ensurePurchaseRequest(dto.purchaseRequestId);
+    if (dto.purchaseRequestId) await this.ensurePurchaseRequest(dto.purchaseRequestId, { requireLinkable: true });
     await this.ensureUnits(dto.items.map((item) => item.unitId));
     await this.ensurePurchaseRequestItems(dto.purchaseRequestId, dto.items);
-
     const totalAmount = sumItemTotals(dto.items);
+    await this.ensureRequestOverageConfirmed(dto.purchaseRequestId, dto.items, dto.confirmOverage);
 
     const created = await this.prisma.$transaction(async (tx) => {
       const created = await tx.purchase.create({
@@ -159,6 +208,9 @@ export class PurchasesService {
           supplierId: dto.supplierId,
           purchaseRequestId: dto.purchaseRequestId,
           sourceType: dto.sourceType,
+          // Explicit (CONFIRMED unless the user chose DRAFT — see
+          // createPurchaseSchema), never the column's own @default(DRAFT).
+          status: dto.status,
           note: dto.note,
           totalAmount,
           items: { create: dto.items },
@@ -191,26 +243,56 @@ export class PurchasesService {
   // Return-to-Vendor records can't be edited: those returns point at the
   // exact PurchaseItem rows (PurchaseReturnItem.purchaseItem is Restrict),
   // and recreating the items would orphan/break them. Refused up front with
-  // a clear message rather than surfacing a raw FK error.
+  // a clear message rather than surfacing a raw FK error. That includes a
+  // status change to CANCELLED — cancelling goes through this same update(),
+  // so a purchase with returns can't be cancelled either.
+  //
+  // Optimistic locking: dto.updatedAt is the version the client loaded. A
+  // mismatch (someone saved in between) is a 409 RECORD_MODIFIED; the same
+  // check is repeated atomically inside the transaction (compare-and-set on
+  // updatedAt) so two concurrent saves can't both pass it.
   async update(id: number, dto: UpdatePurchaseDto, userId: number | null, ipAddress?: string) {
     const existing = await this.get(id);
+    if (!isSameVersion(existing.updatedAt, dto.updatedAt)) throw recordModifiedConflict();
     const returnCount = await this.prisma.purchaseReturn.count({ where: { purchaseId: id } });
     if (returnCount > 0) {
       throw new ConflictException('برای این خرید برگشت به تأمین‌کننده ثبت شده است و قابل ویرایش نیست. ابتدا برگشت‌ها را حذف کنید.');
     }
-    await this.ensurePurchaseType(dto.purchaseTypeId);
-    if (dto.requesterDepartmentId) await this.ensureDepartment(dto.requesterDepartmentId);
-    if (dto.buyerEmployeeId) await this.ensureBuyerEmployee(dto.buyerEmployeeId);
-    await this.ensureSupplier(dto.supplierId);
-    if (dto.purchaseRequestId) await this.ensurePurchaseRequest(dto.purchaseRequestId);
-    await this.ensureUnits(dto.items.map((item) => item.unitId));
+    // A reference is only re-checked for "still active" when it's actually
+    // being changed — the purchase may keep a supplier/department/buyer/
+    // purchase type/unit it already has even if that was retired since
+    // (same rule as ItemsService.ensureReferences()). Otherwise e.g.
+    // blacklisting a supplier would block cancelling its own purchases.
+    if (dto.purchaseTypeId !== existing.purchaseTypeId) await this.ensurePurchaseType(dto.purchaseTypeId);
+    if (dto.requesterDepartmentId && dto.requesterDepartmentId !== existing.requesterDepartmentId) {
+      await this.ensureDepartment(dto.requesterDepartmentId);
+    }
+    if (dto.buyerEmployeeId && dto.buyerEmployeeId !== existing.buyerEmployeeId) await this.ensureBuyerEmployee(dto.buyerEmployeeId);
+    if (dto.supplierId !== existing.supplierId) await this.ensureSupplier(dto.supplierId);
+    // Linking to a request requires it to be APPROVED/PARTIALLY_PURCHASED —
+    // but only when the link is being made/changed now; a purchase keeps the
+    // request it already has even after that request moved on (e.g. to
+    // COMPLETED because of this very purchase).
+    if (dto.purchaseRequestId) {
+      await this.ensurePurchaseRequest(dto.purchaseRequestId, { requireLinkable: dto.purchaseRequestId !== existing.purchaseRequestId });
+    }
+    await this.ensureUnits(
+      dto.items.map((item) => item.unitId),
+      (existing.items ?? []).map((item) => item.unitId),
+    );
     await this.ensurePurchaseRequestItems(dto.purchaseRequestId, dto.items);
 
     const totalAmount = sumItemTotals(dto.items);
+    // A CANCELLED purchase counts toward nothing, so it can't over-buy.
+    if (dto.status !== 'CANCELLED') {
+      await this.ensureRequestOverageConfirmed(dto.purchaseRequestId, dto.items, dto.confirmOverage, id);
+    }
     const paidAmount = Number(existing.paidAmount);
     const paymentStatus = derivePaymentStatus(totalAmount, paidAmount);
 
     const updated = await this.prisma.$transaction(async (tx) => {
+      const claimed = await tx.purchase.updateMany({ where: { id, updatedAt: existing.updatedAt }, data: { updatedAt: new Date() } });
+      if (claimed.count !== 1) throw recordModifiedConflict();
       await tx.purchaseItem.deleteMany({ where: { purchaseId: id } });
       return tx.purchase.update({
         where: { id },
@@ -284,25 +366,72 @@ export class PurchasesService {
   // actually been paid ("Keep payments separate from the Purchase") —
   // adding one recomputes and persists paidAmount/paymentStatus on the
   // parent Purchase. Removing a mistaken entry does the same recompute.
+  //
+  // The payment write, the paidAmount/paymentStatus recompute and the audit
+  // row happen in ONE transaction (QA 2026-10-05: previously a payment could
+  // be persisted while the recompute then failed, leaving paidAmount stale
+  // and no audit row). The parent Purchase row is locked first — same
+  // convention as createReturn() — so two concurrent payments on the same
+  // purchase can't each recompute from a sum that misses the other.
+  //
+  // Business rules (2026-10-05): only a CONFIRMED/RECEIVED/CLOSED purchase
+  // takes payments; a payment can't be dated before the purchase (a future
+  // date — a post-dated cheque — is fine); paying MORE than totalAmount is
+  // allowed — the response carries totalAmount and paidAmount, and the
+  // frontend flags paidAmount > totalAmount as overpaid.
   async addPayment(purchaseId: number, dto: CreatePurchasePaymentDto, userId: number | null, ipAddress?: string) {
-    const purchase = await this.get(purchaseId);
-    const payment = await this.prisma.purchasePayment.create({ data: { purchaseId, ...dto } });
-    await this.recomputePaymentTotals(purchaseId, Number(purchase.totalAmount));
-    // "Payment added" and "Payment completed" are the same event here —
-    // there's no separate mark-as-completed step (see PurchasePayment) — so
-    // a payment created already COMPLETED logs as completed directly.
-    const action = payment.status === 'COMPLETED' ? 'PAYMENT_COMPLETED' : 'PAYMENT_ADDED';
-    await this.audit.log({ userId, ipAddress, action, entityType: 'Purchase', entityId: purchaseId, details: `${payment.amount} ریال` });
+    await this.prisma.$transaction(async (tx) => {
+      const purchase = await this.lockPurchaseForPayment(tx, purchaseId);
+      this.ensurePayable(purchase, dto.paymentDate);
+      const totalAmount = purchase.totalAmount;
+      const payment = await tx.purchasePayment.create({ data: { purchaseId, ...dto } });
+      await this.recomputePaymentTotals(tx, purchaseId, totalAmount);
+      // "Payment added" and "Payment completed" are the same event here —
+      // there's no separate mark-as-completed step (see PurchasePayment) —
+      // so a payment created already COMPLETED logs as completed directly.
+      const action = payment.status === 'COMPLETED' ? 'PAYMENT_COMPLETED' : 'PAYMENT_ADDED';
+      await this.audit.log({ userId, ipAddress, action, entityType: 'Purchase', entityId: purchaseId, details: `${payment.amount} ریال` }, tx);
+    });
     return this.get(purchaseId);
   }
 
+  // Edits a payment in place (business decision 2026-10-05 — previously only
+  // delete + re-add). Same transaction/lock/recompute/audit shape as
+  // addPayment(), and the same status and date rules.
+  async updatePayment(purchaseId: number, paymentId: number, dto: UpdatePurchasePaymentDto, userId: number | null, ipAddress?: string) {
+    await this.prisma.$transaction(async (tx) => {
+      const purchase = await this.lockPurchaseForPayment(tx, purchaseId);
+      const existing = await tx.purchasePayment.findFirst({ where: { id: paymentId, purchaseId } });
+      if (!existing) throw new NotFoundException('پرداخت پیدا نشد');
+      this.ensurePayable(purchase, dto.paymentDate);
+      const payment = await tx.purchasePayment.update({ where: { id: paymentId }, data: { ...dto } });
+      await this.recomputePaymentTotals(tx, purchaseId, purchase.totalAmount);
+      await this.audit.log(
+        {
+          userId,
+          ipAddress,
+          action: 'PAYMENT_UPDATED',
+          entityType: 'Purchase',
+          entityId: purchaseId,
+          details: `پرداخت #${paymentId}: ${existing.amount} ریال (${existing.status}) → ${payment.amount} ریال (${payment.status})`,
+        },
+        tx,
+      );
+    });
+    return this.get(purchaseId);
+  }
+
+  // Deliberately NOT status-gated: removing a mistaken payment must stay
+  // possible even after the purchase was cancelled.
   async removePayment(purchaseId: number, paymentId: number, userId: number | null, ipAddress?: string) {
-    const purchase = await this.get(purchaseId);
-    const payment = await this.prisma.purchasePayment.findFirst({ where: { id: paymentId, purchaseId } });
-    if (!payment) throw new NotFoundException('پرداخت پیدا نشد');
-    await this.prisma.purchasePayment.delete({ where: { id: paymentId } });
-    await this.recomputePaymentTotals(purchaseId, Number(purchase.totalAmount));
-    await this.audit.log({ userId, ipAddress, action: 'PAYMENT_REMOVED', entityType: 'Purchase', entityId: purchaseId, details: `${payment.amount} ریال` });
+    await this.prisma.$transaction(async (tx) => {
+      const { totalAmount } = await this.lockPurchaseForPayment(tx, purchaseId);
+      const payment = await tx.purchasePayment.findFirst({ where: { id: paymentId, purchaseId } });
+      if (!payment) throw new NotFoundException('پرداخت پیدا نشد');
+      await tx.purchasePayment.delete({ where: { id: paymentId } });
+      await this.recomputePaymentTotals(tx, purchaseId, totalAmount);
+      await this.audit.log({ userId, ipAddress, action: 'PAYMENT_REMOVED', entityType: 'Purchase', entityId: purchaseId, details: `${payment.amount} ریال` }, tx);
+    });
     return this.get(purchaseId);
   }
 
@@ -332,12 +461,68 @@ export class PurchasesService {
   // Attaches the uploaded file to a document record already created via
   // addDocument() — same two-step pattern as Employee.photoPath /
   // contractDocumentPath: metadata first (JSON), file second (multipart).
-  async setDocumentFile(purchaseId: number, documentId: number, filePath: string) {
+  //
+  // The upload arrives in memory (see PurchasesController); nothing touches
+  // the disk until the purchase/document pair has been found and the file's
+  // content has been checked against its extension. The old file (if any)
+  // is only removed once the new path is committed, and the attach/replace
+  // is audited (QA 2026-10-05: a replaced file used to leave no trace).
+  async setDocumentFile(
+    purchaseId: number,
+    documentId: number,
+    file: { originalName: string; buffer: Buffer },
+    userId: number | null,
+    ipAddress?: string,
+  ) {
     const document = await this.prisma.purchaseDocument.findFirst({ where: { id: documentId, purchaseId } });
     if (!document) throw new NotFoundException('سند پیدا نشد');
+
+    const extension = extname(file.originalName).toLowerCase();
+    if (!ALLOWED_DOCUMENT_EXTENSIONS.has(extension)) {
+      throw new BadRequestException('فقط فایل PDF یا تصویر با فرمت jpg، jpeg یا png مجاز است');
+    }
+    if (!matchesFileSignature(file.buffer, extension)) {
+      throw new BadRequestException('محتوای فایل با نوع آن مطابقت ندارد. فقط فایل PDF یا تصویر jpg/png واقعی مجاز است');
+    }
+
+    const filename = `${randomUUID()}${extension}`;
+    const filePath = `/uploads/purchases/${filename}`;
+    await writeFile(join(PURCHASE_UPLOAD_DIR, filename), file.buffer);
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        await tx.purchaseDocument.update({ where: { id: documentId }, data: { filePath } });
+        await this.audit.log(
+          {
+            userId,
+            ipAddress,
+            action: document.filePath ? 'DOCUMENT_FILE_REPLACED' : 'DOCUMENT_FILE_ATTACHED',
+            entityType: 'Purchase',
+            entityId: purchaseId,
+            details: `${document.documentType} (سند #${document.id})`,
+          },
+          tx,
+        );
+      });
+    } catch (error) {
+      this.deleteUploadedFile(filePath);
+      throw error;
+    }
     if (document.filePath) this.deleteUploadedFile(document.filePath);
-    await this.prisma.purchaseDocument.update({ where: { id: documentId }, data: { filePath } });
     return this.get(purchaseId);
+  }
+
+  // Resolves a stored purchase-document filename to its absolute path on
+  // disk for the guarded download route (PurchaseFilesController) — only a
+  // file that a PurchaseDocument actually references is ever served.
+  async resolveDocumentFile(filename: string): Promise<string> {
+    if (!STORED_DOCUMENT_FILENAME.test(filename)) throw new NotFoundException('فایل پیدا نشد');
+    const document = await this.prisma.purchaseDocument.findFirst({
+      where: { filePath: `/uploads/purchases/${filename}` },
+      select: { id: true },
+    });
+    const absolutePath = join(PURCHASE_UPLOAD_DIR, filename);
+    if (!document || !existsSync(absolutePath)) throw new NotFoundException('فایل پیدا نشد');
+    return absolutePath;
   }
 
   // --- Return to Vendor (RTV) ----------------------------------------------
@@ -353,15 +538,30 @@ export class PurchasesService {
   // transaction, after locking the parent Purchase row, so two concurrent
   // returns against the same purchase can't both pass the check and
   // together exceed an item's original quantity.
+  //
+  // Business rules (2026-10-05): only a RECEIVED/CLOSED purchase can have a
+  // return (it represents goods actually received); the return can't be
+  // dated before the purchase; and each line's credit is capped at that
+  // purchase line's remaining value (totalPrice minus credit already
+  // returned) — same enforcement level as the quantity cap.
   async createReturn(purchaseId: number, dto: CreatePurchaseReturnDto, userId: number | null, ipAddress?: string) {
     const created = await this.prisma.$transaction(async (tx) => {
-      const locked = await tx.$queryRaw<{ id: number }[]>`SELECT id FROM purchases WHERE id = ${purchaseId} FOR UPDATE`;
+      const locked = await tx.$queryRaw<{ id: number; status: PurchaseStatus; purchase_date: Date }[]>`SELECT id, status, purchase_date FROM purchases WHERE id = ${purchaseId} FOR UPDATE`;
       if (locked.length === 0) throw new NotFoundException('خرید پیدا نشد');
+      const [purchase] = locked;
+      if (!RETURNABLE_PURCHASE_STATUSES.includes(purchase.status)) {
+        throw new ConflictException(
+          `برگشت فقط برای خرید «دریافت‌شده» یا «بسته‌شده» قابل ثبت است؛ وضعیت این خرید «${PURCHASE_STATUS_LABELS_FA[purchase.status] ?? purchase.status}» است`,
+        );
+      }
+      if (toIsoDay(dto.returnDate) < toIsoDay(purchase.purchase_date)) {
+        throw new ConflictException('تاریخ برگشت نمی‌تواند قبل از تاریخ خرید باشد');
+      }
 
       const itemIds = [...new Set(dto.items.map((item) => item.purchaseItemId))];
       const purchaseItems = await tx.purchaseItem.findMany({
         where: { id: { in: itemIds }, purchaseId },
-        select: { id: true, name: true, quantity: true },
+        select: { id: true, name: true, quantity: true, totalPrice: true },
       });
       if (purchaseItems.length !== itemIds.length) {
         throw new ConflictException('یکی از اقلام انتخاب‌شده برای برگشت، متعلق به این خرید نیست');
@@ -370,21 +570,30 @@ export class PurchasesService {
       const alreadyReturned = await tx.purchaseReturnItem.groupBy({
         by: ['purchaseItemId'],
         where: { purchaseItemId: { in: itemIds } },
-        _sum: { quantity: true },
+        _sum: { quantity: true, creditAmount: true },
       });
       const returnedByItem = new Map(alreadyReturned.map((row) => [row.purchaseItemId, new Prisma.Decimal(row._sum.quantity ?? 0)]));
+      const creditedByItem = new Map(alreadyReturned.map((row) => [row.purchaseItemId, new Prisma.Decimal(row._sum.creditAmount ?? 0)]));
       // The same item may appear on more than one line of this return —
       // what counts is the total being returned now.
       const requestedByItem = new Map<number, Prisma.Decimal>();
+      const creditRequestedByItem = new Map<number, Prisma.Decimal>();
       for (const line of dto.items) {
         const current = requestedByItem.get(line.purchaseItemId) ?? new Prisma.Decimal(0);
         requestedByItem.set(line.purchaseItemId, current.plus(line.quantity));
+        const currentCredit = creditRequestedByItem.get(line.purchaseItemId) ?? new Prisma.Decimal(0);
+        creditRequestedByItem.set(line.purchaseItemId, currentCredit.plus(line.creditAmount));
       }
       for (const item of purchaseItems) {
         const remaining = new Prisma.Decimal(item.quantity).minus(returnedByItem.get(item.id) ?? 0);
         const requested = requestedByItem.get(item.id) ?? new Prisma.Decimal(0);
         if (requested.greaterThan(remaining)) {
           throw new ConflictException(`مقدار برگشتی «${item.name}» بیشتر از مقدار قابل برگشت (${remaining.toString()}) است`);
+        }
+        const remainingValue = new Prisma.Decimal(item.totalPrice).minus(creditedByItem.get(item.id) ?? 0);
+        const creditRequested = creditRequestedByItem.get(item.id) ?? new Prisma.Decimal(0);
+        if (creditRequested.greaterThan(remainingValue)) {
+          throw new ConflictException(`مبلغ اعتبار برگشتی «${item.name}» بیشتر از ارزش باقی‌ماندهٔ قابل برگشت (${remainingValue.toString()} ریال) است`);
         }
       }
 
@@ -438,19 +647,107 @@ export class PurchasesService {
     if (!purchase) throw new NotFoundException('خرید پیدا نشد');
   }
 
-  private async recomputePaymentTotals(purchaseId: number, totalAmount: number) {
-    const payments = await this.prisma.purchasePayment.findMany({ where: { purchaseId } });
+  // Locks the parent Purchase row for the rest of the transaction (see
+  // addPayment()) and returns what the payment rules need, read after the lock.
+  private async lockPurchaseForPayment(tx: Prisma.TransactionClient, purchaseId: number) {
+    await tx.$queryRaw`SELECT id FROM purchases WHERE id = ${purchaseId} FOR UPDATE`;
+    const purchase = await tx.purchase.findUnique({
+      where: { id: purchaseId },
+      select: { totalAmount: true, status: true, purchaseDate: true },
+    });
+    if (!purchase) throw new NotFoundException('خرید پیدا نشد');
+    return { totalAmount: Number(purchase.totalAmount), status: purchase.status, purchaseDate: purchase.purchaseDate };
+  }
+
+  private ensurePayable(purchase: { status: PurchaseStatus; purchaseDate: Date }, paymentDate: Date) {
+    if (!PAYABLE_PURCHASE_STATUSES.includes(purchase.status)) {
+      throw new ConflictException(
+        `پرداخت فقط برای خرید «تأییدشده»، «دریافت‌شده» یا «بسته‌شده» قابل ثبت است؛ وضعیت این خرید «${PURCHASE_STATUS_LABELS_FA[purchase.status] ?? purchase.status}» است`,
+      );
+    }
+    if (toIsoDay(paymentDate) < toIsoDay(purchase.purchaseDate)) {
+      throw new ConflictException('تاریخ پرداخت نمی‌تواند قبل از تاریخ خرید باشد');
+    }
+  }
+
+  // Buying more than a linked request line still needs is allowed, but only
+  // with explicit self-confirmation (business decision 2026-10-05 — a
+  // lightweight confirm, not a second approver). Without dto.confirmOverage
+  // this throws a 409 whose body is:
+  //   { statusCode: 409, code: 'PURCHASE_QUANTITY_EXCEEDS_REQUEST',
+  //     message: '<Persian summary>',
+  //     details: { overages: [{ purchaseRequestItemId, name, requested,
+  //       alreadyPurchased, remaining, purchasing, excess }] } }
+  // so the frontend can show a confirm dialog and resubmit with the flag.
+  // "Already purchased" = every other non-cancelled purchase (this one
+  // excluded on update), via the Purchases-owned quantity rule.
+  private async ensureRequestOverageConfirmed(
+    purchaseRequestId: number | undefined,
+    items: { quantity: number; purchaseRequestItemId?: number }[],
+    confirmOverage: boolean | undefined,
+    excludePurchaseId?: number,
+  ) {
+    if (!purchaseRequestId) return;
+    const purchasingByItem = new Map<number, Prisma.Decimal>();
+    for (const item of items) {
+      if (item.purchaseRequestItemId === undefined) continue;
+      const current = purchasingByItem.get(item.purchaseRequestItemId) ?? new Prisma.Decimal(0);
+      purchasingByItem.set(item.purchaseRequestItemId, current.plus(item.quantity));
+    }
+    if (purchasingByItem.size === 0) return;
+
+    const ids = [...purchasingByItem.keys()];
+    const [requestItems, purchasedElsewhere] = await Promise.all([
+      this.prisma.purchaseRequestItem.findMany({ where: { id: { in: ids }, purchaseRequestId }, select: { id: true, name: true, quantity: true } }),
+      this.purchaseQuantities.sumQuantitiesByRequestItem(ids, excludePurchaseId),
+    ]);
+    const overages = (requestItems ?? []).flatMap((requestItem) => {
+      const requested = new Prisma.Decimal(requestItem.quantity);
+      const alreadyPurchased = new Prisma.Decimal(purchasedElsewhere.get(requestItem.id) ?? 0);
+      const remaining = Prisma.Decimal.max(0, requested.minus(alreadyPurchased));
+      const purchasing = purchasingByItem.get(requestItem.id) ?? new Prisma.Decimal(0);
+      if (!purchasing.greaterThan(remaining)) return [];
+      return [{
+        purchaseRequestItemId: requestItem.id,
+        name: requestItem.name,
+        requested: requested.toNumber(),
+        alreadyPurchased: alreadyPurchased.toNumber(),
+        remaining: remaining.toNumber(),
+        purchasing: purchasing.toNumber(),
+        excess: purchasing.minus(remaining).toNumber(),
+      }];
+    });
+    if (overages.length === 0 || confirmOverage) return;
+    const summary = overages.map((overage) => `«${overage.name}» (${overage.excess} بیشتر از باقی‌ماندهٔ ${overage.remaining})`).join('، ');
+    throw new ConflictException({
+      statusCode: 409,
+      code: PURCHASE_QUANTITY_EXCEEDS_REQUEST,
+      message: `مقدار خرید از مقدار باقی‌ماندهٔ درخواست بیشتر است: ${summary}. برای ادامه، خرید مازاد را تأیید کنید.`,
+      details: { overages },
+    });
+  }
+
+  private async recomputePaymentTotals(tx: Prisma.TransactionClient, purchaseId: number, totalAmount: number) {
+    const payments = await tx.purchasePayment.findMany({ where: { purchaseId } });
     const paidAmount = payments
       .filter((payment) => payment.status === 'COMPLETED')
       .reduce((sum, payment) => sum + Number(payment.amount), 0);
+    if (paidAmount > MAX_MONEY) throw new BadRequestException('مجموع پرداخت‌های این خرید بیش از حد مجاز است');
     const paymentStatus = derivePaymentStatus(totalAmount, paidAmount);
-    await this.prisma.purchase.update({ where: { id: purchaseId }, data: { paidAmount, paymentStatus } });
+    await tx.purchase.update({ where: { id: purchaseId }, data: { paidAmount, paymentStatus } });
   }
 
 
-  private async ensurePurchaseRequest(id: number) {
+  // `requireLinkable`: a purchase may only be (newly) linked to an APPROVED
+  // or PARTIALLY_PURCHASED request (business decision 2026-10-05) — not a
+  // DRAFT/SUBMITTED one that nobody approved, nor a REJECTED/CANCELLED/
+  // COMPLETED one.
+  private async ensurePurchaseRequest(id: number, options: { requireLinkable: boolean }) {
     const purchaseRequest = await this.prisma.purchaseRequest.findUnique({ where: { id } });
     if (!purchaseRequest) throw new ConflictException('درخواست خرید انتخاب‌شده یافت نشد');
+    if (options.requireLinkable && purchaseRequest.status !== 'APPROVED' && purchaseRequest.status !== 'PARTIALLY_PURCHASED') {
+      throw new ConflictException('خرید فقط به درخواست خرید «تأییدشده» یا «خرید جزئی» قابل اتصال است');
+    }
   }
 
   // An item's optional purchaseRequestItemId must belong to the same
@@ -496,9 +793,15 @@ export class PurchasesService {
     if (!supplier || supplier.status !== 'active') throw new ConflictException('تأمین‌کننده انتخاب‌شده فعال نیست');
   }
 
-  private async ensureUnits(unitIds: number[]) {
-    const uniqueIds = [...new Set(unitIds)];
-    const count = await this.prisma.unit.count({ where: { id: { in: uniqueIds } } });
-    if (count !== uniqueIds.length) throw new ConflictException('یکی از واحدهای انتخاب‌شده برای اقلام خرید معتبر نیست');
+  // A unit must exist and be active to be newly assigned. Units this
+  // purchase's lines already use (`alreadyAssigned`, on update) are exempt —
+  // a since-deactivated unit may stay where it already is, same rule as
+  // ItemsService.ensureReferences().
+  private async ensureUnits(unitIds: number[], alreadyAssigned: number[] = []) {
+    const kept = new Set(alreadyAssigned);
+    const toCheck = [...new Set(unitIds)].filter((id) => !kept.has(id));
+    if (toCheck.length === 0) return;
+    const count = await this.prisma.unit.count({ where: { id: { in: toCheck }, isActive: true } });
+    if (count !== toCheck.length) throw new ConflictException('یکی از واحدهای انتخاب‌شده برای اقلام خرید معتبر یا فعال نیست');
   }
 }

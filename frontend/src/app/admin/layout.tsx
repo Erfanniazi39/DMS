@@ -40,7 +40,27 @@ export const AdminUserContext = createContext<SessionUser | null>(null);
 // `permission` on a child is checked in addition to the parent's — used to
 // hide create routes from users who can only view (e.g. purchases.view
 // without purchases.manage).
-type NavChild = { label: string; href: string; permission?: string; icon?: LucideIcon };
+// `sectionLabel` groups children that belong to the same sub-concept (e.g.
+// "خرید" vs "درخواست خرید" both living under the single "خرید" parent) —
+// consecutive children sharing a `sectionLabel` are boxed together with a
+// subtly shaded background and a small heading (see `groupChildren` below).
+type NavChild = { label: string; href: string; permission?: string; icon?: LucideIcon; sectionLabel?: string };
+
+// Splits a flat children list into consecutive runs by `sectionLabel`, so
+// each run can be rendered as its own visually distinct box. Children with
+// no `sectionLabel` each get their own unlabelled, unboxed run.
+function groupChildren(children: NavChild[]) {
+  const groups: { sectionLabel?: string; items: NavChild[] }[] = [];
+  for (const child of children) {
+    const last = groups[groups.length - 1];
+    if (last && child.sectionLabel && last.sectionLabel === child.sectionLabel) {
+      last.items.push(child);
+    } else {
+      groups.push({ sectionLabel: child.sectionLabel, items: [child] });
+    }
+  }
+  return groups;
+}
 type NavItem = {
   label: string;
   href: string;
@@ -62,10 +82,10 @@ const navGroups: NavGroup[] = [
         icon: ShoppingCart,
         permission: "purchases.view",
         children: [
-          { label: "ثبت خرید", href: "/purchases/new", permission: "purchases.manage", icon: Plus },
-          { label: "خریدها", href: "/purchases", icon: ShoppingBag },
-          { label: "ثبت درخواست خرید", href: "/purchase-requests/new", permission: "purchases.manage", icon: FilePlus2 },
-          { label: "درخواست‌های خرید", href: "/purchase-requests", icon: ClipboardList },
+          { label: "ثبت خرید", href: "/purchases/new", permission: "purchases.manage", icon: Plus, sectionLabel: "خرید" },
+          { label: "خریدها", href: "/purchases", icon: ShoppingBag, sectionLabel: "خرید" },
+          { label: "ثبت درخواست خرید", href: "/purchase-requests/new", permission: "purchases.manage", icon: FilePlus2, sectionLabel: "درخواست خرید" },
+          { label: "درخواست‌های خرید", href: "/purchase-requests", icon: ClipboardList, sectionLabel: "درخواست خرید" },
         ],
       },
       { label: "فروش", href: "/admin/sales", icon: ReceiptText, permission: "sales.manage" },
@@ -228,21 +248,31 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
                               <ChevronLeft className={`size-4 transition-transform ${expanded ? "-rotate-90" : ""}`} />
                             </button>
                             {expanded ? (
-                              <div className="mt-1 space-y-1 pe-3">
-                                {item.children.map((child) => {
-                                  const childActive = pathname === child.href;
-                                  const ChildIcon = child.icon;
-                                  return (
-                                    <button
-                                      className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm ${childActive ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-sidebar-foreground/75 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"}`}
-                                      key={child.href}
-                                      onClick={() => router.push(child.href)}
-                                    >
-                                      {ChildIcon ? <ChildIcon className="size-4" /> : null}
-                                      {child.label}
-                                    </button>
-                                  );
-                                })}
+                              <div className="mt-1 space-y-1.5 pe-3">
+                                {groupChildren(item.children).map((childGroup, groupIndex) => (
+                                  <div
+                                    className={childGroup.sectionLabel ? "space-y-0.5 rounded-lg bg-sidebar-border/40 p-1.5" : "space-y-1"}
+                                    key={`${groupIndex}-${childGroup.items[0].href}`}
+                                  >
+                                    {childGroup.sectionLabel ? (
+                                      <p className="px-1.5 pb-0.5 text-[11px] font-medium text-sidebar-foreground/55">{childGroup.sectionLabel}</p>
+                                    ) : null}
+                                    {childGroup.items.map((child) => {
+                                      const childActive = pathname === child.href;
+                                      const ChildIcon = child.icon;
+                                      return (
+                                        <button
+                                          className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm ${childActive ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-sidebar-foreground/75 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"}`}
+                                          key={child.href}
+                                          onClick={() => router.push(child.href)}
+                                        >
+                                          {ChildIcon ? <ChildIcon className="size-4" /> : null}
+                                          {child.label}
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                ))}
                               </div>
                             ) : null}
                           </div>

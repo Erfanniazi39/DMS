@@ -11,6 +11,7 @@ import { JalaliDateInput } from "@/components/ui/jalali-date-input";
 import { useToasts, ToastViewport } from "@/components/ui/toast";
 import { toJalali } from "@/lib/jalali";
 import { apiFetch, type ApiError } from "@/lib/api";
+import { parseNumberInput } from "@/lib/number-input";
 import {
   RequiredMark,
   selectClass,
@@ -31,6 +32,10 @@ import {
 
 type ItemFormRow = {
   key: string;
+  // The existing PurchaseRequestItem id (edit mode), sent back on PATCH so
+  // the backend diffs lines by id and keeps any Purchase lines linked to
+  // them — undefined for a row added in this form.
+  id?: number;
   name: string;
   quantity: string;
   unitId: string;
@@ -50,6 +55,11 @@ function todayIso(): string {
 // "Required by" looks forward in time, unlike the other dates in this app —
 // a few years' headroom past the current Jalali year.
 const requiredDateMaxYear = toJalali(new Date()).jy + 3;
+
+// Set only by the system from actual purchased quantities (CLAUDE.md rule
+// 6) — the backend refuses a manual change into either, so they're only
+// offered when the request is already in that status.
+const SYSTEM_ONLY_STATUSES: PurchaseRequestStatus[] = ["PARTIALLY_PURCHASED", "COMPLETED"];
 
 type FormState = {
   requestDate: string;
@@ -92,6 +102,13 @@ export function PurchaseRequestForm(props: Props) {
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState<FormState>(emptyForm);
   const [requestNumber, setRequestNumber] = useState<string | null>(null);
+  // The status the request had when loaded — see SYSTEM_ONLY_STATUSES.
+  const [loadedStatus, setLoadedStatus] = useState<PurchaseRequestStatus | null>(null);
+  // Optimistic locking: the request's updatedAt as loaded, sent back on
+  // save; `staleRecord` = the backend answered RECORD_MODIFIED (someone else
+  // saved in between) — saving stays blocked until the page is reloaded.
+  const [loadedUpdatedAt, setLoadedUpdatedAt] = useState<string | null>(null);
+  const [staleRecord, setStaleRecord] = useState(false);
 
   const [departments, setDepartments] = useState<DepartmentOption[]>([]);
   const [employees, setEmployees] = useState<EmployeeOption[]>([]);
@@ -124,6 +141,8 @@ export function PurchaseRequestForm(props: Props) {
       try {
         const request = await apiFetch<PurchaseRequestDetail>(`/purchase-requests/${props.purchaseRequestId}`);
         setRequestNumber(request.requestNumber);
+        setLoadedUpdatedAt(request.updatedAt);
+        setLoadedStatus(request.status);
         setForm({
           requestDate: request.requestDate.slice(0, 10),
           requesterDepartmentId: String(request.requesterDepartment.id),
@@ -134,6 +153,7 @@ export function PurchaseRequestForm(props: Props) {
           items: request.items.length
             ? request.items.map((item) => ({
                 key: crypto.randomUUID(),
+                id: item.id,
                 name: item.name,
                 quantity: item.quantity,
                 unitId: String(item.unit.id),
@@ -200,13 +220,14 @@ export function PurchaseRequestForm(props: Props) {
       priority: form.priority,
       note: form.note.trim(),
       items: items.map((item) => ({
+        ...(props.mode === "edit" && item.id !== undefined ? { id: item.id } : {}),
         name: item.name.trim(),
-        quantity: Number(item.quantity),
+        quantity: parseNumberInput(item.quantity),
         unitId: Number(item.unitId),
         requiredDate: item.requiredDate || undefined,
         note: item.note.trim(),
       })),
-      ...(props.mode === "edit" ? { status: form.status } : {}),
+      ...(props.mode === "edit" ? { status: form.status, updatedAt: loadedUpdatedAt } : {}),
     };
 
     setSaving(true);
@@ -222,7 +243,10 @@ export function PurchaseRequestForm(props: Props) {
       router.push(`/purchase-requests/${saved.id}`);
     } catch (reason) {
       const apiError = reason as ApiError;
-      if (apiError.messages?.length) {
+      if (apiError.code === "RECORD_MODIFIED") {
+        setStaleRecord(true);
+        pushError(apiError.message);
+      } else if (apiError.messages?.length) {
         pushErrors(apiError.messages);
       } else {
         pushError(apiError.message ?? "ذخیره درخواست خرید ناموفق بود.");
@@ -252,6 +276,18 @@ export function PurchaseRequestForm(props: Props) {
             {props.mode === "edit" && requestNumber ? `شماره درخواست: ${requestNumber}` : "اطلاعات درخواست خرید و اقلام آن را وارد کنید"}
           </p>
         </div>
+
+        {staleRecord ? (
+          <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-2.5 text-sm">
+            <span>
+              این درخواست پس از باز شدن این فرم توسط کاربر دیگری تغییر کرده است. برای جلوگیری از بازنویسی تغییرات او، ابتدا صفحه را بازخوانی کنید
+              (تغییرات واردشده در این فرم از بین می‌رود).
+            </span>
+            <Button type="button" size="sm" variant="outline" onClick={() => window.location.reload()}>
+              بازخوانی صفحه
+            </Button>
+          </div>
+        ) : null}
 
         <form id="purchase-request-form" onSubmit={submit} className="space-y-3" noValidate>
           <Card size="sm">
@@ -320,7 +356,9 @@ export function PurchaseRequestForm(props: Props) {
                     value={form.status}
                     onChange={(event) => update("status", event.target.value as PurchaseRequestStatus)}
                   >
-                    {PURCHASE_REQUEST_STATUSES.map((status) => (
+                    {PURCHASE_REQUEST_STATUSES.filter(
+                      (status) => !SYSTEM_ONLY_STATUSES.includes(status) || status === loadedStatus,
+                    ).map((status) => (
                       <option key={status} value={status}>
                         {purchaseRequestStatusLabels[status]}
                       </option>
@@ -432,7 +470,7 @@ export function PurchaseRequestForm(props: Props) {
 
         {/* Sticky so saving never requires scrolling past the items first. */}
         <div className="sticky bottom-0 z-10 flex items-center gap-2 rounded-lg border border-border bg-card px-4 py-2.5 shadow-sm">
-          <Button type="submit" form="purchase-request-form" disabled={saving}>
+          <Button type="submit" form="purchase-request-form" disabled={saving || staleRecord}>
             {saving ? "در حال ذخیره..." : props.mode === "edit" ? "ذخیره تغییرات" : "ثبت درخواست خرید"}
           </Button>
           <Button type="button" variant="outline" onClick={() => router.back()}>

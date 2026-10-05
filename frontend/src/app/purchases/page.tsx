@@ -12,6 +12,7 @@ import { formatJalali } from "@/lib/jalali";
 import { apiFetch, type ApiError } from "@/lib/api";
 import { useAdminUser } from "@/app/admin/layout";
 import {
+  ColorLegend,
   PURCHASE_PAYMENT_STATUSES,
   PURCHASE_SOURCE_TYPES,
   PURCHASE_STATUSES,
@@ -25,6 +26,7 @@ import {
   purchaseSourceTypeTone,
   purchaseStatusLabels,
   purchaseStatusTone,
+  toneCellClasses,
   type PurchaseListItem,
   type PurchasePaymentStatus,
   type PurchaseSourceType,
@@ -323,6 +325,19 @@ export default function PurchasesPage() {
             ) : null}
           </div>
 
+          {purchases.length > 0 ? (
+            <div className="flex flex-wrap items-center gap-x-6 gap-y-2 border-b border-border px-4 py-2">
+              <ColorLegend
+                title="رنگ ستون پرداخت"
+                items={PURCHASE_PAYMENT_STATUSES.map((status) => ({ label: purchasePaymentStatusLabels[status], tone: purchasePaymentStatusTone[status] }))}
+              />
+              <ColorLegend
+                title="رنگ ستون وضعیت"
+                items={PURCHASE_STATUSES.map((status) => ({ label: purchaseStatusLabels[status], tone: purchaseStatusTone[status] }))}
+              />
+            </div>
+          ) : null}
+
           {/* Full placeholder only on the first load; later fetches (paging,
               filtering) keep the current rows visible but dimmed. */}
           {loading && purchases.length === 0 ? (
@@ -365,10 +380,10 @@ export default function PurchasesPage() {
                         {purchase.buyerEmployee ? employeeFullName(purchase.buyerEmployee) : "-"}
                       </td>
                       <td className="px-3 py-2.5 font-medium whitespace-nowrap tabular-nums">{formatMoney(purchase.totalAmount)} ریال</td>
-                      <td className="px-3 py-2.5">
+                      <td className={`px-3 py-2.5 ${toneCellClasses[purchasePaymentStatusTone[purchase.paymentStatus]]}`}>
                         <StatusBadge label={purchasePaymentStatusLabels[purchase.paymentStatus]} tone={purchasePaymentStatusTone[purchase.paymentStatus]} />
                       </td>
-                      <td className="px-3 py-2.5">
+                      <td className={`px-3 py-2.5 ${toneCellClasses[purchaseStatusTone[purchase.status]]}`}>
                         <StatusBadge label={purchaseStatusLabels[purchase.status]} tone={purchaseStatusTone[purchase.status]} />
                       </td>
                       <td className="px-3 py-2.5">

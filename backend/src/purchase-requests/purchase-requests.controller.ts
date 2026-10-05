@@ -7,8 +7,10 @@ import { SessionAuthGuard } from '../auth/guards/session-auth.guard';
 import { ZodValidationPipe } from '../auth/zod-validation.pipe';
 import {
   createPurchaseRequestSchema,
+  purchaseRequestListQuerySchema,
   updatePurchaseRequestSchema,
   type CreatePurchaseRequestDto,
+  type PurchaseRequestListQuery,
   type UpdatePurchaseRequestDto,
 } from './dto/purchase-request.dto';
 import { PurchaseRequestsService } from './purchase-requests.service';
@@ -20,21 +22,16 @@ export class PurchaseRequestsController {
 
   @Get()
   @RequirePermissions('purchases.view')
-  list(
-    @Query('q') q?: string,
-    @Query('status') status?: string,
-    @Query('priority') priority?: string,
-    @Query('requesterDepartmentId') requesterDepartmentId?: string,
-    // Opt-in pagination — see parsePagination(). Omitted = full array.
-    @Query('page') page?: string,
-    @Query('pageSize') pageSize?: string,
-  ) {
-    const pagination = parsePagination(page, pageSize);
+  // Filters validated by purchaseRequestListQuerySchema (?status=FOO → 400,
+  // not a raw 500). page/pageSize: opt-in pagination — see
+  // parsePagination(). Omitted = full array.
+  list(@Query(new ZodValidationPipe(purchaseRequestListQuerySchema)) query: PurchaseRequestListQuery) {
+    const pagination = parsePagination(query.page, query.pageSize);
     return this.purchaseRequestsService.list({
-      q: q || undefined,
-      status: status || undefined,
-      priority: priority || undefined,
-      requesterDepartmentId: requesterDepartmentId ? Number(requesterDepartmentId) : undefined,
+      q: query.q || undefined,
+      status: query.status,
+      priority: query.priority,
+      requesterDepartmentId: query.requesterDepartmentId,
     }, pagination);
   }
 

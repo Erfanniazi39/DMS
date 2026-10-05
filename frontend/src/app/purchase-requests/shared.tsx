@@ -123,6 +123,9 @@ export type PurchaseRequestDetail = {
   priority: PurchaseRequestPriority;
   note: string | null;
   createdAt: string;
+  // Optimistic-locking token — sent back on PATCH; a mismatch is a 409
+  // with code RECORD_MODIFIED (someone else saved in between).
+  updatedAt: string;
   requesterDepartment: { id: number; code: string; name: string };
   requestedByEmployee: { id: number; code: string; firstName: string; lastName: string } | null;
   createdByUser: { id: number; username: string } | null;

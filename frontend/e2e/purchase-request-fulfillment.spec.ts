@@ -1,14 +1,15 @@
 import { test, expect, type Page, type APIRequestContext } from "@playwright/test";
 
 // Closes the "no E2E coverage of Purchase Request → Purchase fulfillment"
-// gap: the "ایجاد خرید کامل" / "ایجاد خرید" / "خرید باقی‌مانده" actions on
-// the Purchase Request detail page, and the automatic status recompute
+// gap: the header "ثبت خرید" (formerly "ایجاد خرید کامل") and per-item
+// "ایجاد خرید" / "خرید باقی‌مانده" actions on the Purchase Request detail page, and the automatic status recompute
 // (PurchaseRequestsService.recomputeStatus()) that follows.
 //
 // What recomputeStatus() actually requires (read from the service, not
 // assumed): it sums PurchaseItem.quantity per request item across every
-// linked purchase whose status is NOT CANCELLED — a DRAFT purchase counts.
-// So simply *creating* the (DRAFT) purchase already moves the request:
+// linked purchase whose status is NOT CANCELLED (a DRAFT one counts too).
+// So simply *creating* the purchase (CONFIRMED by default since 2026-10-05)
+// already moves the request:
 //   nothing purchased -> APPROVED, some -> PARTIALLY_PURCHASED,
 //   every item fully covered -> COMPLETED.
 // It only acts on requests already in APPROVED/PARTIALLY_PURCHASED/COMPLETED.
@@ -84,11 +85,12 @@ async function createPurchaseRequest(
   };
   const created = await request.post(`${BACKEND}/purchase-requests`, { data: payload });
   if (!created.ok()) throw new Error(`Failed to create purchase request: ${created.status()} ${await created.text()}`);
-  const body = (await created.json()) as { id: number; requestNumber: string; status: string };
+  const body = (await created.json()) as { id: number; requestNumber: string; status: string; updatedAt: string };
   expect(body.status).toBe("DRAFT");
 
   if (options.approve) {
-    const approved = await request.patch(`${BACKEND}/purchase-requests/${body.id}`, { data: { ...payload, status: "APPROVED" } });
+    // updatedAt = the optimistic-locking token every PATCH must send back.
+    const approved = await request.patch(`${BACKEND}/purchase-requests/${body.id}`, { data: { ...payload, status: "APPROVED", updatedAt: body.updatedAt } });
     if (!approved.ok()) throw new Error(`Failed to approve purchase request: ${approved.status()} ${await approved.text()}`);
   }
   return { id: body.id, requestNumber: body.requestNumber, unitId };
@@ -104,6 +106,15 @@ async function openRequestDetail(page: Page, requestId: number, requestNumber: s
 // "تأییدشده"/"لغوشده" exist for both), so it's scoped to the header block.
 function requestHeader(page: Page) {
   return page.getByRole("heading", { level: 1 }).locator("xpath=../..");
+}
+
+// The header "ثبت خرید" action (pre-fills every item with remaining
+// quantity). Scoped to the header: the sidebar has its own quick link. It is
+// always rendered for a purchases.manage user, but disabled (with a tooltip
+// explaining why) unless the request is APPROVED/PARTIALLY_PURCHASED and
+// something is still left to buy.
+function createFullPurchaseButton(page: Page) {
+  return requestHeader(page).getByRole("button", { name: "ثبت خرید", exact: true });
 }
 
 function requestedItemRow(page: Page, itemName: string) {
@@ -139,11 +150,13 @@ function purchaseItemRow(page: Page, index: number) {
 // quantity (the remaining quantity), and unit — prices left for the user.
 async function expectPrefilledPurchaseForm(
   page: Page,
-  expected: { requestId: number; unitId: number; items: { name: string; quantity: number }[] },
+  expected: { requestNumber: string; unitId: number; items: { name: string; quantity: number }[] },
 ) {
   await expect(page).toHaveURL(/\/\/[^/]+\/purchases\/new\?prefill=/);
   await expect(page.getByRole("heading", { name: "ثبت خرید جدید" })).toBeVisible();
-  await expect(page.locator("#purchase-request")).toHaveValue(String(expected.requestId));
+  // "#purchase-request" is a custom Base UI Select trigger (not a native
+  // <select>), so it's checked by its visible label, not a form value.
+  await expect(page.locator("#purchase-request")).toContainText(expected.requestNumber);
   await expect(page.locator("form#purchase-form table tbody tr")).toHaveCount(expected.items.length);
   for (const [index, item] of expected.items.entries()) {
     const row = purchaseItemRow(page, index);
@@ -184,8 +197,8 @@ test("1) 'ایجاد خرید کامل' pre-fills every item, and saving it reco
   await expectItemQuantities(page, itemB.name, 0, 3);
   await expect(page.getByText("هنوز خریدی از این درخواست ثبت نشده است.")).toBeVisible();
 
-  await page.getByRole("button", { name: "ایجاد خرید کامل" }).click();
-  await expectPrefilledPurchaseForm(page, { requestId: pr.id, unitId: pr.unitId, items: [itemA, itemB] });
+  await createFullPurchaseButton(page).click();
+  await expectPrefilledPurchaseForm(page, { requestNumber: pr.requestNumber, unitId: pr.unitId, items: [itemA, itemB] });
 
   const purchaseId = await completeAndSubmitPurchaseForm(page, employeeId, ["1000000", "300000"]);
 
@@ -196,26 +209,28 @@ test("1) 'ایجاد خرید کامل' pre-fills every item, and saving it reco
   await expectItemQuantities(page, itemA.name, 10, 0);
   await expectItemQuantities(page, itemB.name, 3, 0);
   await expect(page.getByLabel("این قلم به‌طور کامل خریداری شده است")).toHaveCount(2);
-  await expect(page.getByRole("button", { name: "ایجاد خرید کامل" })).toHaveCount(0);
+  await expect(createFullPurchaseButton(page)).toBeDisabled();
   const linkedPurchases = page.locator("table").last();
   await expect(linkedPurchases.getByRole("link", { name: /^PUR-\d+$/ })).toHaveCount(1);
-  await expect(linkedPurchases).toContainText("پیش‌نویس");
+  // New purchases default to CONFIRMED (business decision 2026-10-05).
+  await expect(linkedPurchases).toContainText("تأییدشده");
 
   // Reverse direction: cancelling the only linked purchase removes its
   // quantities from the sum, so the system puts the request back to APPROVED.
-  await page.goto(`/purchases/${purchaseId}/edit`);
-  await expect(page.getByRole("heading", { name: "ویرایش خرید" })).toBeVisible();
-  await expect(purchaseItemRow(page, 0).getByLabel("نام یا شرح قلم")).toHaveValue(itemA.name);
-  await page.locator("#purchase-status").selectOption("CANCELLED");
-  await page.getByRole("button", { name: "ذخیره تغییرات" }).click();
-  await expect(page.getByRole("status").filter({ hasText: "خرید با موفقیت ویرایش شد." })).toBeVisible();
+  // (Status changes are the detail page's «لغو خرید» action now, not an
+  // edit-form field.)
+  await page.goto(`/purchases/${purchaseId}`);
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText(/^PUR-\d+$/);
+  page.once("dialog", (dialog) => void dialog.accept());
+  await page.getByRole("main").getByRole("button", { name: "لغو خرید", exact: true }).click();
+  await expect(page.getByRole("status").filter({ hasText: "خرید لغو شد." })).toBeVisible();
 
   await openRequestDetail(page, pr.id, pr.requestNumber);
   await expect(requestHeader(page)).toContainText("تأییدشده");
   await expect(requestHeader(page)).not.toContainText("تکمیل‌شده");
   await expectItemQuantities(page, itemA.name, 0, 10);
   await expectItemQuantities(page, itemB.name, 0, 3);
-  await expect(page.getByRole("button", { name: "ایجاد خرید کامل" })).toBeVisible();
+  await expect(createFullPurchaseButton(page)).toBeEnabled();
 });
 
 test("2) per-item 'ایجاد خرید' for part of the quantity -> PARTIALLY_PURCHASED; then 'خرید باقی‌مانده' -> COMPLETED", async ({ page, request }) => {
@@ -226,7 +241,7 @@ test("2) per-item 'ایجاد خرید' for part of the quantity -> PARTIALLY_PU
 
   await openRequestDetail(page, pr.id, pr.requestNumber);
   await requestedItemRow(page, item.name).getByRole("button", { name: "ایجاد خرید" }).click();
-  await expectPrefilledPurchaseForm(page, { requestId: pr.id, unitId: pr.unitId, items: [item] });
+  await expectPrefilledPurchaseForm(page, { requestNumber: pr.requestNumber, unitId: pr.unitId, items: [item] });
 
   // Quantity stays editable on the pre-filled form — buy only 4 of 10.
   await purchaseItemRow(page, 0).getByLabel("مقدار").fill("4");
@@ -238,7 +253,7 @@ test("2) per-item 'ایجاد خرید' for part of the quantity -> PARTIALLY_PU
 
   // The per-item action now offers the remainder, pre-filled with 6.
   await requestedItemRow(page, item.name).getByRole("button", { name: "خرید باقی‌مانده" }).click();
-  await expectPrefilledPurchaseForm(page, { requestId: pr.id, unitId: pr.unitId, items: [{ name: item.name, quantity: 6 }] });
+  await expectPrefilledPurchaseForm(page, { requestNumber: pr.requestNumber, unitId: pr.unitId, items: [{ name: item.name, quantity: 6 }] });
   await completeAndSubmitPurchaseForm(page, employeeId, ["600000"]);
 
   await openRequestDetail(page, pr.id, pr.requestNumber);
@@ -253,6 +268,7 @@ test("3) a request that is still DRAFT offers no purchase actions at all", async
 
   await openRequestDetail(page, pr.id, pr.requestNumber);
   await expect(requestHeader(page)).toContainText("پیش‌نویس");
-  await expect(page.getByRole("button", { name: "ایجاد خرید کامل" })).toHaveCount(0);
+  await expect(createFullPurchaseButton(page)).toBeDisabled();
+  await expect(createFullPurchaseButton(page)).toHaveAttribute("title", "ابتدا درخواست را تأیید کنید");
   await expect(requestedItemRow(page, item.name).getByRole("button")).toHaveCount(0);
 });

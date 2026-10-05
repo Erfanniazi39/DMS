@@ -16,13 +16,26 @@ import {
   purchaseRequestStatusLabels,
   purchaseRequestStatusTone,
   type PurchaseRequestDetail,
+  type PurchaseRequestStatus,
 } from "../shared";
 
+// Why "ثبت خرید" is disabled, per request status (only APPROVED and
+// PARTIALLY_PURCHASED allow creating a purchase — see canCreatePurchases).
+const createPurchaseBlockedReason: Record<PurchaseRequestStatus, string | undefined> = {
+  DRAFT: "ابتدا درخواست را تأیید کنید",
+  SUBMITTED: "ابتدا درخواست را تأیید کنید",
+  APPROVED: undefined,
+  PARTIALLY_PURCHASED: undefined,
+  COMPLETED: "همه اقلام این درخواست خریداری شده است",
+  REJECTED: "این درخواست رد شده است و نمی‌توان برای آن خرید ثبت کرد",
+  CANCELLED: "این درخواست لغو شده است و نمی‌توان برای آن خرید ثبت کرد",
+};
+
 // Opens the existing, shared Purchase creation form with this request (and
-// the given item(s)) pre-filled — used by the "ایجاد خرید"/"خرید
-// باقی‌مانده"/"ایجاد خرید کامل" actions below. Deliberately not a separate
-// purchase-creation flow: PurchaseForm reads this same ?prefill= param and
-// otherwise behaves exactly like a normal new-purchase form.
+// the given item(s)) pre-filled — used by the "ثبت خرید"/"ایجاد خرید"/"خرید
+// باقی‌مانده" actions below. Deliberately not a separate purchase-creation
+// flow: PurchaseForm reads this same ?prefill= param and otherwise behaves
+// exactly like a normal new-purchase form.
 function buildNewPurchaseUrl(
   purchaseRequestId: number,
   items: { name: string; quantity: number; unitId: number; purchaseRequestItemId: number }[],
@@ -44,14 +57,19 @@ export default function PurchaseRequestDetailPage() {
   const [request, setRequest] = useState<PurchaseRequestDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [approving, setApproving] = useState(false);
+  const [declining, setDeclining] = useState(false);
+  // The request changed since this page loaded it (RECORD_MODIFIED on
+  // تایید/رد) — the actions stay disabled until the data is reloaded.
+  const [staleRecord, setStaleRecord] = useState(false);
 
   // Shortcut for the same status change already possible from the edit
   // form's "وضعیت" field — PATCH /purchase-requests/:id requires the whole
   // record (items included, see PurchaseRequestsService.update()), so the
   // request's own current values are sent back unchanged apart from status.
-  async function approveRequest() {
+  // Shared by both "تایید" (APPROVED) and "رد" (REJECTED) — the only two
+  // status changes offered as a one-click shortcut here.
+  async function setRequestStatus(status: "APPROVED" | "REJECTED", successMessage: string, errorMessage: string) {
     if (!request) return;
-    setApproving(true);
     try {
       const updated = await apiFetch<PurchaseRequestDetail>(`/purchase-requests/${request.id}`, {
         method: "PATCH",
@@ -61,8 +79,13 @@ export default function PurchaseRequestDetailPage() {
           requestedByEmployeeId: request.requestedByEmployee?.id,
           priority: request.priority,
           note: request.note ?? "",
-          status: "APPROVED",
+          status,
+          // Optimistic locking: the version this page loaded.
+          updatedAt: request.updatedAt,
+          // Each line's id lets the backend update it in place, keeping
+          // any Purchase lines linked to it (PurchaseRequestsService.update()).
           items: request.items.map((item) => ({
+            id: item.id,
             name: item.name,
             quantity: item.quantity,
             unitId: item.unit.id,
@@ -72,11 +95,30 @@ export default function PurchaseRequestDetailPage() {
         }),
       });
       setRequest(updated);
-      pushSuccess("درخواست خرید تأیید شد.");
+      pushSuccess(successMessage);
     } catch (reason) {
-      pushError((reason as ApiError).message ?? "تأیید درخواست خرید ناموفق بود.");
+      const apiError = reason as ApiError;
+      if (apiError.code === "RECORD_MODIFIED") setStaleRecord(true);
+      pushError(apiError.message ?? errorMessage);
+    }
+  }
+
+  async function approveRequest() {
+    setApproving(true);
+    try {
+      await setRequestStatus("APPROVED", "درخواست خرید تأیید شد.", "تأیید درخواست خرید ناموفق بود.");
     } finally {
       setApproving(false);
+    }
+  }
+
+  async function declineRequest() {
+    if (!window.confirm("آیا از رد این درخواست خرید مطمئن هستید؟")) return;
+    setDeclining(true);
+    try {
+      await setRequestStatus("REJECTED", "درخواست خرید رد شد.", "رد درخواست خرید ناموفق بود.");
+    } finally {
+      setDeclining(false);
     }
   }
 
@@ -141,6 +183,14 @@ export default function PurchaseRequestDetailPage() {
     <div className="p-4 sm:p-6 lg:p-8">
       <ToastViewport toasts={toasts} onDismiss={dismiss} />
       <div className="mx-auto max-w-4xl space-y-6">
+        {staleRecord ? (
+          <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-2.5 text-sm">
+            <span>این درخواست پس از بارگذاری این صفحه توسط کاربر دیگری تغییر کرده است. برای ادامه، صفحه را بازخوانی کنید.</span>
+            <Button type="button" size="sm" variant="outline" onClick={() => window.location.reload()}>
+              بازخوانی صفحه
+            </Button>
+          </div>
+        ) : null}
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h1 className="text-2xl font-semibold">درخواست خرید {request.requestNumber}</h1>
@@ -150,8 +200,13 @@ export default function PurchaseRequestDetailPage() {
             <StatusBadge label={purchaseRequestPriorityLabels[request.priority]} tone={purchaseRequestPriorityTone[request.priority]} />
             <StatusBadge label={purchaseRequestStatusLabels[request.status]} tone={purchaseRequestStatusTone[request.status]} />
             {canApprove ? (
-              <Button variant="success" disabled={approving} onClick={() => void approveRequest()}>
+              <Button variant="success" disabled={approving || declining || staleRecord} onClick={() => void approveRequest()}>
                 {approving ? "در حال تأیید..." : "تایید"}
+              </Button>
+            ) : null}
+            {canApprove ? (
+              <Button variant="destructive" disabled={approving || declining || staleRecord} onClick={() => void declineRequest()}>
+                {declining ? "در حال رد کردن..." : "رد"}
               </Button>
             ) : null}
             {canManagePurchases ? (
@@ -160,7 +215,7 @@ export default function PurchaseRequestDetailPage() {
                 disabled={!canCreatePurchases || itemsWithRemaining.length === 0}
                 title={
                   !canCreatePurchases
-                    ? "ابتدا درخواست را تأیید کنید"
+                    ? createPurchaseBlockedReason[request.status]
                     : itemsWithRemaining.length === 0
                       ? "همه اقلام این درخواست خریداری شده است"
                       : undefined
@@ -232,28 +287,8 @@ export default function PurchaseRequestDetailPage() {
         {/* 2. اقلام درخواستی — با مقدار خریداری‌شده/باقی‌مانده، که از روی
             خریدهای مرتبط با هر قلم محاسبه می‌شود (نه یک مقدار ذخیره‌شده). */}
         <Card>
-          <CardHeader className="flex flex-row items-center justify-between">
+          <CardHeader>
             <CardTitle className="text-base">اقلام درخواستی</CardTitle>
-            {canCreatePurchases && itemsWithRemaining.length > 0 ? (
-              <Button
-                size="sm"
-                onClick={() =>
-                  router.push(
-                    buildNewPurchaseUrl(
-                      request.id,
-                      itemsWithRemaining.map((item) => ({
-                        name: item.name,
-                        quantity: item.remainingQuantity,
-                        unitId: item.unit.id,
-                        purchaseRequestItemId: item.id,
-                      })),
-                    ),
-                  )
-                }
-              >
-                ایجاد خرید کامل
-              </Button>
-            ) : null}
           </CardHeader>
           <CardContent>
             {/* Bounded height with its own scroll — a request with many

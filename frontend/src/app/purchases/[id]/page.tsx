@@ -3,15 +3,16 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { Download, Plus, Trash2 } from "lucide-react";
+import { AlertTriangle, Download, Pencil, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogBody, DialogCloseButton, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { JalaliDateInput } from "@/components/ui/jalali-date-input";
 import { useToasts, ToastViewport } from "@/components/ui/toast";
-import { formatJalali } from "@/lib/jalali";
+import { JALALI_MAX_YEAR, formatJalali } from "@/lib/jalali";
 import { apiFetch, apiUpload, type ApiError } from "@/lib/api";
+import { parseNumberInput } from "@/lib/number-input";
 import { useAdminUser } from "@/app/admin/layout";
 import {
   DOCUMENT_TYPES,
@@ -37,7 +38,9 @@ import {
   type PaymentMethod,
   type PaymentRecordStatus,
   type PurchaseDetail,
+  type PurchasePaymentRow,
   type PurchaseReturnRow,
+  type PurchaseStatus,
 } from "../shared";
 
 // Section chrome matching PurchaseForm.tsx's local FormSection — a plain
@@ -74,14 +77,79 @@ type PaymentFormState = {
   note: string;
 };
 
+// COMPLETED by default (business decision 2026-10-05) — only COMPLETED
+// payments count toward the paid amount; PENDING is still selectable (e.g.
+// a post-dated cheque not yet cleared).
 const emptyPaymentForm: PaymentFormState = {
   paymentDate: "",
   amount: "",
   method: "CASH",
   referenceNumber: "",
-  status: "PENDING",
+  status: "COMPLETED",
   note: "",
 };
+
+// Which purchase statuses allow recording a payment / a return — mirrors
+// the backend (purchase-rules.ts PAYABLE_/RETURNABLE_PURCHASE_STATUSES); the
+// backend stays authoritative, this just hides actions that would be refused.
+const PAYABLE_STATUSES: PurchaseStatus[] = ["CONFIRMED", "RECEIVED", "CLOSED"];
+const RETURNABLE_STATUSES: PurchaseStatus[] = ["RECEIVED", "CLOSED"];
+
+// Status changes on an existing purchase live only here, as one-click
+// actions (business-owner request 2026-10-05) — no longer in the edit form.
+// One forward step per status; CLOSED/CANCELLED are terminal. The backend
+// stays authoritative (returns block any change, optimistic locking, etc.).
+type StatusAction = {
+  target: PurchaseStatus;
+  label: string;
+  pendingLabel: string;
+  confirmMessage: string;
+  successMessage: string;
+  errorMessage: string;
+  variant: "success" | "default" | "outline" | "destructive";
+};
+
+const FORWARD_STATUS_ACTION: Partial<Record<PurchaseStatus, StatusAction>> = {
+  DRAFT: {
+    target: "CONFIRMED",
+    label: "تأیید خرید",
+    pendingLabel: "در حال تأیید...",
+    confirmMessage: "آیا از تأیید این خرید مطمئن هستید؟",
+    successMessage: "خرید تأیید شد.",
+    errorMessage: "تأیید خرید ناموفق بود.",
+    variant: "success",
+  },
+  CONFIRMED: {
+    target: "RECEIVED",
+    label: "ثبت دریافت کالا",
+    pendingLabel: "در حال ثبت دریافت...",
+    confirmMessage: "آیا دریافت کالای این خرید را تأیید می‌کنید؟",
+    successMessage: "دریافت کالا ثبت شد.",
+    errorMessage: "ثبت دریافت کالا ناموفق بود.",
+    variant: "success",
+  },
+  RECEIVED: {
+    target: "CLOSED",
+    label: "بستن خرید",
+    pendingLabel: "در حال بستن...",
+    confirmMessage: "آیا از بستن این خرید مطمئن هستید؟",
+    successMessage: "خرید بسته شد.",
+    errorMessage: "بستن خرید ناموفق بود.",
+    variant: "default",
+  },
+};
+
+const CANCEL_STATUS_ACTION: StatusAction = {
+  target: "CANCELLED",
+  label: "لغو خرید",
+  pendingLabel: "در حال لغو...",
+  confirmMessage: "آیا از لغو این خرید مطمئن هستید؟",
+  successMessage: "خرید لغو شد.",
+  errorMessage: "لغو خرید ناموفق بود.",
+  variant: "destructive",
+};
+
+const CANCELLABLE_STATUSES: PurchaseStatus[] = ["DRAFT", "CONFIRMED", "RECEIVED"];
 
 type DocumentFormState = {
   documentType: DocumentType;
@@ -130,8 +198,8 @@ export default function PurchaseDetailPage() {
   const purchaseId = Number(params.id);
   const { toasts, pushError, pushErrors, pushSuccess, dismiss } = useToasts();
   const user = useAdminUser();
-  // Returns (list + create + delete) are all gated on purchases.manage on
-  // the backend — the section shows a no-permission note otherwise.
+  // Returns: reading needs purchases.view, creating/deleting needs
+  // purchases.manage (business decision 2026-10-05).
   const canManageReturns = user?.permissions.includes("purchases.manage") ?? false;
   const canView = user?.permissions.includes("purchases.view") ?? false;
   const canEdit = user?.permissions.includes("purchases.edit") ?? false;
@@ -144,6 +212,9 @@ export default function PurchaseDetailPage() {
 
   const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
   const [paymentForm, setPaymentForm] = useState<PaymentFormState>(emptyPaymentForm);
+  // null = adding a new payment; otherwise the payment being edited in place
+  // (PATCH /purchases/:id/payments/:paymentId).
+  const [editingPaymentId, setEditingPaymentId] = useState<number | null>(null);
   const [savingPayment, setSavingPayment] = useState(false);
 
   const [documentDialogOpen, setDocumentDialogOpen] = useState(false);
@@ -157,6 +228,77 @@ export default function PurchaseDetailPage() {
   const [returnDialogOpen, setReturnDialogOpen] = useState(false);
   const [returnForm, setReturnForm] = useState<ReturnFormState>(emptyReturnForm);
   const [savingReturn, setSavingReturn] = useState(false);
+
+  // The status the purchase is currently being moved to (one action at a
+  // time), and whether the backend answered RECORD_MODIFIED — the status
+  // actions stay disabled until the page is reloaded (same convention as
+  // the Purchase Request detail page).
+  const [changingStatusTo, setChangingStatusTo] = useState<PurchaseStatus | null>(null);
+  const [staleRecord, setStaleRecord] = useState(false);
+
+  // PATCH /purchases/:id requires the whole record (updatePurchaseSchema),
+  // so — like setRequestStatus() on the Purchase Request detail page — the
+  // purchase's own loaded values are sent back unchanged apart from status.
+  // updatedAt is the optimistic-locking token from this page's load.
+  function statusChangePayload(current: PurchaseDetail, status: PurchaseStatus, confirmOverage: boolean) {
+    return {
+      purchaseDate: current.purchaseDate.slice(0, 10),
+      purchaseTypeId: current.purchaseType.id,
+      sourceType: current.sourceType,
+      requesterDepartmentId: current.requesterDepartment?.id,
+      buyerEmployeeId: current.buyerEmployee?.id,
+      supplierId: current.supplier.id,
+      purchaseRequestId: current.purchaseRequest?.id,
+      note: current.note ?? "",
+      items: current.items.map((item) => ({
+        name: item.name,
+        quantity: Number(item.quantity),
+        unitId: item.unit.id,
+        unitPrice: item.unitPrice === null ? undefined : Number(item.unitPrice),
+        totalPrice: Number(item.totalPrice),
+        purchaseRequestItemId: item.purchaseRequestItemId ?? undefined,
+      })),
+      status,
+      updatedAt: current.updatedAt,
+      ...(confirmOverage ? { confirmOverage: true } : {}),
+    };
+  }
+
+  async function changeStatus(action: StatusAction) {
+    if (!purchase) return;
+    if (!window.confirm(action.confirmMessage)) return;
+    setChangingStatusTo(action.target);
+    try {
+      let confirmOverage = false;
+      for (;;) {
+        try {
+          const updated = await apiFetch<PurchaseDetail>(`/purchases/${purchase.id}`, {
+            method: "PATCH",
+            body: JSON.stringify(statusChangePayload(purchase, action.target, confirmOverage)),
+          });
+          setPurchase(updated);
+          pushSuccess(action.successMessage);
+          return;
+        } catch (reason) {
+          const apiError = reason as ApiError;
+          // The purchase already buys more than its linked request still
+          // needs (confirmed when it was saved) — the backend re-checks that
+          // on every save, so ask once more, as the edit form does.
+          if (apiError.code === "PURCHASE_QUANTITY_EXCEEDS_REQUEST" && !confirmOverage) {
+            if (!window.confirm("مقدار این خرید بیش از مقدار باقی‌مانده درخواست خرید مرتبط است. با وجود این ادامه می‌دهید؟")) return;
+            confirmOverage = true;
+            continue;
+          }
+          if (apiError.code === "RECORD_MODIFIED") setStaleRecord(true);
+          if (apiError.messages?.length) pushErrors(apiError.messages);
+          else pushError(apiError.message ?? action.errorMessage);
+          return;
+        }
+      }
+    } finally {
+      setChangingStatusTo(null);
+    }
+  }
 
   // Explicit reload after an action on this page (shows the loading state).
   async function loadPurchase() {
@@ -213,11 +355,11 @@ export default function PurchaseDetailPage() {
   }
 
   useEffect(() => {
-    if (!canManageReturns) return;
+    if (!canView) return;
     const run = async () => loadReturns();
     void run();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [purchaseId, canManageReturns]);
+  }, [purchaseId, canView]);
 
   // Quantity already returned per purchase item, summed across every
   // return on this purchase — drives the "قابل برگشت" hint in the dialog.
@@ -245,7 +387,7 @@ export default function PurchaseDetailPage() {
         const next = { ...line, ...patch };
         if (("quantity" in patch || "purchaseItemId" in patch) && !("creditAmount" in patch)) {
           const item = purchase?.items.find((candidate) => String(candidate.id) === next.purchaseItemId);
-          const quantity = Number(next.quantity);
+          const quantity = parseNumberInput(next.quantity);
           const unitPrice = Number(item?.unitPrice);
           if (item?.unitPrice && next.quantity !== "" && Number.isFinite(quantity) && Number.isFinite(unitPrice)) {
             next.creditAmount = String(Math.round(quantity * unitPrice));
@@ -287,8 +429,8 @@ export default function PurchaseDetailPage() {
           note: returnForm.note.trim(),
           items: returnForm.lines.map((line) => ({
             purchaseItemId: Number(line.purchaseItemId),
-            quantity: Number(line.quantity),
-            creditAmount: Number(line.creditAmount),
+            quantity: parseNumberInput(line.quantity),
+            creditAmount: parseNumberInput(line.creditAmount),
             note: line.note.trim(),
           })),
         }),
@@ -317,7 +459,21 @@ export default function PurchaseDetailPage() {
   }
 
   function openPaymentDialog() {
+    setEditingPaymentId(null);
     setPaymentForm(emptyPaymentForm);
+    setPaymentDialogOpen(true);
+  }
+
+  function openEditPaymentDialog(payment: PurchasePaymentRow) {
+    setEditingPaymentId(payment.id);
+    setPaymentForm({
+      paymentDate: payment.paymentDate.slice(0, 10),
+      amount: String(Number(payment.amount)),
+      method: payment.method,
+      referenceNumber: payment.referenceNumber ?? "",
+      status: payment.status,
+      note: payment.note ?? "",
+    });
     setPaymentDialogOpen(true);
   }
 
@@ -329,18 +485,18 @@ export default function PurchaseDetailPage() {
     }
     setSavingPayment(true);
     try {
-      await apiFetch(`/purchases/${purchaseId}/payments`, {
-        method: "POST",
+      await apiFetch(editingPaymentId === null ? `/purchases/${purchaseId}/payments` : `/purchases/${purchaseId}/payments/${editingPaymentId}`, {
+        method: editingPaymentId === null ? "POST" : "PATCH",
         body: JSON.stringify({
           paymentDate: paymentForm.paymentDate,
-          amount: Number(paymentForm.amount),
+          amount: parseNumberInput(paymentForm.amount),
           method: paymentForm.method,
           referenceNumber: paymentForm.referenceNumber.trim(),
           status: paymentForm.status,
           note: paymentForm.note.trim(),
         }),
       });
-      pushSuccess("پرداخت با موفقیت ثبت شد.");
+      pushSuccess(editingPaymentId === null ? "پرداخت با موفقیت ثبت شد." : "پرداخت با موفقیت ویرایش شد.");
       setPaymentDialogOpen(false);
       await loadPurchase();
     } catch (reason) {
@@ -387,6 +543,7 @@ export default function PurchaseDetailPage() {
       return;
     }
     setSavingDocument(true);
+    let createdId: number | null = null;
     try {
       const created = await apiFetch<{ id: number }>(`/purchases/${purchaseId}/documents`, {
         method: "POST",
@@ -397,13 +554,21 @@ export default function PurchaseDetailPage() {
           note: documentForm.note.trim(),
         }),
       });
+      createdId = created.id;
       if (documentFile) {
         await apiUpload(`/purchases/${purchaseId}/documents/${created.id}/file`, documentFile);
       }
+      createdId = null;
       pushSuccess("سند با موفقیت اضافه شد.");
       setDocumentDialogOpen(false);
       await loadPurchase();
     } catch (reason) {
+      // Same pattern as PurchaseForm.uploadStagedDocuments(): the metadata
+      // row was created but its file was rejected — remove it (best effort)
+      // so each retry doesn't leave another file-less document behind.
+      if (createdId !== null) {
+        await apiFetch(`/purchases/${purchaseId}/documents/${createdId}`, { method: "DELETE" }).catch(() => undefined);
+      }
       const apiError = reason as ApiError;
       if (apiError.messages?.length) pushErrors(apiError.messages);
       else pushError(apiError.message ?? "ثبت سند ناموفق بود.");
@@ -442,6 +607,15 @@ export default function PurchaseDetailPage() {
   // unchanged from before).
   const remainingAmountClass =
     remainingAmount === 0 ? "text-success" : remainingAmount < 0 ? "text-warning" : "text-destructive";
+  // Overpayment is allowed (business decision 2026-10-05) but must be
+  // impossible to miss — see the warning banner in the payments section.
+  const overpaidAmount = remainingAmount < 0 ? -remainingAmount : 0;
+  const canAddPayment = canManagePayments && PAYABLE_STATUSES.includes(purchase.status);
+  const canAddReturn = canManageReturns && RETURNABLE_STATUSES.includes(purchase.status);
+  // Status actions: purchases.edit (same as "ویرایش"); none on CLOSED/CANCELLED.
+  const forwardStatusAction = canEdit ? FORWARD_STATUS_ACTION[purchase.status] : undefined;
+  const canCancelPurchase = canEdit && CANCELLABLE_STATUSES.includes(purchase.status);
+  const statusActionsDisabled = changingStatusTo !== null || staleRecord;
 
   const returnedByItem = returnedQuantityByItem();
   const totalReturnCredit = returns.reduce(
@@ -453,6 +627,14 @@ export default function PurchaseDetailPage() {
     <div className="p-4 sm:p-6 lg:p-8">
       <ToastViewport toasts={toasts} onDismiss={dismiss} />
       <div className="mx-auto max-w-4xl space-y-4">
+        {staleRecord ? (
+          <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-2.5 text-sm">
+            <span>این خرید پس از بارگذاری این صفحه توسط کاربر دیگری تغییر کرده است. برای ادامه، صفحه را بازخوانی کنید.</span>
+            <Button type="button" size="sm" variant="outline" onClick={() => window.location.reload()}>
+              بازخوانی صفحه
+            </Button>
+          </div>
+        ) : null}
         {/* Header — purchase number + status shown prominently but subtly
             (a small badge beside the number, not a banner), payment/source
             badges and the Edit action grouped on the other side. */}
@@ -464,9 +646,19 @@ export default function PurchaseDetailPage() {
             </div>
             <p className="mt-1 text-sm text-muted-foreground">{formatJalali(purchase.purchaseDate)}</p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <StatusBadge label={purchasePaymentStatusLabels[purchase.paymentStatus]} tone={purchasePaymentStatusTone[purchase.paymentStatus]} />
             <StatusBadge label={purchaseSourceTypeLabels[purchase.sourceType]} tone={purchaseSourceTypeTone[purchase.sourceType]} />
+            {forwardStatusAction ? (
+              <Button variant={forwardStatusAction.variant} disabled={statusActionsDisabled} onClick={() => void changeStatus(forwardStatusAction)}>
+                {changingStatusTo === forwardStatusAction.target ? forwardStatusAction.pendingLabel : forwardStatusAction.label}
+              </Button>
+            ) : null}
+            {canCancelPurchase ? (
+              <Button variant={CANCEL_STATUS_ACTION.variant} disabled={statusActionsDisabled} onClick={() => void changeStatus(CANCEL_STATUS_ACTION)}>
+                {changingStatusTo === CANCEL_STATUS_ACTION.target ? CANCEL_STATUS_ACTION.pendingLabel : CANCEL_STATUS_ACTION.label}
+              </Button>
+            ) : null}
             {canEdit ? (
               <Button variant="outline" onClick={() => router.push(`/purchases/${purchase.id}/edit`)}>
                 ویرایش
@@ -559,7 +751,7 @@ export default function PurchaseDetailPage() {
         <DetailSection
           title="پرداخت‌ها"
           action={
-            canManagePayments ? (
+            canAddPayment ? (
               <Button size="sm" onClick={openPaymentDialog}>
                 <Plus className="size-4" aria-hidden="true" />
                 افزودن پرداخت
@@ -568,6 +760,19 @@ export default function PurchaseDetailPage() {
           }
         >
           <div className="space-y-4">
+            {canManagePayments && !PAYABLE_STATUSES.includes(purchase.status) ? (
+              <p className="text-xs text-muted-foreground">
+                ثبت پرداخت فقط برای خرید «تأییدشده»، «دریافت‌شده» یا «بسته‌شده» امکان‌پذیر است.
+              </p>
+            ) : null}
+            {overpaidAmount > 0 ? (
+              <div role="alert" className="flex items-start gap-2 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm">
+                <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning" aria-hidden="true" />
+                <span>
+                  پرداخت بیش از مبلغ خرید: مجموع پرداخت‌های تکمیل‌شده {formatMoney(overpaidAmount)} ریال بیشتر از مبلغ کل خرید است.
+                </span>
+              </div>
+            ) : null}
             <div className="grid grid-cols-3 gap-3 rounded-md border border-border bg-muted/30 p-3 text-sm">
               <div>
                 <p className="text-xs text-muted-foreground">مبلغ کل</p>
@@ -579,7 +784,9 @@ export default function PurchaseDetailPage() {
               </div>
               <div>
                 <p className="text-xs text-muted-foreground">مبلغ باقی‌مانده</p>
-                <p className={`mt-1 font-medium tabular-nums ${remainingAmountClass}`}>{formatMoney(remainingAmount)} ریال</p>
+                <p className={`mt-1 font-medium tabular-nums ${remainingAmountClass}`}>
+                  {overpaidAmount > 0 ? `${formatMoney(overpaidAmount)} ریال اضافه پرداخت` : `${formatMoney(remainingAmount)} ریال`}
+                </p>
               </div>
             </div>
 
@@ -612,15 +819,23 @@ export default function PurchaseDetailPage() {
                         </td>
                         <td className="px-3 py-2">
                           {canManagePayments ? (
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              className="text-destructive hover:bg-destructive/10 hover:text-destructive"
-                              onClick={() => removePayment(payment.id)}
-                            >
-                              <Trash2 className="size-4" aria-hidden="true" />
-                              حذف
-                            </Button>
+                            <div className="flex gap-1">
+                              {PAYABLE_STATUSES.includes(purchase.status) ? (
+                                <Button size="sm" variant="ghost" onClick={() => openEditPaymentDialog(payment)}>
+                                  <Pencil className="size-4" aria-hidden="true" />
+                                  ویرایش
+                                </Button>
+                              ) : null}
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+                                onClick={() => removePayment(payment.id)}
+                              >
+                                <Trash2 className="size-4" aria-hidden="true" />
+                                حذف
+                              </Button>
+                            </div>
                           ) : null}
                         </td>
                       </tr>
@@ -703,7 +918,7 @@ export default function PurchaseDetailPage() {
         <DetailSection
           title="بازگشت به تأمین‌کننده"
           action={
-            canManageReturns ? (
+            canAddReturn ? (
               <Button size="sm" onClick={openReturnDialog}>
                 <Plus className="size-4" aria-hidden="true" />
                 ثبت برگشت
@@ -711,11 +926,7 @@ export default function PurchaseDetailPage() {
             ) : undefined
           }
         >
-          {!canManageReturns ? (
-            <p className="rounded-md border border-dashed border-border bg-muted/30 p-6 text-center text-sm text-muted-foreground">
-              اجازه دسترسی به برگشت‌های این خرید را ندارید.
-            </p>
-          ) : returnsLoading ? (
+          {returnsLoading ? (
             <p className="py-6 text-center text-sm text-muted-foreground">در حال بارگذاری...</p>
           ) : returnsError ? (
             <div className="flex flex-col items-center gap-3 rounded-md border border-dashed border-destructive/40 p-6 text-center">
@@ -728,6 +939,7 @@ export default function PurchaseDetailPage() {
             <div className="space-y-3">
               <p className="text-xs text-muted-foreground">
                 برگشت‌ها فقط سابقه کالای برگشتی و مبلغ اعتبار آن را ثبت می‌کنند و مبلغ کل، مبلغ پرداخت‌شده و وضعیت پرداخت خرید را تغییر نمی‌دهند.
+                {canManageReturns && !RETURNABLE_STATUSES.includes(purchase.status) ? " ثبت برگشت فقط برای خرید «دریافت‌شده» یا «بسته‌شده» امکان‌پذیر است." : null}
                 {returns.length > 0 ? " خریدی که برگشت دارد تا زمان حذف برگشت‌ها قابل ویرایش نیست." : null}
               </p>
               {returns.length === 0 ? (
@@ -772,15 +984,17 @@ export default function PurchaseDetailPage() {
                             {purchaseReturn.note ? <span className="block text-xs">{purchaseReturn.note}</span> : null}
                           </td>
                           <td className="px-3 py-2">
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              className="text-destructive hover:bg-destructive/10 hover:text-destructive"
-                              onClick={() => removeReturn(purchaseReturn.id)}
-                            >
-                              <Trash2 className="size-4" aria-hidden="true" />
-                              حذف
-                            </Button>
+                            {canManageReturns ? (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+                                onClick={() => removeReturn(purchaseReturn.id)}
+                              >
+                                <Trash2 className="size-4" aria-hidden="true" />
+                                حذف
+                              </Button>
+                            ) : null}
                           </td>
                         </tr>
                       ))}
@@ -811,17 +1025,20 @@ export default function PurchaseDetailPage() {
       <Dialog open={paymentDialogOpen} onOpenChange={(open) => setPaymentDialogOpen(open)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>افزودن پرداخت</DialogTitle>
+            <DialogTitle>{editingPaymentId === null ? "افزودن پرداخت" : "ویرایش پرداخت"}</DialogTitle>
             <DialogCloseButton />
           </DialogHeader>
           <DialogBody>
             <form id="payment-form" className="grid gap-4" onSubmit={submitPayment} noValidate>
               <div className="flex flex-col gap-2">
                 <Label htmlFor="payment-date-year">تاریخ<RequiredMark /></Label>
+                {/* Future dates allowed (post-dated cheques) up to the end of
+                    the business date range — never capped at this year. */}
                 <JalaliDateInput
                   idPrefix="payment-date"
                   value={paymentForm.paymentDate}
                   onChange={(value) => setPaymentForm((current) => ({ ...current, paymentDate: value }))}
+                  maxYear={JALALI_MAX_YEAR}
                   required
                 />
               </div>
@@ -882,7 +1099,7 @@ export default function PurchaseDetailPage() {
           </DialogBody>
           <DialogFooter>
             <Button type="submit" form="payment-form" disabled={savingPayment}>
-              {savingPayment ? "در حال ذخیره..." : "ثبت پرداخت"}
+              {savingPayment ? "در حال ذخیره..." : editingPaymentId === null ? "ثبت پرداخت" : "ذخیره تغییرات"}
             </Button>
             <Button type="button" variant="outline" onClick={() => setPaymentDialogOpen(false)}>
               انصراف

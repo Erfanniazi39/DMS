@@ -126,8 +126,9 @@ test("1) creating an OPERATIONAL purchase with valid data succeeds and appears i
   // A server-generated PUR-###### number, never accepted from the client
   // (see CLAUDE.md's "document numbers" stack convention).
   await expect(row.first().locator("td").first()).toHaveText(/^PUR-\d+$/);
-  // A brand-new purchase always starts as DRAFT (PurchasesService.create()).
-  await expect(row.first()).toContainText("پیش‌نویس");
+  // A brand-new purchase defaults to CONFIRMED (business decision
+  // 2026-10-05 — previously DRAFT); DRAFT is still selectable on the form.
+  await expect(row.first()).toContainText("تأییدشده");
 });
 
 test("2) creating a HISTORICAL_IMPORT purchase without a department or buyer succeeds (never fabricated)", async ({ page }) => {
@@ -179,7 +180,10 @@ test("3b) leaving required header fields empty shows the app's Persian message, 
   await expect(page).toHaveURL(/\/\/[^/]+\/purchases\/new/);
 });
 
-test("4) editing a purchase's note and status succeeds and persists", async ({ page, request }) => {
+// Status is no longer part of the edit form (business-owner request
+// 2026-10-05) — it moves via the detail page's status actions, covered in
+// purchase-workflow-qa.spec.ts section 20. Editing keeps the current status.
+test("4) editing a purchase's note succeeds and persists, and the status is kept as-is", async ({ page, request }) => {
   const employeeId = await createActiveEmployee(request);
   const itemName = `قلم ویرایش خرید ${uniqueSuffix()}`;
 
@@ -200,7 +204,7 @@ test("4) editing a purchase's note and status succeeds and persists", async ({ p
   await row.getByRole("button", { name: "ویرایش" }).click();
   await expect(page.getByRole("heading", { name: "ویرایش خرید" })).toBeVisible();
 
-  await page.locator("#purchase-status").selectOption("CONFIRMED");
+  await expect(page.locator("#purchase-status")).toHaveCount(0);
   const note = `یادداشت ویرایش‌شده ${uniqueSuffix()}`;
   await page.locator("#purchase-note").fill(note);
   await page.getByRole("button", { name: "ذخیره تغییرات" }).click();
@@ -212,23 +216,27 @@ test("4) editing a purchase's note and status succeeds and persists", async ({ p
   await expect(updatedRow).toContainText("تأییدشده");
 });
 
-// Creates a minimal (DRAFT) Purchase Request straight through the API, just
-// so the Purchase form's "درخواست خرید مرتبط" picker has a known option.
+// Creates a minimal Purchase Request straight through the API and approves
+// it, so the Purchase form's "درخواست خرید مرتبط" picker has a known option
+// (the picker only offers APPROVED / PARTIALLY_PURCHASED requests).
 async function createPurchaseRequestViaApi(request: APIRequestContext, itemName: string): Promise<{ id: number; requestNumber: string }> {
   const departments = (await (await request.get("http://localhost:3001/departments")).json()) as Array<{ id: number; status: string }>;
   const department = departments.find((d) => d.status === "active");
   const units = (await (await request.get("http://localhost:3001/units")).json()) as Array<{ id: number }>;
   if (!department || units.length === 0) throw new Error("An active department and a unit must be seeded for this test.");
-  const response = await request.post("http://localhost:3001/purchase-requests", {
-    data: {
-      requestDate: "2025-03-21",
-      requesterDepartmentId: department.id,
-      priority: "NORMAL",
-      items: [{ name: itemName, quantity: 1, unitId: units[0].id }],
-    },
-  });
+  const payload = {
+    requestDate: "2025-03-21",
+    requesterDepartmentId: department.id,
+    priority: "NORMAL",
+    items: [{ name: itemName, quantity: 1, unitId: units[0].id }],
+  };
+  const response = await request.post("http://localhost:3001/purchase-requests", { data: payload });
   if (!response.ok()) throw new Error(`Failed to create purchase request: ${response.status()} ${await response.text()}`);
-  return (await response.json()) as { id: number; requestNumber: string };
+  const created = (await response.json()) as { id: number; requestNumber: string; updatedAt: string };
+  // updatedAt = the optimistic-locking token every PATCH must send back.
+  const approved = await request.patch(`http://localhost:3001/purchase-requests/${created.id}`, { data: { ...payload, status: "APPROVED", updatedAt: created.updatedAt } });
+  if (!approved.ok()) throw new Error(`Failed to approve purchase request: ${approved.status()} ${await approved.text()}`);
+  return created;
 }
 
 test("5) the related-purchase-request picker is labeled richly, hidden for HISTORICAL_IMPORT, and cleared on switch", async ({ page, request }) => {
@@ -236,22 +244,29 @@ test("5) the related-purchase-request picker is labeled richly, hidden for HISTO
   const created = await createPurchaseRequestViaApi(request, itemName);
 
   await openCreatePage(page);
+  // "#purchase-request" is a custom Base UI Select (a trigger button + a
+  // popup listbox of role="option" items), not a native <select> — options
+  // only exist while the popup is open. Same interaction as
+  // purchase-workflow-qa.spec.ts's pickPurchaseRequest().
   const picker = page.locator("#purchase-request");
   await expect(picker).toBeVisible();
+  await expect(picker).toContainText("بدون درخواست خرید");
+  await picker.click();
   // Label = code + department + first item + Jalali date, not just the code.
-  const option = picker.locator(`option[value="${created.id}"]`);
-  await expect(option).toBeAttached();
-  await expect(option).toContainText(created.requestNumber);
+  const option = page.getByRole("option", { name: new RegExp(created.requestNumber) });
+  await expect(option).toBeVisible();
   await expect(option).toContainText(itemName);
   await expect(option).toContainText("۱۴۰۴");
-  await picker.selectOption(String(created.id));
+  await option.click();
+  await expect(picker).toContainText(created.requestNumber);
 
   await page.locator("#purchase-source-type").selectOption("HISTORICAL_IMPORT");
   await expect(page.locator("#purchase-request")).toHaveCount(0);
 
   // Switching back must not resurrect the stale selection.
   await page.locator("#purchase-source-type").selectOption("OPERATIONAL");
-  await expect(page.locator("#purchase-request")).toHaveValue("");
+  await expect(page.locator("#purchase-request")).toContainText("بدون درخواست خرید");
+  await expect(page.locator("#purchase-request")).not.toContainText(created.requestNumber);
 });
 
 test("6) a file picked on the create form is uploaded as a purchase document right after saving", async ({ page }) => {
