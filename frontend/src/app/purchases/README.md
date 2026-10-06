@@ -12,7 +12,7 @@ shows what the backend returns.
 - `new/page.tsx` → `<RequirePermission purchases.manage>` + `<PurchaseForm mode="create">`.
 - `[id]/edit/page.tsx` → `<RequirePermission purchases.edit>` + `<PurchaseForm mode="edit">`.
 - `[id]/page.tsx`: the detail page. All page state (the loaded purchase, every dialog's open/form/saving state, the returns list) lives here and is passed down to:
-  - `[id]/_sections/StatusActions.tsx`: header status-transition buttons. Status changes happen only here, never in the edit form. They PATCH the whole record with `updatedAt` and handle `RECORD_MODIFIED`.
+  - `[id]/_sections/StatusActions.tsx`: header status-transition buttons. Status changes happen only here, never in the edit form. They call the status-only `PATCH /purchases/:id/status` (`{ status, updatedAt }`) and handle `RECORD_MODIFIED`. `PATCH /purchases/:id` (the edit form) refuses any status change.
   - `[id]/_sections/PaymentsSection.tsx`, `DocumentsSection.tsx`, `ReturnsSection.tsx`: each section plus its dialog. Payable and returnable statuses mirror backend `purchase-rules.ts`.
   - `[id]/_sections/DetailSection.tsx`: section chrome plus the shared toast-callback type.
 - `PurchaseForm.tsx`: create/edit form. It owns all form state and handlers: `?prefill=` from a purchase request, request-picker state, the overage-confirm Dialog (on submit), and staged document upload after create. Presentational pieces are in:

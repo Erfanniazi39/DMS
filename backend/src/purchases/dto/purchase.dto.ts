@@ -106,12 +106,28 @@ export const createPurchaseSchema = purchaseBaseSchema
 // updatedAt is the optimistic-locking token: the Purchase.updatedAt the
 // client loaded. If the record has changed since, the update is refused
 // (409, code RECORD_MODIFIED) instead of silently overwriting the newer save.
+//
+// status must be the purchase's CURRENT status (echoed back by the edit
+// form) — PurchasesService.update() refuses any change with a 409; status
+// changes go through changePurchaseStatusSchema / PATCH /purchases/:id/status.
 export const updatePurchaseSchema = purchaseBaseSchema
   .extend({
     status: enumField(PURCHASE_STATUSES, 'وضعیت خرید نامعتبر است'),
     updatedAt: requiredDate('نسخه رکورد (زمان آخرین ویرایش) ارسال نشده یا نامعتبر است'),
   })
   .superRefine(purchaseSourceRefine);
+
+// PATCH /purchases/:id/status — status-only transition (the detail page's
+// تأیید / ثبت دریافت / بستن / لغو buttons). DRAFT is never a target: a
+// purchase can't be moved back to draft. Which transitions are legal from
+// the current status is checked in PurchasesService.changeStatus() against
+// ALLOWED_PURCHASE_STATUS_TRANSITIONS (purchase-rules.ts). updatedAt is the
+// same optimistic-locking token as on updatePurchaseSchema.
+const PURCHASE_STATUS_TARGETS = ['CONFIRMED', 'RECEIVED', 'CLOSED', 'CANCELLED'] as const;
+export const changePurchaseStatusSchema = z.object({
+  status: enumField(PURCHASE_STATUS_TARGETS, 'وضعیت مقصد نامعتبر است'),
+  updatedAt: requiredDate('نسخه رکورد (زمان آخرین ویرایش) ارسال نشده یا نامعتبر است'),
+}, { error: 'اطلاعات تغییر وضعیت نامعتبر است' });
 
 export const createPurchasePaymentSchema = z.object({
   amount: requiredMoney('مبلغ', { positive: true }),
@@ -184,6 +200,7 @@ export const purchaseListQuerySchema = z.object({
 export type PurchaseListQuery = z.infer<typeof purchaseListQuerySchema>;
 export type CreatePurchaseDto = z.infer<typeof createPurchaseSchema>;
 export type UpdatePurchaseDto = z.infer<typeof updatePurchaseSchema>;
+export type ChangePurchaseStatusDto = z.infer<typeof changePurchaseStatusSchema>;
 export type CreatePurchasePaymentDto = z.infer<typeof createPurchasePaymentSchema>;
 export type UpdatePurchasePaymentDto = z.infer<typeof updatePurchasePaymentSchema>;
 export type CreatePurchaseDocumentDto = z.infer<typeof createPurchaseDocumentSchema>;

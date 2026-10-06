@@ -9,6 +9,7 @@ const VERSION = '2026-10-05T08:00:00.000Z';
 
 const request = {
   requestDate: '2026-10-01',
+  purchaseTypeId: 2,
   requesterDepartmentId: 1,
   priority: 'HIGH',
   items: [{ name: 'شیر خام', quantity: 1000, unitId: 6 }],
@@ -39,6 +40,8 @@ describe('createPurchaseRequestSchema', () => {
 
   it.each([
     ['no department', { requesterDepartmentId: undefined }],
+    ['no purchase type', { purchaseTypeId: undefined }],
+    ['zero purchase type', { purchaseTypeId: 0 }],
     ['no items', { items: [] }],
     ['zero quantity', { items: [{ name: 'شیر', quantity: 0, unitId: 6 }] }],
     ['blank item name', { items: [{ name: ' ', quantity: 1, unitId: 6 }] }],

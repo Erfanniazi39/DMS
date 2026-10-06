@@ -41,6 +41,14 @@ async function selectFirstDepartment(page: Page) {
   await select.selectOption(value);
 }
 
+async function selectFirstPurchaseType(page: Page) {
+  const select = page.locator("#request-purchase-type");
+  await expect(select.locator("option").nth(1)).toBeAttached();
+  const value = await select.locator("option").nth(1).getAttribute("value");
+  if (!value) throw new Error("No active purchase type is seeded — required for this test.");
+  await select.selectOption(value);
+}
+
 async function selectJalaliDate(page: Page, idPrefix: string, date: { year: number; month: number; day: number }) {
   await page.locator(`#${idPrefix}-year`).selectOption(String(date.year));
   await page.locator(`#${idPrefix}-month`).selectOption(String(date.month));
@@ -62,6 +70,7 @@ async function fillFirstItem(page: Page, values: { name: string; quantity: strin
 async function createPurchaseRequest(page: Page, itemName: string): Promise<string> {
   await openCreatePage(page);
   await selectJalaliDate(page, "request-date", { year: 1404, month: 1, day: 1 });
+  await selectFirstPurchaseType(page);
   await selectFirstDepartment(page);
   await fillFirstItem(page, { name: itemName, quantity: "10" });
   // Not getByRole("button", { name: ... }) — the sidebar has its own
@@ -94,6 +103,7 @@ test("1) creating a purchase request with valid data succeeds and appears in the
 test("2) submitting with no items filled in is rejected client-side, without hitting the server", async ({ page }) => {
   await openCreatePage(page);
   await selectJalaliDate(page, "request-date", { year: 1404, month: 1, day: 1 });
+  await selectFirstPurchaseType(page);
   await selectFirstDepartment(page);
   // No item name filled in — the one default empty row is filtered out
   // before the "at least one item" check runs (see PurchaseRequestForm.submit()).
@@ -103,14 +113,14 @@ test("2) submitting with no items filled in is rejected client-side, without hit
   await expect(page.getByRole("heading", { name: "ثبت درخواست خرید جدید" })).toBeVisible();
 });
 
-test("2b) leaving the date and department empty shows the app's Persian message, not the browser's native tooltip", async ({ page }) => {
+test("2b) leaving the date, purchase type and department empty shows the app's Persian message, not the browser's native tooltip", async ({ page }) => {
   // The <form> is `noValidate`, so native constraint validation doesn't
   // pre-empt PurchaseRequestForm.submit()'s own check — which still blocks.
   await openCreatePage(page);
   await page.locator('button[form="purchase-request-form"]').click();
 
   await expect(
-    page.getByRole("alert").filter({ hasText: "تاریخ درخواست و دپارتمان درخواست‌کننده الزامی است." }),
+    page.getByRole("alert").filter({ hasText: "تاریخ درخواست، نوع خرید و دپارتمان درخواست‌کننده الزامی است." }),
   ).toBeVisible();
   await expect(page.getByRole("heading", { name: "ثبت درخواست خرید جدید" })).toBeVisible();
   await expect(page).toHaveURL(/\/\/[^/]+\/purchase-requests\/new/);

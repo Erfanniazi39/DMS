@@ -223,9 +223,13 @@ async function createPurchaseRequestViaApi(request: APIRequestContext, itemName:
   const departments = (await (await request.get("http://localhost:3001/departments")).json()) as Array<{ id: number; status: string }>;
   const department = departments.find((d) => d.status === "active");
   const units = (await (await request.get("http://localhost:3001/units")).json()) as Array<{ id: number }>;
-  if (!department || units.length === 0) throw new Error("An active department and a unit must be seeded for this test.");
+  const purchaseTypes = (await (await request.get("http://localhost:3001/purchase-types")).json()) as Array<{ id: number }>;
+  if (!department || units.length === 0 || purchaseTypes.length === 0) {
+    throw new Error("An active department, a unit and an active purchase type must be seeded for this test.");
+  }
   const payload = {
     requestDate: "2025-03-21",
+    purchaseTypeId: purchaseTypes[0].id,
     requesterDepartmentId: department.id,
     priority: "NORMAL",
     items: [{ name: itemName, quantity: 1, unitId: units[0].id }],

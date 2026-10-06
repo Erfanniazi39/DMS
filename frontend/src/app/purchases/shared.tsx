@@ -38,10 +38,6 @@ export type DocumentType = "INVOICE" | "CONTRACT" | "DELIVERY_NOTE" | "WARRANTY"
 export type PurchaseSourceType = "OPERATIONAL" | "HISTORICAL_IMPORT";
 
 export const PURCHASE_STATUSES: PurchaseStatus[] = ["DRAFT", "CONFIRMED", "RECEIVED", "CLOSED", "CANCELLED"];
-// The only statuses offered when creating a purchase (mirrors the backend's
-// createPurchaseSchema): CONFIRMED is the default — the decision to buy is
-// already made — and DRAFT stays available for staging an unfinished entry.
-export const PURCHASE_CREATE_STATUSES: PurchaseStatus[] = ["DRAFT", "CONFIRMED"];
 export const PURCHASE_PAYMENT_STATUSES: PurchasePaymentStatus[] = ["UNPAID", "PARTIAL", "PAID"];
 export const PAYMENT_METHODS: PaymentMethod[] = ["CASH", "BANK_TRANSFER", "CHECK", "CARD"];
 export const PAYMENT_RECORD_STATUSES: PaymentRecordStatus[] = ["PENDING", "COMPLETED", "CANCELLED"];
@@ -129,6 +125,9 @@ export type PurchaseRequestPickerOption = PurchaseRequestOption & {
   requestDate: string;
   status: PurchaseRequestStatus;
   requesterDepartment: { id: number; name: string } | null;
+  // Scalar FK on the list row — the ?prefill= flow defaults the Purchase
+  // form's purchase type from it.
+  purchaseTypeId: number;
   items: { name: string }[];
   _count: { items: number };
 };

@@ -7,8 +7,12 @@ import type { SectionToasts } from "./DetailSection";
 
 // Status changes on an existing purchase live only here, as one-click
 // actions (business-owner request 2026-10-05) — no longer in the edit form.
-// One forward step per status; CLOSED/CANCELLED are terminal. The backend
-// stays authoritative (returns block any change, optimistic locking, etc.).
+// One forward step per status; CLOSED/CANCELLED are terminal. Each button
+// calls PATCH /purchases/:id/status — the only way an existing purchase's
+// status changes (PATCH /purchases/:id refuses a status change). The backend
+// stays authoritative: legal transitions (ALLOWED_PURCHASE_STATUS_TRANSITIONS
+// in backend purchase-rules.ts), returns blocking CANCEL (but not CLOSE),
+// optimistic locking.
 type StatusAction = {
   target: PurchaseStatus;
   label: string;
@@ -61,34 +65,6 @@ const CANCEL_STATUS_ACTION: StatusAction = {
 
 const CANCELLABLE_STATUSES: PurchaseStatus[] = ["DRAFT", "CONFIRMED", "RECEIVED"];
 
-// PATCH /purchases/:id requires the whole record (updatePurchaseSchema),
-// so — like setRequestStatus() on the Purchase Request detail page — the
-// purchase's own loaded values are sent back unchanged apart from status.
-// updatedAt is the optimistic-locking token from this page's load.
-function statusChangePayload(current: PurchaseDetail, status: PurchaseStatus, confirmOverage: boolean) {
-  return {
-    purchaseDate: current.purchaseDate.slice(0, 10),
-    purchaseTypeId: current.purchaseType.id,
-    sourceType: current.sourceType,
-    requesterDepartmentId: current.requesterDepartment?.id,
-    buyerEmployeeId: current.buyerEmployee?.id,
-    supplierId: current.supplier.id,
-    purchaseRequestId: current.purchaseRequest?.id,
-    note: current.note ?? "",
-    items: current.items.map((item) => ({
-      name: item.name,
-      quantity: Number(item.quantity),
-      unitId: item.unit.id,
-      unitPrice: item.unitPrice === null ? undefined : Number(item.unitPrice),
-      totalPrice: Number(item.totalPrice),
-      purchaseRequestItemId: item.purchaseRequestItemId ?? undefined,
-    })),
-    status,
-    updatedAt: current.updatedAt,
-    ...(confirmOverage ? { confirmOverage: true } : {}),
-  };
-}
-
 // The status-transition buttons in the page header (rendered as a fragment
 // so they sit in the header's own flex row, before «ویرایش»). State —
 // which transition is in flight, and whether the backend answered
@@ -119,32 +95,21 @@ export function StatusActions({
     if (!window.confirm(action.confirmMessage)) return;
     setChangingStatusTo(action.target);
     try {
-      let confirmOverage = false;
-      for (;;) {
-        try {
-          const updated = await apiFetch<PurchaseDetail>(`/purchases/${purchase.id}`, {
-            method: "PATCH",
-            body: JSON.stringify(statusChangePayload(purchase, action.target, confirmOverage)),
-          });
-          setPurchase(updated);
-          pushSuccess(action.successMessage);
-          return;
-        } catch (reason) {
-          const apiError = reason as ApiError;
-          // The purchase already buys more than its linked request still
-          // needs (confirmed when it was saved) — the backend re-checks that
-          // on every save, so ask once more, as the edit form does.
-          if (apiError.code === "PURCHASE_QUANTITY_EXCEEDS_REQUEST" && !confirmOverage) {
-            if (!window.confirm("مقدار این خرید بیش از مقدار باقی‌مانده درخواست خرید مرتبط است. با وجود این ادامه می‌دهید؟")) return;
-            confirmOverage = true;
-            continue;
-          }
-          if (apiError.code === "RECORD_MODIFIED") setStaleRecord(true);
-          if (apiError.messages?.length) pushErrors(apiError.messages);
-          else pushError(apiError.message ?? action.errorMessage);
-          return;
-        }
-      }
+      // Status-only endpoint (PATCH /purchases/:id/status): just the target
+      // status plus this page's updatedAt as the optimistic-locking token.
+      // No items/amounts are sent, so the overage re-check that the full
+      // edit runs never applies here.
+      const updated = await apiFetch<PurchaseDetail>(`/purchases/${purchase.id}/status`, {
+        method: "PATCH",
+        body: JSON.stringify({ status: action.target, updatedAt: purchase.updatedAt }),
+      });
+      setPurchase(updated);
+      pushSuccess(action.successMessage);
+    } catch (reason) {
+      const apiError = reason as ApiError;
+      if (apiError.code === "RECORD_MODIFIED") setStaleRecord(true);
+      if (apiError.messages?.length) pushErrors(apiError.messages);
+      else pushError(apiError.message ?? action.errorMessage);
     } finally {
       setChangingStatusTo(null);
     }

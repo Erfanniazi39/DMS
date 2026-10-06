@@ -5,6 +5,7 @@ import { toSkipTake, type PaginationParams } from '../common/pagination';
 import { PrismaService } from '../prisma/prisma.service';
 import { ACTIVE_DEPARTMENT_STATUS } from '../departments/department-rules';
 import { ensureActiveUnits } from '../units/unit-rules';
+import { ensureActivePurchaseType } from '../purchase-types/purchase-type-rules';
 import { AUDIT_ENTITY, AuditService } from '../audit/audit.service';
 import { PurchaseQuantitiesService } from '../purchases/purchase-quantities.service';
 import { isSameVersion, recordModifiedConflict } from '../common/optimistic-lock';
@@ -22,6 +23,7 @@ export type PurchaseRequestListFilters = {
 // Everything the detail page needs — same "one shared include, list() uses
 // a lighter one" split as PurchasesService.
 const purchaseRequestDetailInclude = {
+  purchaseType: true,
   requesterDepartment: true,
   // Display fields only — a purchases.view user must not receive the
   // Employee's national ID, mobile, salary, bank account or contract path
@@ -34,7 +36,10 @@ const purchaseRequestDetailInclude = {
   // Purchase links back to its request via Purchase.purchaseRequestId,
   // never the other way around (see PurchasesService).
   purchases: {
-    select: { id: true, purchaseNumber: true, purchaseDate: true, status: true, totalAmount: true },
+    // paymentStatus: read-only display of each linked Purchase's own
+    // derived payment state on the request detail page — not used for
+    // this request's status (recomputeStatus() alone decides that).
+    select: { id: true, purchaseNumber: true, purchaseDate: true, status: true, paymentStatus: true, totalAmount: true },
     orderBy: { id: 'asc' },
   },
 } satisfies Prisma.PurchaseRequestInclude;
@@ -191,6 +196,7 @@ export class PurchaseRequestsService {
   // requestNumber depends on the row's own id, so it's inserted with a
   // throwaway value and corrected inside the same transaction.
   async create(dto: CreatePurchaseRequestDto, userId: number | null, ipAddress?: string) {
+    await ensureActivePurchaseType(this.prisma, dto.purchaseTypeId);
     await this.ensureDepartment(dto.requesterDepartmentId);
     if (dto.requestedByEmployeeId) await this.ensureEmployee(dto.requestedByEmployeeId);
     await this.ensureUnits(dto.items.map((item) => item.unitId));
@@ -200,6 +206,7 @@ export class PurchaseRequestsService {
         data: {
           requestNumber: `PENDING-${randomUUID()}`,
           requestDate: dto.requestDate,
+          purchaseTypeId: dto.purchaseTypeId,
           requesterDepartmentId: dto.requesterDepartmentId,
           requestedByEmployeeId: dto.requestedByEmployeeId,
           priority: dto.priority,
@@ -251,6 +258,7 @@ export class PurchaseRequestsService {
     }
     // Same "only re-check a reference that is actually changing" rule as
     // PurchasesService.update() / ItemsService.ensureReferences().
+    if (dto.purchaseTypeId !== existing.purchaseTypeId) await ensureActivePurchaseType(this.prisma, dto.purchaseTypeId);
     if (dto.requesterDepartmentId !== existing.requesterDepartmentId) await this.ensureDepartment(dto.requesterDepartmentId);
     if (dto.requestedByEmployeeId && dto.requestedByEmployeeId !== existing.requestedByEmployeeId) {
       await this.ensureEmployee(dto.requestedByEmployeeId);
@@ -269,6 +277,7 @@ export class PurchaseRequestsService {
         where: { id },
         data: {
           requestDate: dto.requestDate,
+          purchaseTypeId: dto.purchaseTypeId,
           requesterDepartmentId: dto.requesterDepartmentId,
           requestedByEmployeeId: dto.requestedByEmployeeId ?? null,
           status: dto.status,

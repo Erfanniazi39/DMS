@@ -47,6 +47,9 @@ const purchaseRequestItemSchema = z.object({
 // PurchaseRequestsService.create()), same as Purchase.
 const purchaseRequestBaseSchema = z.object({
   requestDate: requiredBusinessDate('تاریخ درخواست معتبر نیست'),
+  // Required (business decision 2026-10-06) — same field builder as
+  // Purchase's own purchaseTypeId; the Purchase form defaults to it.
+  purchaseTypeId: requiredId('نوع خرید را انتخاب کنید'),
   requesterDepartmentId: requiredId('دپارتمان درخواست‌کننده را انتخاب کنید'),
   // Optional — a request can come from a department in general without
   // naming the specific person who asked for it.

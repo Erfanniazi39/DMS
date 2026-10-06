@@ -329,13 +329,14 @@ model Item {
 // Master data — see database_plan.txt's Purchase Type section for the seed
 // list (raw_material, food_ingredient, packaging, ...).
 model PurchaseType {
-  id        Int        @id @default(autoincrement())
-  code      String     @unique
-  nameEn    String     @map("name_en")
-  nameFa    String     @map("name_fa")
-  isActive  Boolean    @default(true) @map("is_active")
-  sortOrder Int        @default(0) @map("sort_order")
-  purchases Purchase[]
+  id               Int               @id @default(autoincrement())
+  code             String            @unique
+  nameEn           String            @map("name_en")
+  nameFa           String            @map("name_fa")
+  isActive         Boolean           @default(true) @map("is_active")
+  sortOrder        Int               @default(0) @map("sort_order")
+  purchases        Purchase[]
+  purchaseRequests PurchaseRequest[]
 
   @@map("purchase_types")
 }
@@ -350,6 +351,12 @@ model PurchaseRequest {
   // Purchase.purchaseNumber.
   requestNumber String   @unique @map("request_number")
   requestDate   DateTime @map("request_date")
+
+  // Required (business decision 2026-10-06) — carried into the Purchase
+  // form as its default purchase type when a Purchase is created from this
+  // request. Same relation shape as Purchase.purchaseType.
+  purchaseTypeId Int          @map("purchase_type_id")
+  purchaseType   PurchaseType @relation(fields: [purchaseTypeId], references: [id])
 
   requesterDepartmentId Int        @map("requester_department_id")
   requesterDepartment   Department @relation(fields: [requesterDepartmentId], references: [id])

@@ -24,6 +24,8 @@ import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { SessionAuthGuard } from '../auth/guards/session-auth.guard';
 import { ZodValidationPipe } from '../auth/zod-validation.pipe';
 import {
+  changePurchaseStatusSchema,
+  type ChangePurchaseStatusDto,
   createPurchaseDocumentSchema,
   createPurchasePaymentSchema,
   createPurchaseReturnSchema,
@@ -97,6 +99,19 @@ export class PurchasesController {
     @Req() req: Request,
   ) {
     return this.purchasesService.update(id, dto, req.session.userId ?? null, req.ip);
+  }
+
+  // Status-only transition (تأیید / ثبت دریافت / بستن / لغو) — the only way
+  // an existing purchase's status changes; PATCH /purchases/:id refuses any
+  // status change. See PurchasesService.changeStatus().
+  @Patch(':id/status')
+  @RequirePermissions('purchases.edit')
+  changeStatus(
+    @Param('id', ParseIntPipe) id: number,
+    @Body(new ZodValidationPipe(changePurchaseStatusSchema)) dto: ChangePurchaseStatusDto,
+    @Req() req: Request,
+  ) {
+    return this.purchasesService.changeStatus(id, dto, req.session.userId ?? null, req.ip);
   }
 
   // Narrow on purpose — see PurchasesService.remove() for why (historical

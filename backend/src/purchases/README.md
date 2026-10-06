@@ -9,12 +9,12 @@ Background: `docs/project-knowledge-archive.md` §2.7 and §19.
 
 | Sub-domain | File | Notes |
 |---|---|---|
-| Lifecycle: list/get/create/update/remove, reference checks, request-overage check | `purchases.service.ts` (`PurchasesService`) | Generates `PUR-000001`. Items are replaced wholesale on update. Update is refused once returns exist. Optimistic lock via `updatedAt`. |
+| Lifecycle: list/get/create/update/changeStatus/remove, reference checks, request-overage check | `purchases.service.ts` (`PurchasesService`) | Generates `PUR-000001`. Items are replaced wholesale on update. Update is refused once returns exist, and refuses any status change. Status changes go only through `changeStatus()` (`PATCH /purchases/:id/status`, status-only, transitions in `ALLOWED_PURCHASE_STATUS_TRANSITIONS`). Optimistic lock via `updatedAt` on both. |
 | Payments | `purchase-payments.service.ts` | Locks the parent row. Write, recompute, and audit happen in one transaction. |
 | Documents (metadata + file) | `purchase-documents.service.ts` | Two-step flow: JSON metadata, then multipart file. Checks extension and `common/file-signature.ts`. |
 | Return to Vendor | `purchase-returns.service.ts` | Generates `RTN-000001`. Caps quantity and credit per line. Never touches money fields. |
 | Derived money math | `purchase-totals.ts` | Plain functions, no DI. |
-| Status meaning for other modules | `purchase-rules.ts` | `COUNTABLE_/OPEN_/OUTSTANDING_PURCHASE_WHERE`, `PAYABLE_`/`RETURNABLE_PURCHASE_STATUSES`, Persian status labels. |
+| Status meaning for other modules | `purchase-rules.ts` | `COUNTABLE_/OPEN_/OUTSTANDING_PURCHASE_WHERE`, `PAYABLE_`/`RETURNABLE_PURCHASE_STATUSES`, `ALLOWED_PURCHASE_STATUS_TRANSITIONS`, `RETURN_BLOCKED_TARGET_STATUSES`, Persian status labels. |
 | Purchased quantities, exposed to Purchase Requests | `purchase-quantities.service.ts` + `purchase-quantities.module.ts` | `sumQuantitiesByRequestItem()`, `findLinkedRequestItemIds()`. |
 | HTTP | `purchases.controller.ts`, `purchase-files.controller.ts` | |
 
@@ -41,6 +41,7 @@ are computed only in `purchase-totals.ts`:
 
 - Payments are allowed only on CONFIRMED/RECEIVED/CLOSED purchases. A payment cannot be dated before the purchase. Overpayment is allowed.
 - Returns are allowed only on RECEIVED/CLOSED purchases.
+- Status transitions: DRAFT→CONFIRMED→RECEIVED→CLOSED one step at a time, or CANCELLED from any non-terminal status. A purchase with returns can be closed but not cancelled (`RETURN_BLOCKED_TARGET_STATUSES`). Only a cancellation recomputes the linked request.
 - Delete is allowed only with no payments and no documents.
 - Buying more than a linked request line still needs returns 409 `PURCHASE_QUANTITY_EXCEEDS_REQUEST` unless the client sends `confirmOverage`.
 

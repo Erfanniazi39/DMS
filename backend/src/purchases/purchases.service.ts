@@ -8,10 +8,12 @@ import { derivePaymentStatus, sumItemTotals } from './purchase-totals';
 import { PrismaService } from '../prisma/prisma.service';
 import { ACTIVE_DEPARTMENT_STATUS } from '../departments/department-rules';
 import { ensureActiveUnits } from '../units/unit-rules';
+import { ensureActivePurchaseType } from '../purchase-types/purchase-type-rules';
 import { AUDIT_ENTITY, AuditService } from '../audit/audit.service';
 import { PurchaseRequestsService } from '../purchase-requests/purchase-requests.service';
 import { LINKABLE_PURCHASE_REQUEST_STATUSES } from '../purchase-requests/purchase-request-rules';
-import type { CreatePurchaseDto, UpdatePurchaseDto } from './dto/purchase.dto';
+import { ALLOWED_PURCHASE_STATUS_TRANSITIONS, PURCHASE_STATUS_LABELS_FA, RETURN_BLOCKED_TARGET_STATUSES } from './purchase-rules';
+import type { ChangePurchaseStatusDto, CreatePurchaseDto, UpdatePurchaseDto } from './dto/purchase.dto';
 
 // Distinct, frontend-detectable 409 for "this purchase buys more than the
 // linked request line still needs" — see ensureRequestOverageConfirmed().
@@ -54,7 +56,7 @@ const purchaseDetailInclude = {
 
 @Injectable()
 export class PurchasesService {
-  // Purchase lifecycle (list/get/create/update/remove) plus the reference
+  // Purchase lifecycle (list/get/create/update/changeStatus/remove) plus the reference
   // checks core purchase validation needs. Payments, documents and returns
   // live in their own services (purchase-payments/-documents/-returns
   // .service.ts); the derived money fields are computed only by
@@ -193,9 +195,12 @@ export class PurchasesService {
   // Return-to-Vendor records can't be edited: those returns point at the
   // exact PurchaseItem rows (PurchaseReturnItem.purchaseItem is Restrict),
   // and recreating the items would orphan/break them. Refused up front with
-  // a clear message rather than surfacing a raw FK error. That includes a
-  // status change to CANCELLED — cancelling goes through this same update(),
-  // so a purchase with returns can't be cancelled either.
+  // a clear message rather than surfacing a raw FK error.
+  //
+  // This is a field edit only — it never changes status. dto.status must
+  // equal the current status (the edit form echoes it back); any status
+  // change goes through changeStatus() (PATCH /purchases/:id/status) instead,
+  // which doesn't touch items and so has its own, narrower returns rule.
   //
   // Optimistic locking: dto.updatedAt is the version the client loaded. A
   // mismatch (someone saved in between) is a 409 RECORD_MODIFIED; the same
@@ -204,6 +209,9 @@ export class PurchasesService {
   async update(id: number, dto: UpdatePurchaseDto, userId: number | null, ipAddress?: string) {
     const existing = await this.get(id);
     if (!isSameVersion(existing.updatedAt, dto.updatedAt)) throw recordModifiedConflict();
+    if (dto.status !== existing.status) {
+      throw new ConflictException('تغییر وضعیت از این مسیر مجاز نیست — از دکمه‌های وضعیت استفاده کنید.');
+    }
     const returnCount = await this.prisma.purchaseReturn.count({ where: { purchaseId: id } });
     if (returnCount > 0) {
       throw new ConflictException('برای این خرید برگشت به تأمین‌کننده ثبت شده است و قابل ویرایش نیست. ابتدا برگشت‌ها را حذف کنید.');
@@ -233,7 +241,8 @@ export class PurchasesService {
     await this.ensurePurchaseRequestItems(dto.purchaseRequestId, dto.items);
 
     const totalAmount = sumItemTotals(dto.items);
-    // A CANCELLED purchase counts toward nothing, so it can't over-buy.
+    // A CANCELLED purchase counts toward nothing, so it can't over-buy
+    // (dto.status === existing.status here — see the guard above).
     if (dto.status !== 'CANCELLED') {
       await this.ensureRequestOverageConfirmed(dto.purchaseRequestId, dto.items, dto.confirmOverage, id);
     }
@@ -264,27 +273,68 @@ export class PurchasesService {
       });
     });
 
-    // "Purchase edited" vs. the more specific "status changed"/"cancelled"
-    // events — one audit row per update, not both, to avoid double-logging
-    // what is, from the caller's side, a single edit.
-    let action: string = 'PURCHASE_UPDATED';
-    let details: string | undefined;
-    if (existing.status !== dto.status) {
-      action = dto.status === 'CANCELLED' ? 'PURCHASE_CANCELLED' : 'PURCHASE_STATUS_CHANGED';
-      details = `از ${existing.status} به ${dto.status}`;
-    }
-    await this.audit.log({ userId, ipAddress, action, entityType: AUDIT_ENTITY.PURCHASE, entityId: id, details });
+    // Status never changes here (see the guard above), so this is always a
+    // plain edit — status changes are audited by changeStatus().
+    await this.audit.log({ userId, ipAddress, action: 'PURCHASE_UPDATED', entityType: AUDIT_ENTITY.PURCHASE, entityId: id });
 
     // Items were just replaced wholesale and/or the linked request may have
     // changed — recompute progress for whichever request(s) the purchase
-    // was linked to before and/or after this edit (e.g. a status change to
-    // CANCELLED removes this purchase's quantities from the request's
-    // total; switching purchaseRequestId moves them to a different request).
+    // was linked to before and/or after this edit (e.g. changed quantities
+    // on request-linked lines; switching purchaseRequestId moves them to a
+    // different request).
     const requestIdsToRecompute = new Set<number>();
     if (existing.purchaseRequest) requestIdsToRecompute.add(existing.purchaseRequest.id);
     if (dto.purchaseRequestId) requestIdsToRecompute.add(dto.purchaseRequestId);
     for (const requestId of requestIdsToRecompute) {
       await this.purchaseRequestsService.recomputeStatus(requestId, userId, ipAddress);
+    }
+
+    return updated;
+  }
+
+  // PATCH /purchases/:id/status — the only way an existing purchase's status
+  // changes (the detail page's تأیید / ثبت دریافت / بستن / لغو buttons).
+  // Status-only on purpose: no items, no money fields, no reference
+  // re-checks — none of that is being changed. Because items are untouched,
+  // returns don't get in the way of closing (RECEIVED → CLOSED with returns
+  // is allowed, business decision 2026-10-06); cancelling a purchase with
+  // returns stays refused (RETURN_BLOCKED_TARGET_STATUSES, decision #10).
+  //
+  // Legal transitions: ALLOWED_PURCHASE_STATUS_TRANSITIONS (purchase-rules.ts).
+  // Same optimistic locking as update(): up-front version check, then an
+  // atomic compare-and-set inside the transaction. The returns check runs
+  // inside the transaction *after* that claim, so a return created between
+  // the page load and the click can't slip past it.
+  async changeStatus(id: number, dto: ChangePurchaseStatusDto, userId: number | null, ipAddress?: string) {
+    const existing = await this.get(id);
+    if (!isSameVersion(existing.updatedAt, dto.updatedAt)) throw recordModifiedConflict();
+    if (!ALLOWED_PURCHASE_STATUS_TRANSITIONS[existing.status].includes(dto.status)) {
+      throw new ConflictException(
+        `تغییر وضعیت خرید از «${PURCHASE_STATUS_LABELS_FA[existing.status]}» به «${PURCHASE_STATUS_LABELS_FA[dto.status]}» مجاز نیست`,
+      );
+    }
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const claimed = await tx.purchase.updateMany({ where: { id, updatedAt: existing.updatedAt }, data: { updatedAt: new Date() } });
+      if (claimed.count !== 1) throw recordModifiedConflict();
+      if (RETURN_BLOCKED_TARGET_STATUSES.includes(dto.status)) {
+        const returnCount = await tx.purchaseReturn.count({ where: { purchaseId: id } });
+        if (returnCount > 0) {
+          throw new ConflictException('برای این خرید برگشت به تأمین‌کننده ثبت شده است و قابل لغو نیست. ابتدا برگشت‌ها را حذف کنید.');
+        }
+      }
+      return tx.purchase.update({ where: { id }, data: { status: dto.status }, include: purchaseDetailInclude });
+    });
+
+    const action = dto.status === 'CANCELLED' ? 'PURCHASE_CANCELLED' : 'PURCHASE_STATUS_CHANGED';
+    await this.audit.log({ userId, ipAddress, action, entityType: AUDIT_ENTITY.PURCHASE, entityId: id, details: `از ${existing.status} به ${dto.status}` });
+
+    // Only CANCELLED changes what counts toward a request's purchased
+    // quantities (COUNTABLE_PURCHASE_WHERE excludes nothing else), so only a
+    // cancellation can move the linked request's progress — and since
+    // CANCELLED is terminal, a purchase never leaves it to re-count.
+    if (dto.status === 'CANCELLED' && existing.purchaseRequestId) {
+      await this.purchaseRequestsService.recomputeStatus(existing.purchaseRequestId, userId, ipAddress);
     }
 
     return updated;
@@ -397,8 +447,7 @@ export class PurchasesService {
   }
 
   private async ensurePurchaseType(id: number) {
-    const purchaseType = await this.prisma.purchaseType.findUnique({ where: { id } });
-    if (!purchaseType || !purchaseType.isActive) throw new ConflictException('نوع خرید انتخاب‌شده معتبر نیست');
+    await ensureActivePurchaseType(this.prisma, id);
   }
 
   private async ensureDepartment(id: number) {

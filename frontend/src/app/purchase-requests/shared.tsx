@@ -6,6 +6,8 @@
 // are imported from their app-wide homes rather than duplicated here.
 
 import type { BadgeTone } from "@/components/ui/status-badge";
+import type { PurchaseTypeOption } from "@/lib/reference-options";
+import type { PurchasePaymentStatus } from "../purchases/shared";
 
 // PARTIALLY_PURCHASED is normally set automatically — see
 // PurchaseRequestsService.recomputeStatus() on the backend — as a request's
@@ -119,6 +121,9 @@ export type LinkedPurchase = {
   purchaseNumber: string;
   purchaseDate: string;
   status: "DRAFT" | "CONFIRMED" | "RECEIVED" | "CLOSED" | "CANCELLED";
+  // The Purchase's own derived payment state — display only on the request
+  // detail page; never feeds this request's status (recomputeStatus() does).
+  paymentStatus: PurchasePaymentStatus;
   totalAmount: string;
 };
 
@@ -133,6 +138,9 @@ export type PurchaseRequestDetail = {
   // Optimistic-locking token — sent back on PATCH; a mismatch is a 409
   // with code RECORD_MODIFIED (someone else saved in between).
   updatedAt: string;
+  // Required (2026-10-06) — the Purchase form defaults to it when a
+  // Purchase is created from this request.
+  purchaseType: PurchaseTypeOption;
   requesterDepartment: { id: number; code: string; name: string };
   requestedByEmployee: { id: number; code: string; firstName: string; lastName: string } | null;
   createdByUser: { id: number; username: string } | null;

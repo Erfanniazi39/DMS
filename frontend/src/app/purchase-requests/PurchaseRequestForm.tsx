@@ -14,7 +14,7 @@ import { apiFetch, type ApiError } from "@/lib/api";
 import { parseNumberInput } from "@/lib/number-input";
 import { RequiredMark, selectClass, textareaClass } from "@/components/ui/form-field";
 import { todayIso } from "@/lib/format";
-import type { DepartmentOption, EmployeeOption, UnitOption } from "@/lib/reference-options";
+import type { DepartmentOption, EmployeeOption, PurchaseTypeOption, UnitOption } from "@/lib/reference-options";
 import {
   PURCHASE_REQUEST_PRIORITIES,
   PURCHASE_REQUEST_STATUSES,
@@ -53,6 +53,9 @@ const SYSTEM_ONLY_STATUSES: PurchaseRequestStatus[] = ["PARTIALLY_PURCHASED", "C
 
 type FormState = {
   requestDate: string;
+  // Required (business decision 2026-10-06) — becomes the default purchase
+  // type of any Purchase created from this request.
+  purchaseTypeId: string;
   requesterDepartmentId: string;
   // Optional — a request can come from a department in general without
   // naming the specific person who asked for it (see purchase-request.dto.ts).
@@ -68,6 +71,7 @@ type FormState = {
 function emptyForm(): FormState {
   return {
     requestDate: todayIso(),
+    purchaseTypeId: "",
     requesterDepartmentId: "",
     requestedByEmployeeId: "",
     priority: "NORMAL",
@@ -100,6 +104,12 @@ export function PurchaseRequestForm(props: Props) {
   const [loadedUpdatedAt, setLoadedUpdatedAt] = useState<string | null>(null);
   const [staleRecord, setStaleRecord] = useState(false);
 
+  const [purchaseTypes, setPurchaseTypes] = useState<PurchaseTypeOption[]>([]);
+  // The purchase type the request had when loaded (edit mode). /purchase-types
+  // lists active types only; a since-deactivated type already on this request
+  // is still offered so the select doesn't silently show blank (the backend
+  // keeps an unchanged type valid — same rule as PurchasesService.update()).
+  const [loadedPurchaseType, setLoadedPurchaseType] = useState<PurchaseTypeOption | null>(null);
   const [departments, setDepartments] = useState<DepartmentOption[]>([]);
   const [employees, setEmployees] = useState<EmployeeOption[]>([]);
   const [units, setUnits] = useState<UnitOption[]>([]);
@@ -107,11 +117,13 @@ export function PurchaseRequestForm(props: Props) {
   useEffect(() => {
     async function loadOptions() {
       try {
-        const [departmentsData, employeesData, unitsData] = await Promise.all([
+        const [purchaseTypesData, departmentsData, employeesData, unitsData] = await Promise.all([
+          apiFetch<PurchaseTypeOption[]>("/purchase-types"),
           apiFetch<DepartmentOption[]>("/departments"),
           apiFetch<EmployeeOption[]>("/employees"),
           apiFetch<UnitOption[]>("/units"),
         ]);
+        setPurchaseTypes(purchaseTypesData);
         setDepartments(departmentsData.filter((department) => department.status === "active"));
         setEmployees(employeesData.filter((employee) => employee.status === "active"));
         setUnits(unitsData);
@@ -133,8 +145,10 @@ export function PurchaseRequestForm(props: Props) {
         setRequestNumber(request.requestNumber);
         setLoadedUpdatedAt(request.updatedAt);
         setLoadedStatus(request.status);
+        setLoadedPurchaseType(request.purchaseType);
         setForm({
           requestDate: request.requestDate.slice(0, 10),
+          purchaseTypeId: String(request.purchaseType.id),
           requesterDepartmentId: String(request.requesterDepartment.id),
           requestedByEmployeeId: request.requestedByEmployee ? String(request.requestedByEmployee.id) : "",
           priority: request.priority,
@@ -162,6 +176,9 @@ export function PurchaseRequestForm(props: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.mode === "edit" ? props.purchaseRequestId : null]);
 
+  const purchaseTypeOptions =
+    loadedPurchaseType && !purchaseTypes.some((type) => type.id === loadedPurchaseType.id) ? [...purchaseTypes, loadedPurchaseType] : purchaseTypes;
+
   function update<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((current) => ({ ...current, [key]: value }));
   }
@@ -187,8 +204,8 @@ export function PurchaseRequestForm(props: Props) {
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    if (!form.requestDate || !form.requesterDepartmentId) {
-      pushError("تاریخ درخواست و دپارتمان درخواست‌کننده الزامی است.");
+    if (!form.requestDate || !form.purchaseTypeId || !form.requesterDepartmentId) {
+      pushError("تاریخ درخواست، نوع خرید و دپارتمان درخواست‌کننده الزامی است.");
       return;
     }
     const items = form.items.filter((item) => item.name.trim() !== "");
@@ -205,6 +222,7 @@ export function PurchaseRequestForm(props: Props) {
 
     const payload = {
       requestDate: form.requestDate,
+      purchaseTypeId: Number(form.purchaseTypeId),
       requesterDepartmentId: Number(form.requesterDepartmentId),
       requestedByEmployeeId: form.requestedByEmployeeId ? Number(form.requestedByEmployeeId) : undefined,
       priority: form.priority,
@@ -288,6 +306,23 @@ export function PurchaseRequestForm(props: Props) {
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="request-date-year">تاریخ درخواست<RequiredMark /></Label>
                 <JalaliDateInput idPrefix="request-date" value={form.requestDate} onChange={(value) => update("requestDate", value)} required />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="request-purchase-type">نوع خرید<RequiredMark /></Label>
+                <select
+                  id="request-purchase-type"
+                  className={selectClass}
+                  value={form.purchaseTypeId}
+                  onChange={(event) => update("purchaseTypeId", event.target.value)}
+                  required
+                >
+                  <option value="">انتخاب کنید</option>
+                  {purchaseTypeOptions.map((type) => (
+                    <option key={type.id} value={type.id}>
+                      {type.nameFa}
+                    </option>
+                  ))}
+                </select>
               </div>
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="request-department">دپارتمان درخواست‌کننده<RequiredMark /></Label>

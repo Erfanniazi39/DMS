@@ -12,7 +12,7 @@ import { useAdminUser } from "@/app/admin/layout";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { formatMoney } from "@/lib/format";
 import { employeeFullName } from "@/lib/reference-options";
-import { purchaseStatusLabels, purchaseStatusTone } from "../../purchases/shared";
+import { purchasePaymentStatusLabels, purchasePaymentStatusTone, purchaseStatusLabels, purchaseStatusTone } from "../../purchases/shared";
 import {
   isLinkablePurchaseRequestStatus,
   purchaseRequestPriorityLabels,
@@ -79,6 +79,7 @@ export default function PurchaseRequestDetailPage() {
         method: "PATCH",
         body: JSON.stringify({
           requestDate: request.requestDate,
+          purchaseTypeId: request.purchaseType.id,
           requesterDepartmentId: request.requesterDepartment.id,
           requestedByEmployeeId: request.requestedByEmployee?.id,
           priority: request.priority,
@@ -265,6 +266,10 @@ export default function PurchaseRequestDetailPage() {
                 <dd className="mt-1">{formatJalali(request.requestDate)}</dd>
               </div>
               <div>
+                <dt className="text-xs text-muted-foreground">نوع خرید</dt>
+                <dd className="mt-1">{request.purchaseType.nameFa}</dd>
+              </div>
+              <div>
                 <dt className="text-xs text-muted-foreground">دپارتمان درخواست‌کننده</dt>
                 <dd className="mt-1">{request.requesterDepartment.name}</dd>
               </div>
@@ -374,6 +379,7 @@ export default function PurchaseRequestDetailPage() {
                       <th className="px-4 py-2 font-medium">شماره خرید</th>
                       <th className="px-4 py-2 font-medium">تاریخ خرید</th>
                       <th className="px-4 py-2 font-medium">وضعیت</th>
+                      <th className="px-4 py-2 font-medium">وضعیت پرداخت</th>
                       <th className="px-4 py-2 font-medium">مبلغ کل</th>
                     </tr>
                   </thead>
@@ -388,6 +394,12 @@ export default function PurchaseRequestDetailPage() {
                         <td className="px-4 py-2 text-muted-foreground">{formatJalali(purchase.purchaseDate)}</td>
                         <td className="px-4 py-2">
                           <StatusBadge label={purchaseStatusLabels[purchase.status]} tone={purchaseStatusTone[purchase.status]} />
+                        </td>
+                        {/* Each linked Purchase's own derived payment state —
+                            display only; this request's status is still
+                            decided solely by recomputeStatus() on the backend. */}
+                        <td className="px-4 py-2">
+                          <StatusBadge label={purchasePaymentStatusLabels[purchase.paymentStatus]} tone={purchasePaymentStatusTone[purchase.paymentStatus]} />
                         </td>
                         <td className="px-4 py-2">{formatMoney(purchase.totalAmount)} ریال</td>
                       </tr>

@@ -325,51 +325,26 @@ describe('PurchasesService', () => {
 
   // --- 12. Audit logging on status change / cancellation -------------------
 
-  it('logs PURCHASE_STATUS_CHANGED on a status change and PURCHASE_CANCELLED when cancelled, but never both for one update', async () => {
+  // Status changes moved to changeStatus() (2026-10-06) — the same audit
+  // contract now holds there: one row per change, never both actions.
+  it('logs PURCHASE_STATUS_CHANGED on a status change and PURCHASE_CANCELLED when cancelled, but never both for one change', async () => {
     const prisma = createPrismaMock();
     const purchaseRequestsService = createPurchaseRequestsServiceMock();
     const service = buildPurchasesService(prisma, purchaseRequestsService);
-    const existing = {
-      id: 8,
-      status: 'CONFIRMED',
-      paidAmount: 0,
-      updatedAt: VERSION,
-      purchaseType: {},
-      requesterDepartment: null,
-      buyerEmployee: null,
-      purchaseRequest: null,
-      supplier: {},
-      items: [],
-      payments: [],
-      documents: [],
-    };
-    prisma.purchase.findUnique.mockResolvedValue(existing);
-    prisma.purchaseType.findUnique.mockResolvedValue({ id: 1, isActive: true });
-    prisma.supplier.findUnique.mockResolvedValue({ id: 4, status: 'active' });
-    prisma.unit.count.mockResolvedValue(1);
+    prisma.purchase.findUnique.mockResolvedValue({ id: 8, status: 'CONFIRMED', paidAmount: 0, purchaseRequestId: null, ...fullGet });
     prisma.purchase.update.mockResolvedValue({ id: 8, status: 'RECEIVED' });
 
-    const dto: UpdatePurchaseDto = {
-      purchaseDate: new Date('2026-01-01') as never,
-      purchaseTypeId: 1,
-      sourceType: 'OPERATIONAL' as never,
-      supplierId: 4,
-      status: 'RECEIVED' as never,
-      updatedAt: VERSION,
-      note: undefined,
-      items: baseItems,
-    } as never;
-
-    await service.update(8, dto, 9, '127.0.0.1');
+    await service.changeStatus(8, { status: 'RECEIVED', updatedAt: VERSION }, 9, '127.0.0.1');
+    expect(prisma.auditLog.create).toHaveBeenCalledTimes(1);
     expect(prisma.auditLog.create).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ action: 'PURCHASE_STATUS_CHANGED' }) }),
+      expect.objectContaining({ data: expect.objectContaining({ action: 'PURCHASE_STATUS_CHANGED', details: 'از CONFIRMED به RECEIVED' }) }),
     );
 
     prisma.auditLog.create.mockClear();
-    await service.update(8, { ...dto, status: 'CANCELLED' as never }, 9, '127.0.0.1');
+    await service.changeStatus(8, { status: 'CANCELLED', updatedAt: VERSION }, 9, '127.0.0.1');
     expect(prisma.auditLog.create).toHaveBeenCalledTimes(1);
     expect(prisma.auditLog.create).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ action: 'PURCHASE_CANCELLED' }) }),
+      expect.objectContaining({ data: expect.objectContaining({ action: 'PURCHASE_CANCELLED', details: 'از CONFIRMED به CANCELLED' }) }),
     );
   });
 
@@ -384,13 +359,13 @@ describe('PurchasesService', () => {
       purchaseTypeId: 1,
       sourceType: 'OPERATIONAL' as never,
       supplierId: 4,
-      status: 'CLOSED' as never,
+      status: 'CONFIRMED' as never,
       updatedAt: VERSION,
       note: undefined,
       items: baseItems,
     } as never;
 
-    await expect(service.update(8, dto, 9, undefined)).rejects.toBeInstanceOf(ConflictException);
+    await expect(service.update(8, dto, 9, undefined)).rejects.toThrow(/برگشت به تأمین‌کننده ثبت شده است و قابل ویرایش نیست/);
     expect(prisma.purchaseItem.deleteMany).not.toHaveBeenCalled();
     expect(prisma.purchase.update).not.toHaveBeenCalled();
   });
@@ -600,16 +575,21 @@ describe('PurchasesService', () => {
   // Originally `it.failing` (reproducing the bug); converted to plain `it`
   // once fixed so they stay in the suite permanently.
 
-  it('KNOWN BUG: a purchase whose supplier was later deactivated can still be cancelled', async () => {
+  // Cancelling now goes through changeStatus() (2026-10-06), which runs no
+  // reference checks at all; editing the purchase's other fields while
+  // keeping that same blacklisted supplier must also still work.
+  it('KNOWN BUG: a purchase whose supplier was later deactivated can still be cancelled (and edited without changing supplier)', async () => {
     const prisma = createPrismaMock();
     const service = buildPurchasesService(prisma);
-    prisma.purchase.findUnique.mockResolvedValue({ id: 8, status: 'CONFIRMED', paidAmount: 0, supplierId: 4, ...fullGet });
+    prisma.purchase.findUnique.mockResolvedValue({ id: 8, status: 'CONFIRMED', paidAmount: 0, supplierId: 4, purchaseRequestId: null, ...fullGet });
     mockActiveMasterData(prisma);
     // Same supplier the purchase already had — it was blacklisted after the purchase was made.
     prisma.supplier.findUnique.mockResolvedValue({ id: 4, status: 'blacklisted' });
     prisma.purchase.update.mockResolvedValue({ id: 8 });
 
-    await expect(service.update(8, updateDto('CANCELLED', 10000), 9, undefined)).resolves.toBeDefined();
+    await expect(service.changeStatus(8, { status: 'CANCELLED', updatedAt: VERSION }, 9, undefined)).resolves.toBeDefined();
+    expect(prisma.supplier.findUnique).not.toHaveBeenCalled();
+    await expect(service.update(8, updateDto('CONFIRMED', 10000), 9, undefined)).resolves.toBeDefined();
   });
 
   it('KNOWN BUG: an inactive Unit is refused on a new purchase item', async () => {
@@ -677,7 +657,7 @@ describe('PurchasesService', () => {
     });
     prisma.purchase.update.mockResolvedValue({ id: 8 });
 
-    await service.update(8, updateDto('CANCELLED', 10000), 9, undefined);
+    await service.update(8, updateDto('CONFIRMED', 10000), 9, undefined);
 
     expect(prisma.purchaseType.findUnique).not.toHaveBeenCalled();
     expect(prisma.department.findUnique).not.toHaveBeenCalled();
@@ -790,14 +770,18 @@ describe('PurchasesService', () => {
   });
 
   // #10 Returns block cancelling too
-  it('#10 a purchase with returns cannot be CANCELLED either (cancel goes through the same guarded update())', async () => {
+  it('#10 a purchase with returns cannot be CANCELLED (status endpoint)', async () => {
     const prisma = createPrismaMock();
-    prisma.purchase.findUnique.mockResolvedValue({ id: 8, status: 'RECEIVED', paidAmount: 0, ...fullGet });
+    const purchaseRequestsService = createPurchaseRequestsServiceMock();
+    prisma.purchase.findUnique.mockResolvedValue({ id: 8, status: 'RECEIVED', paidAmount: 0, purchaseRequestId: 7, ...fullGet });
     prisma.purchaseReturn.count.mockResolvedValue(2);
 
-    await expect(svc(prisma).update(8, updateDto('CANCELLED', 10000), 9, undefined)).rejects.toThrow(/برگشت به تأمین‌کننده ثبت شده است/);
+    await expect(
+      buildPurchasesService(prisma, purchaseRequestsService).changeStatus(8, { status: 'CANCELLED', updatedAt: VERSION }, 9, undefined),
+    ).rejects.toThrow(/برگشت به تأمین‌کننده ثبت شده است/);
     expect(prisma.purchase.update).not.toHaveBeenCalled();
     expect(prisma.auditLog.create).not.toHaveBeenCalled();
+    expect(purchaseRequestsService.recomputeStatus).not.toHaveBeenCalled();
   });
 
   // #12 Optimistic locking
@@ -855,5 +839,196 @@ describe('PurchasesService', () => {
       ).rejects.toBeInstanceOf(BadRequestException);
     }
     expect(prisma.purchase.create).not.toHaveBeenCalled();
+  });
+
+  // --- Status-only endpoint (PATCH /purchases/:id/status, 2026-10-06) ------
+  // Business decision: closing a purchase that has returns must succeed;
+  // cancelling one stays refused. All status changes go through
+  // changeStatus(); update() refuses any status change.
+
+  const statusFixture = (status: string, extra: Record<string, unknown> = {}) =>
+    ({ id: 8, status, paidAmount: 0, purchaseRequestId: null, ...fullGet, ...extra });
+
+  const LEGAL: [string, string][] = [
+    ['DRAFT', 'CONFIRMED'],
+    ['DRAFT', 'CANCELLED'],
+    ['CONFIRMED', 'RECEIVED'],
+    ['CONFIRMED', 'CANCELLED'],
+    ['RECEIVED', 'CLOSED'],
+    ['RECEIVED', 'CANCELLED'],
+  ];
+
+  it.each(LEGAL)('changeStatus(): %s → %s is allowed and writes the status only (no items, no money fields)', async (from, to) => {
+    const prisma = createPrismaMock();
+    prisma.purchase.findUnique.mockResolvedValue(statusFixture(from));
+    prisma.purchase.update.mockResolvedValue({ id: 8, status: to });
+
+    await expect(svc(prisma).changeStatus(8, { status: to as never, updatedAt: VERSION }, 9, undefined)).resolves.toEqual({ id: 8, status: to });
+
+    expect(prisma.purchase.update).toHaveBeenCalledTimes(1);
+    const args = prisma.purchase.update.mock.calls[0][0];
+    expect(args.where).toEqual({ id: 8 });
+    expect(args.data).toEqual({ status: to });
+    expect(prisma.purchaseItem.deleteMany).not.toHaveBeenCalled();
+    // No reference re-checks for a status-only change.
+    expect(prisma.supplier.findUnique).not.toHaveBeenCalled();
+    expect(prisma.purchaseType.findUnique).not.toHaveBeenCalled();
+    expect(prisma.unit.count).not.toHaveBeenCalled();
+  });
+
+  const ALL = ['DRAFT', 'CONFIRMED', 'RECEIVED', 'CLOSED', 'CANCELLED'];
+  const TARGETS = ['CONFIRMED', 'RECEIVED', 'CLOSED', 'CANCELLED'];
+  const ILLEGAL = ALL.flatMap((from) => TARGETS.map((to) => [from, to] as [string, string]))
+    .filter(([from, to]) => !LEGAL.some(([f, t]) => f === from && t === to));
+
+  it.each(ILLEGAL)('changeStatus(): %s → %s is refused with a Persian 409 naming both statuses, touching nothing', async (from, to) => {
+    const prisma = createPrismaMock();
+    const purchaseRequestsService = createPurchaseRequestsServiceMock();
+    prisma.purchase.findUnique.mockResolvedValue(statusFixture(from, { purchaseRequestId: 7 }));
+
+    const error = await buildPurchasesService(prisma, purchaseRequestsService)
+      .changeStatus(8, { status: to as never, updatedAt: VERSION }, 9, undefined)
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(ConflictException);
+    const labels: Record<string, string> = { DRAFT: 'پیش‌نویس', CONFIRMED: 'تأییدشده', RECEIVED: 'دریافت‌شده', CLOSED: 'بسته‌شده', CANCELLED: 'لغوشده' };
+    expect((error as ConflictException).message).toContain(`«${labels[from]}»`);
+    expect((error as ConflictException).message).toContain(`«${labels[to]}»`);
+    expect(prisma.purchase.updateMany).not.toHaveBeenCalled();
+    expect(prisma.purchase.update).not.toHaveBeenCalled();
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
+    expect(purchaseRequestsService.recomputeStatus).not.toHaveBeenCalled();
+  });
+
+  it('changeStatus(): RECEIVED → CLOSED succeeds even when the purchase has returns (business decision 2026-10-06)', async () => {
+    const prisma = createPrismaMock();
+    prisma.purchase.findUnique.mockResolvedValue(statusFixture('RECEIVED'));
+    prisma.purchaseReturn.count.mockResolvedValue(3);
+    prisma.purchase.update.mockResolvedValue({ id: 8, status: 'CLOSED' });
+
+    await expect(svc(prisma).changeStatus(8, { status: 'CLOSED', updatedAt: VERSION }, 9, undefined)).resolves.toEqual({ id: 8, status: 'CLOSED' });
+    expect(prisma.purchase.update.mock.calls[0][0].data).toEqual({ status: 'CLOSED' });
+    // The returns' PurchaseItem rows are never touched.
+    expect(prisma.purchaseItem.deleteMany).not.toHaveBeenCalled();
+    expect(prisma.auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ action: 'PURCHASE_STATUS_CHANGED', details: 'از RECEIVED به CLOSED' }) }),
+    );
+  });
+
+  it.each(['DRAFT', 'CONFIRMED', 'RECEIVED'])('changeStatus(): cancelling from %s with returns is still refused — checked inside the transaction, after the version claim', async (from) => {
+    const prisma = createPrismaMock();
+    prisma.purchase.findUnique.mockResolvedValue(statusFixture(from));
+    prisma.purchaseReturn.count.mockResolvedValue(1);
+
+    await expect(svc(prisma).changeStatus(8, { status: 'CANCELLED', updatedAt: VERSION }, 9, undefined)).rejects.toThrow(/قابل لغو نیست/);
+    expect(prisma.$transaction).toHaveBeenCalled();
+    expect(prisma.purchase.updateMany.mock.invocationCallOrder[0]).toBeLessThan(prisma.purchaseReturn.count.mock.invocationCallOrder[0]);
+    expect(prisma.purchaseReturn.count).toHaveBeenCalledWith({ where: { purchaseId: 8 } });
+    expect(prisma.purchase.update).not.toHaveBeenCalled();
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it('changeStatus(): returns are only counted when cancelling — never for confirm/receive/close', async () => {
+    for (const [from, to] of [['DRAFT', 'CONFIRMED'], ['CONFIRMED', 'RECEIVED'], ['RECEIVED', 'CLOSED']]) {
+      const prisma = createPrismaMock();
+      prisma.purchase.findUnique.mockResolvedValue(statusFixture(from));
+      prisma.purchase.update.mockResolvedValue({ id: 8 });
+      await svc(prisma).changeStatus(8, { status: to as never, updatedAt: VERSION }, 9, undefined);
+      expect(prisma.purchaseReturn.count).not.toHaveBeenCalled();
+    }
+  });
+
+  it('changeStatus(): a stale updatedAt is a 409 RECORD_MODIFIED before anything is written', async () => {
+    const prisma = createPrismaMock();
+    prisma.purchase.findUnique.mockResolvedValue(statusFixture('RECEIVED', { updatedAt: new Date('2026-01-01T10:05:00.000Z') }));
+
+    const error = await svc(prisma).changeStatus(8, { status: 'CLOSED', updatedAt: VERSION }, 9, undefined).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(ConflictException);
+    expect((error as ConflictException).getResponse()).toMatchObject({ code: 'RECORD_MODIFIED' });
+    expect(prisma.purchase.updateMany).not.toHaveBeenCalled();
+    expect(prisma.purchase.update).not.toHaveBeenCalled();
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it('changeStatus(): the version check is repeated atomically (compare-and-set) — a save that lands in between loses', async () => {
+    const prisma = createPrismaMock();
+    prisma.purchase.findUnique.mockResolvedValue(statusFixture('RECEIVED'));
+    prisma.purchase.updateMany.mockResolvedValue({ count: 0 });
+
+    const error = await svc(prisma).changeStatus(8, { status: 'CLOSED', updatedAt: VERSION }, 9, undefined).catch((caught: unknown) => caught);
+
+    expect((error as ConflictException).getResponse()).toMatchObject({ code: 'RECORD_MODIFIED' });
+    expect(prisma.purchase.updateMany).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 8, updatedAt: VERSION } }));
+    expect(prisma.purchase.update).not.toHaveBeenCalled();
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it('changeStatus(): 404 for a purchase that does not exist', async () => {
+    const prisma = createPrismaMock();
+    prisma.purchase.findUnique.mockResolvedValue(null);
+    await expect(svc(prisma).changeStatus(99, { status: 'CLOSED', updatedAt: VERSION }, 9, undefined)).rejects.toThrow('خرید پیدا نشد');
+  });
+
+  it('changeStatus(): recomputes the linked Purchase Request only on CANCEL (the only status that changes what counts as purchased)', async () => {
+    for (const [from, to, expectRecompute] of [
+      ['DRAFT', 'CONFIRMED', false],
+      ['CONFIRMED', 'RECEIVED', false],
+      ['RECEIVED', 'CLOSED', false],
+      ['CONFIRMED', 'CANCELLED', true],
+    ] as [string, string, boolean][]) {
+      const prisma = createPrismaMock();
+      const purchaseRequestsService = createPurchaseRequestsServiceMock();
+      prisma.purchase.findUnique.mockResolvedValue(statusFixture(from, { purchaseRequestId: 7 }));
+      prisma.purchase.update.mockResolvedValue({ id: 8 });
+
+      await buildPurchasesService(prisma, purchaseRequestsService).changeStatus(8, { status: to as never, updatedAt: VERSION }, 9, '127.0.0.1');
+
+      if (expectRecompute) expect(purchaseRequestsService.recomputeStatus).toHaveBeenCalledWith(7, 9, '127.0.0.1');
+      else expect(purchaseRequestsService.recomputeStatus).not.toHaveBeenCalled();
+    }
+  });
+
+  it('changeStatus(): cancelling a purchase with no linked request recomputes nothing', async () => {
+    const prisma = createPrismaMock();
+    const purchaseRequestsService = createPurchaseRequestsServiceMock();
+    prisma.purchase.findUnique.mockResolvedValue(statusFixture('CONFIRMED'));
+    prisma.purchase.update.mockResolvedValue({ id: 8 });
+
+    await buildPurchasesService(prisma, purchaseRequestsService).changeStatus(8, { status: 'CANCELLED', updatedAt: VERSION }, 9, undefined);
+    expect(purchaseRequestsService.recomputeStatus).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['CONFIRMED', 'RECEIVED'],
+    ['CONFIRMED', 'CANCELLED'],
+    ['RECEIVED', 'CLOSED'],
+    ['DRAFT', 'CONFIRMED'],
+  ])('update(): refuses a status change (%s → %s) with a 409 — status changes go through the status endpoint', async (from, to) => {
+    const prisma = createPrismaMock();
+    const purchaseRequestsService = createPurchaseRequestsServiceMock();
+    prisma.purchase.findUnique.mockResolvedValue({ ...statusFixture(from), purchaseTypeId: 1, supplierId: 4 });
+    mockActiveMasterData(prisma);
+
+    await expect(
+      buildPurchasesService(prisma, purchaseRequestsService).update(8, updateDto(to, 10000), 9, undefined),
+    ).rejects.toThrow('تغییر وضعیت از این مسیر مجاز نیست — از دکمه‌های وضعیت استفاده کنید.');
+    expect(prisma.purchase.updateMany).not.toHaveBeenCalled();
+    expect(prisma.purchaseItem.deleteMany).not.toHaveBeenCalled();
+    expect(prisma.purchase.update).not.toHaveBeenCalled();
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
+    expect(purchaseRequestsService.recomputeStatus).not.toHaveBeenCalled();
+  });
+
+  it('update(): an unchanged status is a normal edit, audited as PURCHASE_UPDATED', async () => {
+    const prisma = createPrismaMock();
+    prisma.purchase.findUnique.mockResolvedValue({ ...statusFixture('RECEIVED'), purchaseTypeId: 1, supplierId: 4 });
+    mockActiveMasterData(prisma);
+    prisma.purchase.update.mockResolvedValue({ id: 8 });
+
+    await svc(prisma).update(8, updateDto('RECEIVED', 10000), 9, undefined);
+    expect(prisma.purchase.update.mock.calls[0][0].data.status).toBe('RECEIVED');
+    expect(prisma.auditLog.create).toHaveBeenCalledTimes(1);
+    expect(prisma.auditLog.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ action: 'PURCHASE_UPDATED' }) }));
   });
 });

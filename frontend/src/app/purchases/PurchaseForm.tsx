@@ -21,13 +21,11 @@ import {
 } from "@/app/purchase-requests/shared";
 import {
   PURCHASE_SOURCE_TYPES,
-  PURCHASE_CREATE_STATUSES,
   RequiredMark,
   StatusBadge,
   purchasePaymentStatusLabels,
   purchasePaymentStatusTone,
   purchaseSourceTypeLabels,
-  purchaseStatusLabels,
   selectClass,
   textareaClass,
   formatMoney,
@@ -145,13 +143,30 @@ function emptyForm(): FormState {
     buyerEmployeeId: "",
     supplierId: "",
     purchaseRequestId: "",
-    // New purchases default to CONFIRMED (business decision 2026-10-05) so
-    // payments can be recorded straight away; DRAFT is still selectable.
+    // New purchases are always created CONFIRMED (business decision
+    // 2026-10-05) so payments can be recorded straight away. There is no
+    // status selector on the create form (business decision 2026-10-06);
+    // later progression is the detail page's dedicated status actions.
     status: "CONFIRMED",
     note: "",
     items: [emptyItemRow()],
   };
 }
+
+// Comparable snapshot of the form for the unsaved-changes guard. Row keys
+// are random per load (crypto.randomUUID()), so they're blanked out.
+function formSnapshot(form: FormState) {
+  return JSON.stringify({ ...form, items: form.items.map((item) => ({ ...item, key: "" })) });
+}
+
+// Drops the purchase's link to a Purchase Request, including every row's
+// link to one of its items (a row link without the request link is refused
+// by the backend).
+function withoutRequestLink(form: FormState): FormState {
+  return { ...form, purchaseRequestId: "", items: form.items.map((item) => ({ ...item, purchaseRequestItemId: "" })) };
+}
+
+const UNSAVED_CHANGES_MESSAGE = "تغییرات ذخیره‌نشده در این فرم از بین می‌رود. آیا از ترک این صفحه مطمئن هستید؟";
 
 // Just what Section 3 (Payment) needs to display — the real payment
 // records (amounts, methods, add/remove) still live only on the Purchase
@@ -163,9 +178,9 @@ type Props = { mode: "create" } | { mode: "edit"; purchaseId: number };
 
 // Used by both /purchases/new and /purchases/[id]/edit — a
 // dedicated full page in both cases, not a modal, per the module spec.
-// Status is only chosen on create (DRAFT/CONFIRMED); the later lifecycle
-// (CONFIRMED → RECEIVED → CLOSED, or CANCELLED) is moved through via the
-// dedicated actions on the purchase detail page, never via this form.
+// Status is never chosen here: a new purchase is created CONFIRMED, and the
+// lifecycle (CONFIRMED → RECEIVED → CLOSED, or CANCELLED) is moved through
+// via the dedicated actions on the purchase detail page, never via this form.
 export function PurchaseForm(props: Props) {
   const router = useRouter();
   const { toasts, pushError, pushErrors, pushSuccess, dismiss } = useToasts();
@@ -173,6 +188,10 @@ export function PurchaseForm(props: Props) {
   const [loading, setLoading] = useState(props.mode === "edit");
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState<FormState>(emptyForm);
+  // The form as it was before the user touched it (create: blank or
+  // prefilled; edit: as loaded) — compared against `form` for the
+  // unsaved-changes guard. null until that starting point is known.
+  const [baseline, setBaseline] = useState<FormState | null>(null);
   const [purchaseNumber, setPurchaseNumber] = useState<string | null>(null);
   // Optimistic locking (edit mode): the purchase's updatedAt as loaded, sent
   // back on save. `staleRecord` = the backend answered RECORD_MODIFIED —
@@ -231,6 +250,36 @@ export function PurchaseForm(props: Props) {
         setEmployees(employeesData);
         setUnits(unitsData);
         setPurchaseRequests(purchaseRequestsData);
+        // A ?prefill= link naming a request that doesn't exist must not leave
+        // that id hidden in the form: the picker can't show it (it reads
+        // "بدون درخواست خرید") and the save would only fail on it. Drop the
+        // link (the prefilled lines stay, as plain unlinked lines) and say
+        // so. A request that exists but is no longer linkable (e.g. since
+        // REJECTED) is deliberately left alone: the picker still shows it and
+        // the backend refuses the save with its explicit #5 message. Create
+        // mode only — an edit keeps whatever request it's already linked to.
+        if (props.mode === "create") {
+          const prefill = readPrefill(new URLSearchParams(window.location.search).get("prefill"));
+          if (prefill && !purchaseRequestsData.some((request) => request.id === prefill.purchaseRequestId)) {
+            const prefilledId = String(prefill.purchaseRequestId);
+            const unlink = (current: FormState) => (current.purchaseRequestId === prefilledId ? withoutRequestLink(current) : current);
+            setForm(unlink);
+            setBaseline((current) => (current ? unlink(current) : current));
+            pushError("درخواست خرید مشخص‌شده در پیوند یافت نشد؛ اقلام بدون اتصال به درخواست خرید درج شدند.");
+          } else if (prefill) {
+            // Same default as picking the request manually (see
+            // applyPurchaseRequestChange()): the linked request's purchase
+            // type, read from the list already loaded above. Part of the
+            // prefill (baseline too), and only if nothing was chosen yet.
+            const linked = purchaseRequestsData.find((request) => request.id === prefill.purchaseRequestId);
+            if (linked) {
+              const withType = (current: FormState) =>
+                current.purchaseRequestId === String(linked.id) && !current.purchaseTypeId ? { ...current, purchaseTypeId: String(linked.purchaseTypeId) } : current;
+              setForm(withType);
+              setBaseline((current) => (current ? withType(current) : current));
+            }
+          }
+        }
       } catch (reason) {
         pushError((reason as ApiError).message ?? "دریافت اطلاعات پایه ناموفق بود.");
       }
@@ -259,21 +308,25 @@ export function PurchaseForm(props: Props) {
   if (props.mode === "create" && locationSearch !== null && !prefillChecked) {
     setPrefillChecked(true);
     const prefill = readPrefill(new URLSearchParams(locationSearch).get("prefill"));
-    if (prefill) {
-      setForm((current) => ({
-        ...current,
-        purchaseRequestId: String(prefill.purchaseRequestId),
-        items: prefill.items.map((item) => ({
-          key: crypto.randomUUID(),
-          name: item.name,
-          quantity: String(item.quantity),
-          unitId: String(item.unitId),
-          unitPrice: "",
-          totalPrice: "",
-          purchaseRequestItemId: String(item.purchaseRequestItemId),
-        })),
-      }));
-    }
+    const startingForm: FormState = prefill
+      ? {
+          ...form,
+          purchaseRequestId: String(prefill.purchaseRequestId),
+          items: prefill.items.map((item) => ({
+            key: crypto.randomUUID(),
+            name: item.name,
+            quantity: String(item.quantity),
+            unitId: String(item.unitId),
+            unitPrice: "",
+            totalPrice: "",
+            purchaseRequestItemId: String(item.purchaseRequestItemId),
+          })),
+        }
+      : form;
+    if (prefill) setForm(startingForm);
+    // A prefilled form isn't "unsaved changes" by itself — only what the
+    // user changes after it opened.
+    setBaseline(startingForm);
   }
 
   useEffect(() => {
@@ -286,7 +339,7 @@ export function PurchaseForm(props: Props) {
         setPurchaseNumber(purchase.purchaseNumber);
         setLoadedUpdatedAt(purchase.updatedAt);
         setPaymentSummary({ status: purchase.paymentStatus, totalAmount: purchase.totalAmount, paidAmount: purchase.paidAmount });
-        setForm({
+        const loadedForm: FormState = {
           purchaseDate: purchase.purchaseDate.slice(0, 10),
           purchaseTypeId: String(purchase.purchaseType.id),
           sourceType: purchase.sourceType,
@@ -309,7 +362,9 @@ export function PurchaseForm(props: Props) {
                 purchaseRequestItemId: item.purchaseRequestItemId ? String(item.purchaseRequestItemId) : "",
               }))
             : [emptyItemRow()],
-        });
+        };
+        setForm(loadedForm);
+        setBaseline(loadedForm);
       } catch (reason) {
         pushError((reason as ApiError).message ?? "دریافت اطلاعات خرید ناموفق بود.");
       } finally {
@@ -370,15 +425,19 @@ export function PurchaseForm(props: Props) {
     try {
       const requestDetail = await apiFetch<PurchaseRequestDetail>(`/purchase-requests/${value}`);
       if (purchaseRequestChangeToken.current !== token) return;
+      // The request's own purchase type becomes this purchase's default
+      // (business decision 2026-10-06) — still freely editable afterwards.
+      const purchaseTypeId = String(requestDetail.purchaseType.id);
       const itemsWithRemaining = requestDetail.items.filter((item) => item.remainingQuantity > 0);
       if (itemsWithRemaining.length === 0) {
         pushError("همه اقلام این درخواست خریداری شده است.");
-        update("purchaseRequestId", value);
+        setForm((current) => ({ ...current, purchaseRequestId: value, purchaseTypeId }));
         return;
       }
       setForm((current) => ({
         ...current,
         purchaseRequestId: value,
+        purchaseTypeId,
         items: itemsWithRemaining.map((item) => ({
           key: crypto.randomUUID(),
           name: item.name,
@@ -512,6 +571,52 @@ export function PurchaseForm(props: Props) {
     [form.items],
   );
 
+  // Unsaved-changes guard: the form differs from where it started, or files
+  // are staged for upload. Off once the purchase has been saved (document-
+  // failure state) and while the record is stale — that banner already says
+  // a reload discards the edits, and they can't be saved anyway.
+  const hasUnsavedChanges =
+    savedWithDocumentFailures === null &&
+    !staleRecord &&
+    baseline !== null &&
+    (stagedDocuments.length > 0 || formSnapshot(form) !== formSnapshot(baseline));
+
+  useEffect(() => {
+    if (!hasUnsavedChanges) return;
+    // Full page unloads: reload, closing the tab, typing a URL, external links.
+    function onBeforeUnload(event: BeforeUnloadEvent) {
+      event.preventDefault();
+      event.returnValue = "";
+    }
+    // In-app links (sidebar, «ثبت/مشاهده پرداخت‌ها», ...) navigate client-side
+    // and never fire beforeunload — intercept same-origin link clicks in the
+    // capture phase, before next/link's own handler, and ask first.
+    function onLinkClick(event: MouseEvent) {
+      if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      const anchor = (event.target as Element | null)?.closest?.("a[href]");
+      if (!(anchor instanceof HTMLAnchorElement)) return;
+      if ((anchor.target && anchor.target !== "_self") || anchor.hasAttribute("download")) return;
+      const url = new URL(anchor.href, window.location.href);
+      if (url.origin !== window.location.origin) return; // beforeunload covers it
+      if (url.pathname === window.location.pathname && url.search === window.location.search) return;
+      if (!window.confirm(UNSAVED_CHANGES_MESSAGE)) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    }
+    window.addEventListener("beforeunload", onBeforeUnload);
+    document.addEventListener("click", onLinkClick, true);
+    return () => {
+      window.removeEventListener("beforeunload", onBeforeUnload);
+      document.removeEventListener("click", onLinkClick, true);
+    };
+  }, [hasUnsavedChanges]);
+
+  function cancelForm() {
+    if (hasUnsavedChanges && !window.confirm(UNSAVED_CHANGES_MESSAGE)) return;
+    router.back();
+  }
+
   // Only requests it actually makes sense to buy against — same eligibility
   // rule as canCreatePurchases on the Purchase Request detail page (status
   // APPROVED or PARTIALLY_PURCHASED). A DRAFT/SUBMITTED request isn't
@@ -629,7 +734,7 @@ export function PurchaseForm(props: Props) {
         totalPrice: parseNumberInput(item.totalPrice),
         purchaseRequestItemId: item.purchaseRequestItemId === "" ? undefined : Number(item.purchaseRequestItemId),
       })),
-      // Create: the chosen DRAFT/CONFIRMED (default CONFIRMED). Edit: the
+      // Create: always CONFIRMED (see emptyForm()). Edit: the
       // status as loaded, sent back unchanged — PATCH requires the whole
       // record, but this form no longer changes status (that's the detail
       // page's status actions); updatedAt guarantees it's still current.
@@ -866,27 +971,6 @@ export function PurchaseForm(props: Props) {
                   onCancelOverwrite={() => setPendingPurchaseRequestId(null)}
                 />
               ) : null}
-              {/* Create mode only — DRAFT/CONFIRMED. Status changes on an
-                  existing purchase are dedicated actions on the purchase
-                  detail page (تأیید خرید / ثبت دریافت کالا / بستن خرید /
-                  لغو خرید), not part of this edit form. */}
-              {props.mode === "create" ? (
-                <div className="flex flex-col gap-1.5">
-                  <Label htmlFor="purchase-status">وضعیت خرید</Label>
-                  <select
-                    id="purchase-status"
-                    className={selectClass}
-                    value={form.status}
-                    onChange={(event) => update("status", event.target.value as PurchaseStatus)}
-                  >
-                    {PURCHASE_CREATE_STATUSES.map((status) => (
-                      <option key={status} value={status}>
-                        {purchaseStatusLabels[status]}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              ) : null}
             </div>
             {form.sourceType === "HISTORICAL_IMPORT" ? (
               <p className="mt-2 text-xs text-muted-foreground">
@@ -946,7 +1030,7 @@ export function PurchaseForm(props: Props) {
               رفتن به صفحه جزئیات خرید
             </Button>
           ) : (
-            <Button type="button" variant="outline" onClick={() => router.back()}>
+            <Button type="button" variant="outline" onClick={cancelForm}>
               انصراف
             </Button>
           )}

@@ -44,6 +44,13 @@ async function firstActiveDepartmentId(request: APIRequestContext): Promise<numb
   return department.id;
 }
 
+// Active types only, lowest sort order first (GET /purchase-types).
+async function firstPurchaseTypeId(request: APIRequestContext): Promise<number> {
+  const purchaseTypes = (await (await request.get(`${BACKEND}/purchase-types`)).json()) as Array<{ id: number }>;
+  if (purchaseTypes.length === 0) throw new Error("No active purchase type is seeded — required for this test.");
+  return purchaseTypes[0].id;
+}
+
 async function firstUnitId(request: APIRequestContext): Promise<number> {
   const units = (await (await request.get(`${BACKEND}/units`)).json()) as Array<{ id: number }>;
   if (units.length === 0) throw new Error("No unit is seeded — required for this test.");
@@ -77,8 +84,10 @@ async function createPurchaseRequest(
 ): Promise<{ id: number; requestNumber: string; unitId: number }> {
   const departmentId = await firstActiveDepartmentId(request);
   const unitId = await firstUnitId(request);
+  const purchaseTypeId = await firstPurchaseTypeId(request);
   const payload = {
     requestDate: "2025-03-21",
+    purchaseTypeId,
     requesterDepartmentId: departmentId,
     priority: "NORMAL",
     items: items.map((item) => ({ name: item.name, quantity: item.quantity, unitId })),

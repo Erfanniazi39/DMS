@@ -15,6 +15,9 @@ function createPrismaMock() {
     purchaseRequest: { findMany: jest.fn(), findUnique: jest.fn(), create: jest.fn(), update: jest.fn(), updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
     purchaseRequestItem: { deleteMany: jest.fn() },
     purchaseItem: { groupBy: jest.fn(), findMany: jest.fn() },
+    // Active by default; individual tests override it to exercise the
+    // shared ensureActivePurchaseType() rule.
+    purchaseType: { findUnique: jest.fn().mockResolvedValue({ id: 1, isActive: true }) },
     department: { findUnique: jest.fn() },
     employee: { findUnique: jest.fn() },
     unit: { count: jest.fn() },
@@ -57,7 +60,7 @@ describe('PurchaseRequestsService', () => {
 
     const dto: CreatePurchaseRequestDto = {
       requestDate: new Date('2026-01-01') as never,
-      requesterDepartmentId: 2,
+      purchaseTypeId: 1, requesterDepartmentId: 2,
       requestedByEmployeeId: undefined,
       priority: 'NORMAL' as never,
       note: undefined,
@@ -89,7 +92,7 @@ describe('PurchaseRequestsService', () => {
     await service.create(
       {
         requestDate: new Date('2026-01-01') as never,
-        requesterDepartmentId: 2,
+        purchaseTypeId: 1, requesterDepartmentId: 2,
         requestedByEmployeeId: undefined,
         priority: 'NORMAL' as never,
         note: undefined,
@@ -111,7 +114,7 @@ describe('PurchaseRequestsService', () => {
       service.create(
         {
           requestDate: new Date('2026-01-01') as never,
-          requesterDepartmentId: 2,
+          purchaseTypeId: 1, requesterDepartmentId: 2,
           requestedByEmployeeId: undefined,
           priority: 'NORMAL' as never,
           note: undefined,
@@ -122,6 +125,75 @@ describe('PurchaseRequestsService', () => {
       ),
     ).rejects.toBeInstanceOf(ConflictException);
     expect(prisma.purchaseRequest.create).not.toHaveBeenCalled();
+  });
+
+  it('create(): stores the chosen purchaseTypeId after checking it is an active PurchaseType', async () => {
+    const prisma = createPrismaMock();
+    const service = createService(prisma);
+    prisma.department.findUnique.mockResolvedValue({ id: 2, status: 'active' });
+    prisma.unit.count.mockResolvedValue(1);
+    prisma.purchaseType.findUnique.mockResolvedValue({ id: 3, isActive: true });
+    prisma.purchaseRequest.create.mockResolvedValue({ id: 4 });
+    prisma.purchaseRequest.update.mockResolvedValue({ id: 4, requestNumber: 'REQ-000004', items: [] });
+
+    await service.create(
+      { requestDate: new Date('2026-01-01') as never, purchaseTypeId: 3, requesterDepartmentId: 2, priority: 'NORMAL' as never, items: baseItems } as never,
+      9,
+      undefined,
+    );
+
+    expect(prisma.purchaseType.findUnique).toHaveBeenCalledWith({ where: { id: 3 } });
+    expect(prisma.purchaseRequest.create.mock.calls[0][0].data.purchaseTypeId).toBe(3);
+  });
+
+  it.each([
+    ['inactive', { id: 3, isActive: false }],
+    ['missing', null],
+  ])('create(): rejects a %s purchase type with a Persian 409 and writes nothing', async (_label, purchaseType) => {
+    const prisma = createPrismaMock();
+    const service = createService(prisma);
+    prisma.department.findUnique.mockResolvedValue({ id: 2, status: 'active' });
+    prisma.unit.count.mockResolvedValue(1);
+    prisma.purchaseType.findUnique.mockResolvedValue(purchaseType);
+
+    await expect(
+      service.create(
+        { requestDate: new Date('2026-01-01') as never, purchaseTypeId: 3, requesterDepartmentId: 2, priority: 'NORMAL' as never, items: baseItems } as never,
+        9,
+        undefined,
+      ),
+    ).rejects.toThrow('نوع خرید انتخاب‌شده معتبر نیست');
+    expect(prisma.purchaseRequest.create).not.toHaveBeenCalled();
+  });
+
+  it('update(): re-checks the purchase type only when it changes — an already-assigned, since-deactivated type stays saveable', async () => {
+    const prisma = createPrismaMock();
+    const service = createService(prisma);
+    const existing = {
+      id: 1,
+      status: 'DRAFT',
+      updatedAt: VERSION,
+      purchaseTypeId: 1,
+      requesterDepartmentId: 2,
+      requesterDepartment: { id: 2 },
+      requestedByEmployee: null,
+      createdByUser: null,
+      items: [],
+      purchases: [],
+    };
+    prisma.purchaseRequest.findUnique.mockResolvedValue(existing);
+    prisma.unit.count.mockResolvedValue(1);
+    prisma.purchaseType.findUnique.mockResolvedValue({ id: 1, isActive: false });
+    const dto = (purchaseTypeId: number) =>
+      ({ requestDate: new Date('2026-01-01'), purchaseTypeId, requesterDepartmentId: 2, priority: 'NORMAL', status: 'DRAFT', updatedAt: VERSION, items: baseItems }) as never;
+
+    await service.update(1, dto(1), 9, undefined);
+    expect(prisma.purchaseType.findUnique).not.toHaveBeenCalled();
+    expect(prisma.purchaseRequest.update.mock.calls[0][0].data.purchaseTypeId).toBe(1);
+
+    prisma.purchaseType.findUnique.mockResolvedValue({ id: 5, isActive: false });
+    await expect(service.update(1, dto(5), 9, undefined)).rejects.toBeInstanceOf(ConflictException);
+    expect(prisma.purchaseType.findUnique).toHaveBeenCalledWith({ where: { id: 5 } });
   });
 
   it('logs PURCHASE_REQUEST_STATUS_CHANGED only when the status actually changes on update', async () => {
@@ -144,7 +216,7 @@ describe('PurchaseRequestsService', () => {
 
     const dto: UpdatePurchaseRequestDto = {
       requestDate: new Date('2026-01-01') as never,
-      requesterDepartmentId: 2,
+      purchaseTypeId: 1, requesterDepartmentId: 2,
       requestedByEmployeeId: undefined,
       priority: 'NORMAL' as never,
       status: 'SUBMITTED' as never, updatedAt: VERSION,
@@ -273,7 +345,7 @@ describe('PurchaseRequestsService', () => {
     const service = createService(prisma);
     prisma.purchaseRequest.findMany.mockResolvedValue([]);
 
-    await service.list({ status: 'SUBMITTED', priority: 'URGENT', requesterDepartmentId: 2 });
+    await service.list({ status: 'SUBMITTED', priority: 'URGENT', purchaseTypeId: 1, requesterDepartmentId: 2 });
 
     const whereArg = prisma.purchaseRequest.findMany.mock.calls[0][0].where;
     expect(whereArg.status).toBe('SUBMITTED');
@@ -348,7 +420,7 @@ describe('PurchaseRequestsService', () => {
     prisma.purchaseRequest.update.mockResolvedValue({ id: 3, items: [] });
 
     await service.create(
-      { requestDate: new Date('2026-01-01') as never, requesterDepartmentId: 2, priority: 'NORMAL' as never, items: baseItems } as never,
+      { requestDate: new Date('2026-01-01') as never, purchaseTypeId: 1, requesterDepartmentId: 2, priority: 'NORMAL' as never, items: baseItems } as never,
       9,
       undefined,
     );
@@ -388,7 +460,7 @@ describe('PurchaseRequestsService', () => {
       // Priority-only edit, identical item list.
       await service.update(
         1,
-        { requestDate: new Date('2026-01-01') as never, requesterDepartmentId: 2, priority: 'URGENT' as never, status: 'PARTIALLY_PURCHASED' as never, updatedAt: VERSION, items: baseItems } as never,
+        { requestDate: new Date('2026-01-01') as never, purchaseTypeId: 1, requesterDepartmentId: 2, priority: 'URGENT' as never, status: 'PARTIALLY_PURCHASED' as never, updatedAt: VERSION, items: baseItems } as never,
         9,
         undefined,
       );
@@ -427,7 +499,7 @@ describe('PurchaseRequestsService', () => {
       await expect(
         service.update(
           1,
-          { requestDate: new Date('2026-01-01') as never, requesterDepartmentId: 2, priority: 'NORMAL' as never, status: 'COMPLETED' as never, updatedAt: VERSION, items: baseItems } as never,
+          { requestDate: new Date('2026-01-01') as never, purchaseTypeId: 1, requesterDepartmentId: 2, priority: 'NORMAL' as never, status: 'COMPLETED' as never, updatedAt: VERSION, items: baseItems } as never,
           9,
           undefined,
         ),
@@ -442,7 +514,7 @@ describe('PurchaseRequestsService', () => {
       id: 1,
       status: 'APPROVED',
       updatedAt: VERSION,
-      requesterDepartmentId: 2,
+      purchaseTypeId: 1, requesterDepartmentId: 2,
       requestedByEmployeeId: null,
       requesterDepartment: { id: 2 },
       requestedByEmployee: null,
@@ -457,7 +529,7 @@ describe('PurchaseRequestsService', () => {
   }
 
   const editDto = (items: unknown[], overrides: Record<string, unknown> = {}) =>
-    ({ requestDate: new Date('2026-01-01'), requesterDepartmentId: 2, priority: 'NORMAL', status: 'APPROVED', updatedAt: VERSION, items, ...overrides }) as never;
+    ({ requestDate: new Date('2026-01-01'), purchaseTypeId: 1, requesterDepartmentId: 2, priority: 'NORMAL', status: 'APPROVED', updatedAt: VERSION, items, ...overrides }) as never;
 
   it('update(): refuses to remove a request line that a Purchase line is linked to (would silently null the link)', async () => {
     const prisma = createPrismaMock();
@@ -622,7 +694,7 @@ describe('PurchaseRequestsService', () => {
     prisma.purchaseItem.groupBy.mockResolvedValue([]);
 
     const result = await service.create(
-      { requestDate: new Date('2026-01-01'), requesterDepartmentId: 2, priority: 'NORMAL', items: [{ id: 123, name: 'شیر', quantity: 12.5, unitId: 6 }] } as never,
+      { requestDate: new Date('2026-01-01'), purchaseTypeId: 1, requesterDepartmentId: 2, priority: 'NORMAL', items: [{ id: 123, name: 'شیر', quantity: 12.5, unitId: 6 }] } as never,
       9,
       undefined,
     );

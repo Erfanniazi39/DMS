@@ -36,8 +36,30 @@ export const PAYABLE_PURCHASE_STATUSES: PurchaseStatus[] = ['CONFIRMED', 'RECEIV
 // received, so only a RECEIVED or CLOSED purchase can have one.
 export const RETURNABLE_PURCHASE_STATUSES: PurchaseStatus[] = ['RECEIVED', 'CLOSED'];
 
+// Which status a purchase may move to from its current one, via
+// PATCH /purchases/:id/status (PurchasesService.changeStatus()) — the only
+// path that changes an existing purchase's status. One step forward at a
+// time (DRAFT → CONFIRMED → RECEIVED → CLOSED), or cancel from any
+// non-terminal status. CLOSED and CANCELLED are terminal. Same-status and
+// "back to DRAFT" are never transitions.
+export const ALLOWED_PURCHASE_STATUS_TRANSITIONS: Record<PurchaseStatus, PurchaseStatus[]> = {
+  DRAFT: ['CONFIRMED', 'CANCELLED'],
+  CONFIRMED: ['RECEIVED', 'CANCELLED'],
+  RECEIVED: ['CLOSED', 'CANCELLED'],
+  CLOSED: [],
+  CANCELLED: [],
+};
+
+// Target statuses refused while the purchase has any Return-to-Vendor record
+// (business decisions 2026-10-05 #10 and 2026-10-06): a cancelled purchase
+// "never delivered anything", which contradicts goods having been returned.
+// Closing a purchase with returns IS allowed — it's the normal end of a
+// reconciled purchase.
+export const RETURN_BLOCKED_TARGET_STATUSES: PurchaseStatus[] = ['CANCELLED'];
+
 // Persian status names for the user-facing errors the payment and return
-// status gates above raise (PurchasePaymentsService / PurchaseReturnsService).
+// status gates above raise (PurchasePaymentsService / PurchaseReturnsService)
+// and for the status-transition errors in PurchasesService.changeStatus().
 export const PURCHASE_STATUS_LABELS_FA: Record<PurchaseStatus, string> = {
   DRAFT: 'پیش‌نویس',
   CONFIRMED: 'تأییدشده',

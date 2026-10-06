@@ -37,7 +37,7 @@ function fa(value: number): string {
   return value.toLocaleString("fa-IR");
 }
 
-type MasterData = { departmentId: number; employeeId: number; unitId: number; unitName: string };
+type MasterData = { departmentId: number; employeeId: number; unitId: number; unitName: string; purchaseTypeId: number };
 
 let cachedMasterData: MasterData | null = null;
 
@@ -46,11 +46,15 @@ async function masterData(request: APIRequestContext): Promise<MasterData> {
   const departments = (await (await request.get(`${BACKEND}/departments`)).json()) as Array<{ id: number; status: string }>;
   const employees = (await (await request.get(`${BACKEND}/employees`)).json()) as Array<{ id: number; status: string }>;
   const units = (await (await request.get(`${BACKEND}/units`)).json()) as Array<{ id: number; nameFa: string; code: string }>;
+  // Active types only, lowest sort order first (GET /purchase-types).
+  const purchaseTypes = (await (await request.get(`${BACKEND}/purchase-types`)).json()) as Array<{ id: number }>;
   const department = departments.find((d) => d.status === "active");
   const employee = employees.find((e) => e.status === "active");
   const unit = units.find((u) => u.code === "liter") ?? units[0];
-  if (!department || !employee || !unit) throw new Error("An active department, an active employee and a unit must exist for these tests.");
-  cachedMasterData = { departmentId: department.id, employeeId: employee.id, unitId: unit.id, unitName: unit.nameFa };
+  if (!department || !employee || !unit || purchaseTypes.length === 0) {
+    throw new Error("An active department, an active employee, a unit and an active purchase type must exist for these tests.");
+  }
+  cachedMasterData = { departmentId: department.id, employeeId: employee.id, unitId: unit.id, unitName: unit.nameFa, purchaseTypeId: purchaseTypes[0].id };
   return cachedMasterData;
 }
 
@@ -64,6 +68,7 @@ async function createRequestViaApi(
   const md = await masterData(request);
   const payload = {
     requestDate: new Date().toISOString().slice(0, 10),
+    purchaseTypeId: md.purchaseTypeId,
     requesterDepartmentId: md.departmentId,
     priority: "NORMAL",
     note: QA_NOTE,
@@ -87,7 +92,7 @@ type PurchaseStatusValue = "DRAFT" | "CONFIRMED" | "RECEIVED" | "CLOSED" | "CANC
 // New purchases are created CONFIRMED by default, or DRAFT on request (the
 // only two creation statuses — business decision 2026-10-05). Payments need
 // CONFIRMED/RECEIVED/CLOSED and returns RECEIVED/CLOSED, so any later status
-// is reached via a normal PATCH. The default here stays DRAFT on purpose:
+// is reached via the status endpoint (setPurchaseStatusViaApi). The default here stays DRAFT on purpose:
 // tests that don't care get a purchase with no money actions available.
 async function createPurchaseViaApi(request: APIRequestContext, totalPrice = 1_000_000, status: PurchaseStatusValue = "DRAFT"): Promise<number> {
   const md = await masterData(request);
@@ -110,13 +115,28 @@ async function createPurchaseViaApi(request: APIRequestContext, totalPrice = 1_0
   if (!response.ok()) throw new Error(`Failed to create purchase: ${response.status()} ${await response.text()}`);
   const created = (await response.json()) as { id: number; updatedAt: string; status: string };
   expect(created.status).toBe(createStatus);
-  if (status !== createStatus) await setPurchaseStatusViaApi(request, created.id, status, data, created.updatedAt);
+  if (status !== createStatus) await setPurchaseStatusViaApi(request, created.id, status, created.updatedAt);
   return created.id;
 }
 
-async function setPurchaseStatusViaApi(request: APIRequestContext, id: number, status: PurchaseStatusValue, data: Record<string, unknown>, updatedAt: string) {
-  const patched = await request.patch(`${BACKEND}/purchases/${id}`, { data: { ...data, status, updatedAt } });
-  if (!patched.ok()) throw new Error(`Failed to set purchase status: ${patched.status()} ${await patched.text()}`);
+// From CONFIRMED, the legal path to each later status through the
+// status-only endpoint (PATCH /purchases/:id/status — one step at a time;
+// PATCH /purchases/:id refuses any status change since 2026-10-06).
+const STATUS_PATH_FROM_CONFIRMED: Partial<Record<PurchaseStatusValue, PurchaseStatusValue[]>> = {
+  RECEIVED: ["RECEIVED"],
+  CLOSED: ["RECEIVED", "CLOSED"],
+  CANCELLED: ["CANCELLED"],
+};
+
+async function setPurchaseStatusViaApi(request: APIRequestContext, id: number, status: PurchaseStatusValue, updatedAt: string) {
+  const path = STATUS_PATH_FROM_CONFIRMED[status];
+  if (!path) throw new Error(`No status path from CONFIRMED to ${status}`);
+  let version = updatedAt;
+  for (const step of path) {
+    const patched = await request.patch(`${BACKEND}/purchases/${id}/status`, { data: { status: step, updatedAt: version } });
+    if (!patched.ok()) throw new Error(`Failed to set purchase status ${step}: ${patched.status()} ${await patched.text()}`);
+    version = ((await patched.json()) as { updatedAt: string }).updatedAt;
+  }
 }
 
 // Local calendar "today" as YYYY-MM-DD — same day the browser's Jalali
@@ -232,6 +252,7 @@ test("1) request lifecycle: create → تایید → partial purchase → unrel
   await page.goto("/purchase-requests/new");
   await expect(page.getByRole("heading", { name: "ثبت درخواست خرید جدید" })).toBeVisible();
   await expect(page.locator("#request-date-year")).not.toHaveValue("");
+  await page.locator("#request-purchase-type").selectOption(String(md.purchaseTypeId));
   await page.locator("#request-department").selectOption(String(md.departmentId));
   await page.locator("#request-note").fill(QA_NOTE);
   const rows = page.locator("form#purchase-request-form table tbody tr");
@@ -745,6 +766,7 @@ test("10b) double-clicking 'ثبت درخواست خرید' creates exactly one 
   const md = await masterData(request);
   const name = `کارتن بسته‌بندی QA ${uniqueSuffix()}`;
   await page.goto("/purchase-requests/new");
+  await page.locator("#request-purchase-type").selectOption(String(md.purchaseTypeId));
   await page.locator("#request-department").selectOption(String(md.departmentId));
   await page.locator("#request-note").fill(QA_NOTE);
   const row = page.locator("form#purchase-request-form table tbody tr").first();
@@ -969,11 +991,11 @@ test("16) #5 a ?prefill= link for a request that was since REJECTED cannot be tu
   const detail = await getRequest(request, pr.id);
   // Reject it after the link was made (e.g. a bookmarked/shared link).
   const full = (await (await request.get(`${BACKEND}/purchase-requests/${pr.id}`)).json()) as {
-    requestDate: string; updatedAt: string; requesterDepartment: { id: number }; priority: string; items: { id: number; name: string; quantity: string; unit: { id: number } }[];
+    requestDate: string; updatedAt: string; purchaseType: { id: number }; requesterDepartment: { id: number }; priority: string; items: { id: number; name: string; quantity: string; unit: { id: number } }[];
   };
   const rejected = await request.patch(`${BACKEND}/purchase-requests/${pr.id}`, {
     data: {
-      requestDate: full.requestDate, requesterDepartmentId: full.requesterDepartment.id, priority: full.priority, note: QA_NOTE, status: "REJECTED",
+      requestDate: full.requestDate, purchaseTypeId: full.purchaseType.id, requesterDepartmentId: full.requesterDepartment.id, priority: full.priority, note: QA_NOTE, status: "REJECTED",
       updatedAt: full.updatedAt,
       items: full.items.map((i) => ({ id: i.id, name: i.name, quantity: i.quantity, unitId: i.unit.id })),
     },
@@ -993,10 +1015,11 @@ test("16) #5 a ?prefill= link for a request that was since REJECTED cannot be tu
   expect(after.items[0].purchasedQuantity, "a REJECTED request must not accumulate purchased quantity").toBe(0);
 });
 
-// BUG (low): the picker shows "بدون درخواست خرید" but the form still holds
-// the unknown request id; save fails with "درخواست خرید انتخاب‌شده یافت نشد".
+// Was a low-severity bug (the picker showed "بدون درخواست خرید" while the
+// form still held the unknown id, so the save failed with "درخواست خرید
+// انتخاب‌شده یافت نشد"). Fixed 2026-10-06: the unknown link is dropped, with
+// a notice, and the lines stay as plain unlinked lines.
 test("16b) a ?prefill= link pointing at a non-existent request does not leave a hidden request id on the form", async ({ page, request }) => {
-  test.fail(true, "BUG: hidden unknown purchaseRequestId from ?prefill=");
   const md = await masterData(request);
   const name = `QA درخواست ناموجود ${uniqueSuffix()}`;
   const prefill = { purchaseRequestId: 99999999, items: [{ name, quantity: 1, unitId: md.unitId, purchaseRequestItemId: 99999999 }] };
@@ -1004,31 +1027,85 @@ test("16b) a ?prefill= link pointing at a non-existent request does not leave a 
   await expect(purchaseItemRow(page, 0).getByLabel("نام یا شرح قلم")).toHaveValue(name);
   // The picker shows "no request" — so saving must not be refused because of a request.
   await expect(page.locator("#purchase-request")).toContainText("بدون درخواست خرید");
+  await expect(page.getByRole("alert").filter({ hasText: "درخواست خرید مشخص‌شده در پیوند یافت نشد" })).toBeVisible();
   await purchaseItemRow(page, 0).getByLabel("قیمت کل").fill("10000");
   await fillPurchaseHeader(page, md);
   await page.locator('button[form="purchase-form"]').click();
-  const alert = page.getByRole("alert").last();
-  await expect(alert.or(page.getByRole("status").filter({ hasText: "خرید جدید با موفقیت ثبت شد." }))).toBeVisible();
-  // Record what a user actually sees.
-  if (await alert.isVisible()) {
-    test.info().annotations.push({ type: "observed", description: `alert: ${await alert.innerText()}` });
-  }
   await expect(page.getByRole("status").filter({ hasText: "خرید جدید با موفقیت ثبت شد." })).toBeVisible();
+  await page.waitForURL(/\/purchases\/\d+$/);
+  const created = await getPurchase(request, Number(new URL(page.url()).pathname.split("/").pop()));
+  expect(created.items.map((item) => item.name)).toEqual([name]);
 });
 
 // ---- 17. refresh / back mid-form -----------------------------------------------
 
+// Fixed 2026-10-06 (was a test.fail UX gap). The guard lives in
+// PurchaseForm.tsx only: the browser's beforeunload prompt for full page
+// unloads, a window.confirm for real <a> links and the form's own «انصراف».
+// NOT covered: the app-shell sidebar, which navigates via router.push() from
+// buttons (no link, no unload) — needs a shared navigation guard if wanted.
 test("17) refreshing or leaving a half-filled purchase form warns before discarding typed data", async ({ page }) => {
-  test.fail(true, "UX gap: no beforeunload / unsaved-changes guard on the purchase form");
   await page.goto("/purchases/new");
-  await purchaseItemRow(page, 0).getByLabel("نام یا شرح قلم").fill("شیر خام QA رفرش");
+  const nameField = purchaseItemRow(page, 0).getByLabel("نام یا شرح قلم");
+  // A real click first: browsers only show beforeunload prompts after user activation.
+  await nameField.click();
+  await nameField.fill("شیر خام QA رفرش");
+
+  // «انصراف» asks first; dismissing keeps the form and its data.
+  let confirmText = "";
+  page.once("dialog", (dialog) => {
+    confirmText = dialog.message();
+    void dialog.dismiss();
+  });
+  await page.getByRole("button", { name: "انصراف" }).click();
+  await expect.poll(() => confirmText).toContain("تغییرات ذخیره‌نشده");
+  await expect(page).toHaveURL(/\/purchases\/new$/);
+  await expect(nameField).toHaveValue("شیر خام QA رفرش");
+
+  // A full page unload (closing the tab / reload) gets the browser's own beforeunload prompt.
+  let unloadPrompted = false;
+  page.once("dialog", (dialog) => {
+    unloadPrompted = dialog.type() === "beforeunload";
+    void dialog.dismiss();
+  });
+  await page.close({ runBeforeUnload: true });
+  await expect.poll(() => unloadPrompted).toBe(true);
+});
+
+test("17a) an edited purchase form asks before following an in-page link; accepting leaves", async ({ page, request }) => {
+  const purchaseId = await createPurchaseViaApi(request, 500_000, "CONFIRMED");
+  await page.goto(`/purchases/${purchaseId}/edit`);
+  await expect(page.locator("#purchase-note")).toHaveValue(QA_NOTE);
+  await page.locator("#purchase-note").fill(`${QA_NOTE} — ویرایش نیمه‌کاره`);
+  const paymentsLink = page.getByRole("link", { name: /ثبت\/مشاهده پرداخت‌ها/ });
+
+  page.once("dialog", (dialog) => void dialog.dismiss());
+  await paymentsLink.click();
+  await expect(page).toHaveURL(new RegExp(`/purchases/${purchaseId}/edit$`));
+  await expect(page.locator("#purchase-note")).toHaveValue(`${QA_NOTE} — ویرایش نیمه‌کاره`);
+
+  page.once("dialog", (dialog) => void dialog.accept());
+  await paymentsLink.click();
+  await expect(page).toHaveURL(new RegExp(`/purchases/${purchaseId}$`));
+});
+
+test("17b) an untouched purchase form (new or edit) reloads and leaves without any prompt", async ({ page, request }) => {
   let prompted = false;
   page.on("dialog", (dialog) => {
     prompted = true;
-    void dialog.dismiss();
+    void dialog.accept();
   });
+  await page.goto("/purchases/new");
+  await expect(page.getByRole("heading", { name: "ثبت خرید جدید" })).toBeVisible();
   await page.reload();
-  expect(prompted).toBe(true);
+  await expect(page.getByRole("heading", { name: "ثبت خرید جدید" })).toBeVisible();
+
+  const purchaseId = await createPurchaseViaApi(request, 500_000, "CONFIRMED");
+  await page.goto(`/purchases/${purchaseId}/edit`);
+  await expect(page.locator("#purchase-note")).toHaveValue(QA_NOTE);
+  await page.getByRole("link", { name: /ثبت\/مشاهده پرداخت‌ها/ }).click();
+  await expect(page).toHaveURL(new RegExp(`/purchases/${purchaseId}$`));
+  expect(prompted).toBe(false);
 });
 
 // ---- 18. business-owner decisions of 2026-10-05 ---------------------------------
@@ -1172,7 +1249,7 @@ test("18.4) #4 implausible years and out-of-order dates are refused by the API, 
   expect((await before.json()).message).toBe("تاریخ پرداخت نمی‌تواند قبل از تاریخ خرید باشد");
 
   const requestResponse = await request.post(`${BACKEND}/purchase-requests`, {
-    data: { requestDate: "2026-10-01", requesterDepartmentId: md.departmentId, note: QA_NOTE, items: [{ name: "QA نیاز", quantity: 1, unitId: md.unitId, requiredDate: "2026-09-01" }] },
+    data: { requestDate: "2026-10-01", purchaseTypeId: types[0].id, requesterDepartmentId: md.departmentId, note: QA_NOTE, items: [{ name: "QA نیاز", quantity: 1, unitId: md.unitId, requiredDate: "2026-09-01" }] },
   });
   expect(requestResponse.status()).toBe(400);
   expect(JSON.stringify(await requestResponse.json())).toContain("نمی‌تواند قبل از تاریخ درخواست باشد");
@@ -1260,14 +1337,44 @@ test("18.7) #7 a payment can be edited in place (PENDING → COMPLETED, new amou
   expect(purchase.payments[0]).toMatchObject({ amount: "400000", status: "COMPLETED" });
 });
 
-test("18.10) #10 a purchase with a return can be neither edited nor cancelled", async ({ request }) => {
+test("18.10) #10 a purchase with a return can be neither edited nor cancelled — but it can be closed (2026-10-06)", async ({ request }) => {
   const purchaseId = await createPurchaseViaApi(request, 500_000, "RECEIVED");
   await createReturnViaApi(request, purchaseId);
   const purchase = await getPurchase(request, purchaseId);
-  const cancel = await request.patch(`${BACKEND}/purchases/${purchaseId}`, { data: purchasePatchBody(purchase, { status: "CANCELLED" }) });
+
+  const edit = await request.patch(`${BACKEND}/purchases/${purchaseId}`, { data: purchasePatchBody(purchase, { note: `${QA_NOTE} — ویرایش` }) });
+  expect(edit.status()).toBe(409);
+  expect((await edit.json()).message).toContain("برگشت به تأمین‌کننده ثبت شده است");
+
+  const cancel = await request.patch(`${BACKEND}/purchases/${purchaseId}/status`, { data: { status: "CANCELLED", updatedAt: purchase.updatedAt } });
   expect(cancel.status()).toBe(409);
   expect((await cancel.json()).message).toContain("برگشت به تأمین‌کننده ثبت شده است");
-  expect((await getPurchase(request, purchaseId)).status).toBe("RECEIVED");
+  const afterCancel = await getPurchase(request, purchaseId);
+  expect(afterCancel.status).toBe("RECEIVED");
+
+  // Closing is a status-only change that never touches the items the return
+  // points at, so it succeeds — and the return and items survive intact.
+  const close = await request.patch(`${BACKEND}/purchases/${purchaseId}/status`, { data: { status: "CLOSED", updatedAt: afterCancel.updatedAt } });
+  expect(close.status()).toBe(200);
+  const closed = await getPurchase(request, purchaseId);
+  expect(closed.status).toBe("CLOSED");
+  expect(closed.items.map((item) => item.id)).toEqual(purchase.items.map((item) => item.id));
+  const returns = (await (await request.get(`${BACKEND}/purchases/${purchaseId}/returns`)).json()) as unknown[];
+  expect(returns).toHaveLength(1);
+});
+
+test("18.10b) PATCH /purchases/:id refuses a status change — status moves only through /status", async ({ request }) => {
+  const purchaseId = await createPurchaseViaApi(request, 500_000, "CONFIRMED");
+  const purchase = await getPurchase(request, purchaseId);
+  const viaEdit = await request.patch(`${BACKEND}/purchases/${purchaseId}`, { data: purchasePatchBody(purchase, { status: "RECEIVED" }) });
+  expect(viaEdit.status()).toBe(409);
+  expect((await viaEdit.json()).message).toContain("تغییر وضعیت از این مسیر مجاز نیست");
+  expect((await getPurchase(request, purchaseId)).status).toBe("CONFIRMED");
+
+  // Skipping a step is refused too.
+  const skip = await request.patch(`${BACKEND}/purchases/${purchaseId}/status`, { data: { status: "CLOSED", updatedAt: purchase.updatedAt } });
+  expect(skip.status()).toBe(409);
+  expect((await getPurchase(request, purchaseId)).status).toBe("CONFIRMED");
 });
 
 test("18.12a) #12 a purchase edit form opened before someone else saved is refused on save and must reload", async ({ page, request }) => {
@@ -1292,11 +1399,11 @@ test("18.12b) #12 تایید on a request page that is out of date is refused, a
   const pr = await createRequestViaApi(request, [{ name: `QA نسخه ${uniqueSuffix()}`, quantity: 2 }], { approve: false });
   await openRequestDetail(page, pr.id, pr.requestNumber);
   const full = (await (await request.get(`${BACKEND}/purchase-requests/${pr.id}`)).json()) as {
-    requestDate: string; updatedAt: string; requesterDepartment: { id: number }; priority: string; items: { id: number; name: string; quantity: string; unit: { id: number } }[];
+    requestDate: string; updatedAt: string; purchaseType: { id: number }; requesterDepartment: { id: number }; priority: string; items: { id: number; name: string; quantity: string; unit: { id: number } }[];
   };
   const other = await request.patch(`${BACKEND}/purchase-requests/${pr.id}`, {
     data: {
-      requestDate: full.requestDate, requesterDepartmentId: full.requesterDepartment.id, priority: "URGENT", note: QA_NOTE, status: "DRAFT", updatedAt: full.updatedAt,
+      requestDate: full.requestDate, purchaseTypeId: full.purchaseType.id, requesterDepartmentId: full.requesterDepartment.id, priority: "URGENT", note: QA_NOTE, status: "DRAFT", updatedAt: full.updatedAt,
       items: full.items.map((i) => ({ id: i.id, name: i.name, quantity: i.quantity, unitId: i.unit.id })),
     },
   });
@@ -1371,11 +1478,9 @@ test.describe("18.8) #8 returns: purchases.view can read, only purchases.manage 
 test("19a) a purchase created with the form's defaults is CONFIRMED and takes a payment immediately — no DRAFT detour", async ({ page, request }) => {
   const md = await masterData(request);
   await page.goto("/purchases/new");
-  const statusSelect = page.locator("#purchase-status");
-  await expect(statusSelect).toHaveValue("CONFIRMED");
-  // Only DRAFT / CONFIRMED make sense for a brand-new record.
-  const offered = await statusSelect.locator("option").evaluateAll((options) => options.map((o) => (o as HTMLOptionElement).value));
-  expect(offered.sort()).toEqual(["CONFIRMED", "DRAFT"]);
+  // No status selector on the create form any more (business decision
+  // 2026-10-06) — the purchase is simply created CONFIRMED.
+  await expect(page.locator("#purchase-status")).toHaveCount(0);
 
   await fillPurchaseHeader(page, md);
   const row = purchaseItemRow(page, 0);
@@ -1391,22 +1496,9 @@ test("19a) a purchase created with the form's defaults is CONFIRMED and takes a 
   expect((await getPurchase(request, purchaseId)).status).toBe("CONFIRMED");
 });
 
-test("19b) choosing DRAFT on the create form still works — and then payments stay unavailable until it's confirmed", async ({ page, request }) => {
-  const md = await masterData(request);
-  await page.goto("/purchases/new");
-  await page.locator("#purchase-status").selectOption("DRAFT");
-  await fillPurchaseHeader(page, md);
-  const row = purchaseItemRow(page, 0);
-  await row.getByLabel("نام یا شرح قلم").fill(`QA پیش‌نویس عمدی ${uniqueSuffix()}`);
-  await row.getByLabel("مقدار", { exact: true }).fill("1");
-  await row.getByLabel("واحد", { exact: true }).selectOption(String(md.unitId));
-  await row.getByLabel("قیمت کل").fill("50000");
-  const purchaseId = await submitNewPurchase(page);
-
-  expect((await getPurchase(request, purchaseId)).status).toBe("DRAFT");
-  await expect(page.getByRole("heading", { level: 1 }).locator("xpath=..")).toContainText("پیش‌نویس");
-  await expect(page.getByRole("button", { name: "افزودن پرداخت" })).toHaveCount(0);
-});
+// 19b (choosing DRAFT on the create form) removed 2026-10-06: the create
+// form no longer has a status selector. DRAFT via the API (still accepted)
+// with payments unavailable is covered by 18.2 and 20a.
 
 test("19c) the API defaults a new purchase to CONFIRMED and refuses creating one as RECEIVED/CLOSED/CANCELLED", async ({ request }) => {
   const md = await masterData(request);
@@ -1560,20 +1652,30 @@ test("20d) a status action on an out-of-date page is refused (RECORD_MODIFIED), 
   expect(after.note).toBe(`${QA_NOTE} — کاربر دیگر`);
 });
 
-test("20e) a backend refusal is shown as a Persian error and nothing changes (a purchase with a return can't be closed or cancelled)", async ({ page, request }) => {
+// Business decision 2026-10-06: a purchase with a return can be CLOSED
+// (status-only change, items untouched) but still not CANCELLED.
+test("20e) a backend refusal is shown as a Persian error and nothing changes (a purchase with a return can't be cancelled) — but it can be closed", async ({ page, request }) => {
   const purchaseId = await createPurchaseViaApi(request, 500_000, "RECEIVED");
   await createReturnViaApi(request, purchaseId);
   page.on("dialog", (dialog) => void dialog.accept());
   await page.goto(`/purchases/${purchaseId}`);
-  await statusActionButton(page, "بستن خرید").click();
+  await statusActionButton(page, "لغو خرید").click();
   await expect(page.getByRole("alert").filter({ hasText: "برگشت به تأمین‌کننده ثبت شده است" }).first()).toBeVisible();
   await expect(purchaseHeader(page)).toContainText("دریافت‌شده");
   // Not a stale-record refusal — the actions stay usable.
-  await expect(statusActionButton(page, "لغو خرید")).toBeEnabled();
+  await expect(statusActionButton(page, "بستن خرید")).toBeEnabled();
   expect((await getPurchase(request, purchaseId)).status).toBe("RECEIVED");
+
+  await statusActionButton(page, "بستن خرید").click();
+  await expect(page.getByRole("status").filter({ hasText: "خرید بسته شد." })).toBeVisible();
+  await expect(purchaseHeader(page)).toContainText("بسته‌شده");
+  await expectOnlyStatusActions(page, []);
+  expect((await getPurchase(request, purchaseId)).status).toBe("CLOSED");
 });
 
-test("20f) a purchase that already buys more than its request still moves through the status actions after re-confirming the overage", async ({ page, request }) => {
+// Since 2026-10-06 status actions use the status-only endpoint, which never
+// re-runs the item/overage checks — so no second (overage) confirm appears.
+test("20f) a purchase that already buys more than its request moves through the status actions without re-confirming the overage", async ({ page, request }) => {
   const md = await masterData(request);
   const name = `کره QA ${uniqueSuffix()}`;
   const pr = await createRequestViaApi(request, [{ name, quantity: 5 }]);
@@ -1599,10 +1701,7 @@ test("20f) a purchase that already buys more than its request still moves throug
   await page.goto(`/purchases/${purchaseId}`);
   await statusActionButton(page, "ثبت دریافت کالا").click();
   await expect(purchaseHeader(page)).toContainText("دریافت‌شده");
-  expect(messages).toEqual([
-    "آیا دریافت کالای این خرید را تأیید می‌کنید؟",
-    "مقدار این خرید بیش از مقدار باقی‌مانده درخواست خرید مرتبط است. با وجود این ادامه می‌دهید؟",
-  ]);
+  expect(messages).toEqual(["آیا دریافت کالای این خرید را تأیید می‌کنید؟"]);
   const after = await getPurchase(request, purchaseId);
   expect(after.status).toBe("RECEIVED");
   // The fulfillment link to the request line survived the status change.

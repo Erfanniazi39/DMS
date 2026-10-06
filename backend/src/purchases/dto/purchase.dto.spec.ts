@@ -1,4 +1,5 @@
 import {
+  changePurchaseStatusSchema,
   createPurchasePaymentSchema,
   createPurchaseReturnSchema,
   createPurchaseSchema,
@@ -128,6 +129,39 @@ describe('updatePurchaseSchema', () => {
       expect(result.data).not.toHaveProperty('paymentStatus');
       expect(result.data).not.toHaveProperty('totalAmount');
     }
+  });
+});
+
+describe('changePurchaseStatusSchema', () => {
+  const version = '2026-10-05T08:00:00.000Z';
+
+  it.each(['CONFIRMED', 'RECEIVED', 'CLOSED', 'CANCELLED'])('accepts target status %s with an updatedAt', (status) => {
+    const result = changePurchaseStatusSchema.safeParse({ status, updatedAt: version });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.status).toBe(status);
+      expect(result.data.updatedAt).toEqual(new Date(version));
+    }
+  });
+
+  it('never accepts DRAFT as a target (a purchase cannot go back to draft) or an unknown status', () => {
+    expectPersian(allMessages(changePurchaseStatusSchema.safeParse({ status: 'DRAFT', updatedAt: version })));
+    expectPersian(allMessages(changePurchaseStatusSchema.safeParse({ status: 'FOO', updatedAt: version })));
+  });
+
+  it('requires the optimistic-locking updatedAt and a status, with Persian messages', () => {
+    expectPersian(allMessages(changePurchaseStatusSchema.safeParse({ status: 'CLOSED' })));
+    expectPersian(allMessages(changePurchaseStatusSchema.safeParse({ status: 'CLOSED', updatedAt: 'abc' })));
+    expectPersian(allMessages(changePurchaseStatusSchema.safeParse({ updatedAt: version })));
+    expectPersian(allMessages(changePurchaseStatusSchema.safeParse('nope')));
+  });
+
+  it('strips everything except status/updatedAt — no items, money or derived fields ride along', () => {
+    const result = changePurchaseStatusSchema.safeParse({
+      status: 'CLOSED', updatedAt: version, items: [item], totalAmount: 1, paidAmount: 1, paymentStatus: 'PAID', supplierId: 2,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) expect(Object.keys(result.data).sort()).toEqual(['status', 'updatedAt']);
   });
 });
 
