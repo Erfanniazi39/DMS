@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { optionalTrimmedString } from '../../common/zod-fields';
+import { optionalMoney, optionalTrimmedString } from '../../common/zod-fields';
 
 // Shared "empty string means not provided" convention (common/zod-fields.ts)
 // — an empty form field is treated as omitted, not validated as empty.
@@ -16,6 +16,10 @@ export const createItemSchema = z.object({
   unitId: foreignKeyId('واحد کالا الزامی است'),
   description: optionalTrimmedString(2000),
   note: optionalTrimmedString(500),
+  // Default selling price, whole Rial (Decimal(15,0)) — optional: an item
+  // without one is priced manually on each sales line (later Sales batches).
+  // Blank/null = no default price.
+  sellingPrice: optionalMoney('قیمت فروش'),
   // Unlike Supplier, status is offered on the create form too — defaults
   // to active when omitted.
   status: z.enum(ITEM_STATUSES).default('active'),

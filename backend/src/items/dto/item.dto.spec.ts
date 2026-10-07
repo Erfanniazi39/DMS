@@ -28,6 +28,29 @@ describe('createItemSchema', () => {
   });
 });
 
+describe('createItemSchema sellingPrice', () => {
+  it('is optional; blank/null mean "no default price"', () => {
+    for (const sellingPrice of [undefined, null, '', '  ']) {
+      const result = createItemSchema.safeParse({ ...validItem, sellingPrice });
+      expect(result.success).toBe(true);
+      if (result.success) expect(result.data.sellingPrice).toBeUndefined();
+    }
+  });
+
+  it('accepts a whole-Rial amount (number or numeric string), including 0', () => {
+    const result = createItemSchema.safeParse({ ...validItem, sellingPrice: '125000' });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.sellingPrice).toBe(125000);
+    expect(createItemSchema.safeParse({ ...validItem, sellingPrice: 0 }).success).toBe(true);
+  });
+
+  it('rejects negative, fractional, oversized, or non-numeric prices', () => {
+    for (const sellingPrice of [-1, 10.5, 1e16, true, 'abc']) {
+      expect(createItemSchema.safeParse({ ...validItem, sellingPrice }).success).toBe(false);
+    }
+  });
+});
+
 describe('updateItemSchema', () => {
   it('requires an explicit valid status', () => {
     expect(updateItemSchema.safeParse({ ...validItem, status: 'inactive' }).success).toBe(true);

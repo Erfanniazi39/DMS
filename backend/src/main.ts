@@ -15,7 +15,9 @@ async function bootstrap() {
   //
   // Purchase documents are NOT served statically — they go through the
   // session- and permission-guarded PurchaseFilesController
-  // (GET /uploads/purchases/:filename, purchases.view). Only the employees
+  // (GET /uploads/purchases/:filename, purchases.view). Customer documents
+  // likewise go through CustomerFilesController (GET
+  // /uploads/customers/:filename, customers.view). Only the employees
   // folder is still mounted statically.
   // KNOWN GAP (QA 2026-10-05, not fixed here — out of the Purchases scope):
   // employee photos/contract documents are therefore still reachable with
@@ -23,6 +25,7 @@ async function bootstrap() {
   // guarded-route treatment (employees.view).
   mkdirSync(join(process.cwd(), 'uploads', 'employees'), { recursive: true });
   mkdirSync(join(process.cwd(), 'uploads', 'purchases'), { recursive: true });
+  mkdirSync(join(process.cwd(), 'uploads', 'customers'), { recursive: true });
   app.useStaticAssets(join(process.cwd(), 'uploads', 'employees'), { prefix: '/uploads/employees' });
 
   const PgSession = connectPgSimple(session);

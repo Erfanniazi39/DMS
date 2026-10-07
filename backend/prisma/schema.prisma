@@ -154,10 +154,10 @@ enum PurchaseRequestPriority {
 }
 
 model Department {
-  id                 Int              @id @default(autoincrement())
-  code               String           @unique
+  id                 Int               @id @default(autoincrement())
+  code               String            @unique
   name               String
-  status             DepartmentStatus @default(active)
+  status             DepartmentStatus  @default(active)
   note               String?
   employees          Employee[]
   // Purchases this department requested (Purchase.requesterDepartment) —
@@ -189,45 +189,45 @@ model Employee {
   photoPath     String?        @map("photo_path")
 
   // --- اطلاعات هویتی و خانوادگی (identity & family — all optional) ---
-  fatherName              String?         @map("father_name")
-  birthCertificateNumber  String?         @map("birth_certificate_number")
-  maritalStatus           MaritalStatus?  @map("marital_status")
-  childrenCount           Int?            @map("children_count")
-  gender                  Gender?
+  fatherName             String?        @map("father_name")
+  birthCertificateNumber String?        @map("birth_certificate_number")
+  maritalStatus          MaritalStatus? @map("marital_status")
+  childrenCount          Int?           @map("children_count")
+  gender                 Gender?
 
   // --- تحصیلات (education) ---
-  educationLevel          EducationLevel? @map("education_level")
+  educationLevel    EducationLevel? @map("education_level")
   // Only meaningful when educationLevel = under_diploma ("زیر دیپلم") —
   // which class/grade the employee completed, and what field/trade they
   // studied. Neither is enforced as an independent column rule — see
   // employee.dto.ts for the cross-field requirement.
-  belowDiplomaGrade       String?         @map("below_diploma_grade")
-  fieldOfStudy            String?         @map("field_of_study")
+  belowDiplomaGrade String?         @map("below_diploma_grade")
+  fieldOfStudy      String?         @map("field_of_study")
 
   // --- اطلاعات استخدام و قرارداد (employment & contract) ---
-  workLocation            String?         @map("work_location")
-  workingHours            String?         @map("working_hours")
-  contractType            ContractType?   @map("contract_type")
-  contractStartDate       DateTime?       @map("contract_start_date")
-  contractEndDate         DateTime?       @map("contract_end_date")
+  workLocation         String?       @map("work_location")
+  workingHours         String?       @map("working_hours")
+  contractType         ContractType? @map("contract_type")
+  contractStartDate    DateTime?     @map("contract_start_date")
+  contractEndDate      DateTime?     @map("contract_end_date")
   // Money — stored as a fixed-point Decimal, never a float. The pay period
   // (ماهانه/هفتگی/روزانه) is a separate column, not baked into the field
   // name, since the company pays some roles by the day or week.
-  salaryAmount            Decimal?        @map("salary_amount") @db.Decimal(12, 2)
-  salaryPeriod            SalaryPeriod?   @map("salary_period")
+  salaryAmount         Decimal?      @map("salary_amount") @db.Decimal(12, 2)
+  salaryPeriod         SalaryPeriod? @map("salary_period")
   // Free text — covers a plain account number, a card number, or a Sheba/IBAN,
   // whichever the company collects. Not validated against a specific format.
-  bankAccountNumber       String?         @map("bank_account_number")
+  bankAccountNumber    String?       @map("bank_account_number")
   // A scanned/photographed contract document (PDF or image), stored on disk
   // the same way photoPath is — only the relative URL is kept here, set
   // through its own upload endpoint, not through create/update.
-  contractDocumentPath    String?         @map("contract_document_path")
+  contractDocumentPath String?       @map("contract_document_path")
 
   // --- اطلاعات تماس و سایر (contact & other) ---
-  address                 String?
+  address String?
 
   // Purchases this employee bought (Purchase.buyerEmployee).
-  purchasesAsBuyer Purchase[]
+  purchasesAsBuyer            Purchase[]
   // Purchase Requests this employee personally raised (PurchaseRequest.requestedByEmployee) — optional, distinct from purchasesAsBuyer.
   purchaseRequestsAsRequester PurchaseRequest[]
 
@@ -236,43 +236,284 @@ model Employee {
 
 // Master data: a company the business buys from.
 model Supplier {
-  id         Int            @id @default(autoincrement())
-  code       String         @unique
-  name       String
+  id                Int            @id @default(autoincrement())
+  code              String         @unique
+  name              String
   // شناسه ملی — the supplier's national/legal registration id. Optional
   // (not every supplier record will have it on hand yet) but unique when
   // provided, same treatment as Employee.nationalId.
-  nationalId String?        @unique @map("national_id")
-  phone      String?
-  email      String?
-  address    String?
+  nationalId        String?        @unique @map("national_id")
+  phone             String?
+  email             String?
+  address           String?
   // --- اطلاعات بانکی (bank details — three separate fields, not one blob) ---
-  bankName          String? @map("bank_name")
-  bankAccountNumber String? @map("bank_account_number")
-  bankShebaNumber   String? @map("bank_sheba_number")
-  status     SupplierStatus @default(active)
-  note       String?
-  purchases  Purchase[]
+  bankName          String?        @map("bank_name")
+  bankAccountNumber String?        @map("bank_account_number")
+  bankShebaNumber   String?        @map("bank_sheba_number")
+  status            SupplierStatus @default(active)
+  note              String?
+  purchases         Purchase[]
 
   @@map("suppliers")
 }
 
-// مشتری — standalone master data for now (nothing references it until Sales
-// exists). Deliberately no status and no bank-information fields: per
-// database_plan.txt these are held back by request until a later update.
-model Customer {
-  id           Int          @id @default(autoincrement())
-  code         String       @unique
-  name         String
-  customerType CustomerType @map("customer_type")
-  phone        String
-  email        String?
-  address      String?
-  note         String?
-  createdAt    DateTime     @default(now()) @map("created_at")
-  updatedAt    DateTime     @updatedAt @map("updated_at")
+enum CustomerKind {
+  INDIVIDUAL
+  ORGANIZATION
+}
 
+enum CustomerStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+  ARCHIVED
+}
+
+enum CustomerAddressType {
+  BILLING
+  DELIVERY
+  OTHER
+}
+
+enum CustomerNoteType {
+  GENERAL
+  WARNING
+  DELIVERY
+  FINANCE
+}
+
+enum CustomerDocumentType {
+  BUSINESS_LICENSE
+  REGISTRATION
+  IDENTITY
+  CONTRACT
+  TAX
+  SCANNED_PAPER_RECORD
+  OTHER
+}
+
+enum ComplaintSeverity {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum ComplaintStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+}
+
+// Customer classification (replaces the old CustomerType enum — seeded with
+// the same four values/labels by the add_customer_module migration).
+model CustomerGroup {
+  id        Int        @id @default(autoincrement())
+  code      String     @unique
+  nameEn    String     @map("name_en")
+  nameFa    String     @map("name_fa")
+  isActive  Boolean    @default(true) @map("is_active")
+  sortOrder Int        @default(0) @map("sort_order")
+  customers Customer[]
+
+  @@map("customer_groups")
+}
+
+// Sales territory / region — optional on Customer.
+model Territory {
+  id        Int        @id @default(autoincrement())
+  code      String     @unique
+  nameEn    String     @map("name_en")
+  nameFa    String     @map("name_fa")
+  isActive  Boolean    @default(true) @map("is_active")
+  sortOrder Int        @default(0) @map("sort_order")
+  customers Customer[]
+
+  @@map("territories")
+}
+
+// Payment terms a customer may be granted (نقد / ۷ / ۱۵ / ۳۰ روزه seeded).
+// Not assigned by default — a new customer is cash-only until someone with
+// customers.finance sets a policy (business decision 6).
+model PaymentTerm {
+  id                Int                        @id @default(autoincrement())
+  code              String                     @unique
+  nameEn            String                     @map("name_en")
+  nameFa            String                     @map("name_fa")
+  dueDays           Int                        @default(0) @map("due_days")
+  isActive          Boolean                    @default(true) @map("is_active")
+  sortOrder         Int                        @default(0) @map("sort_order")
+  financialProfiles CustomerFinancialProfile[]
+
+  @@map("payment_terms")
+}
+
+// مشتری — governed customer master data (see CustomersService).
+// customerNumber ("CUS-000001") is
+// system-generated, same placeholder-then-fix pattern as
+// Purchase.purchaseNumber. legacyCode is the old user-typed `code` column,
+// renamed — searchable, unique, but never "the" customer number.
+model Customer {
+  id              Int            @id @default(autoincrement())
+  customerNumber  String         @unique @map("customer_number")
+  customerKind    CustomerKind   @map("customer_kind")
+  name            String
+  legalName       String?        @map("legal_name")
+  // Sensitive — never written to audit details/changes as a value.
+  nationalId      String?        @unique @map("national_id")
+  economicCode    String?        @map("economic_code")
+  legacyCode      String?        @unique @map("legacy_code")
+  phone           String
+  email           String?
+  customerGroupId Int            @map("customer_group_id")
+  customerGroup   CustomerGroup  @relation(fields: [customerGroupId], references: [id], onDelete: Restrict)
+  territoryId     Int?           @map("territory_id")
+  territory       Territory?     @relation(fields: [territoryId], references: [id])
+  status          CustomerStatus @default(ACTIVE)
+  statusReason    String?        @map("status_reason")
+  statusChangedAt DateTime?      @map("status_changed_at")
+  createdByUserId Int?           @map("created_by_user_id")
+  createdByUser   User?          @relation(fields: [createdByUserId], references: [id])
+  createdAt       DateTime       @default(now()) @map("created_at")
+  updatedAt       DateTime       @default(now()) @updatedAt @map("updated_at")
+
+  // --- Legacy columns (pre-2026-10-06 flat customer record) ---
+  // Kept in place, untouched, as a safety net: their data was copied into
+  // customerGroup / CustomerAddress / CustomerNote by the
+  // add_customer_module migration. Never read or written by the app.
+  // Dropping them is a separate future migration ("Migration B") that needs
+  // fresh explicit confirmation. customer_type was made nullable so new
+  // customers (which don't have one) can be inserted.
+  legacyCustomerType CustomerType? @map("customer_type")
+  legacyAddress      String?       @map("address")
+  legacyNote         String?       @map("note")
+
+  contacts         CustomerContact[]
+  addresses        CustomerAddress[]
+  financialProfile CustomerFinancialProfile?
+  notes            CustomerNote[]
+  documents        CustomerDocument[]
+  complaints       CustomerComplaint[]
+
+  @@index([customerGroupId])
+  @@index([status])
+  @@index([phone])
   @@map("customers")
+}
+
+model CustomerContact {
+  id         Int      @id @default(autoincrement())
+  customerId Int      @map("customer_id")
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  name       String
+  roleTitle  String?  @map("role_title")
+  mobile     String?
+  phone      String?
+  email      String?
+  isPrimary  Boolean  @default(false) @map("is_primary")
+  isActive   Boolean  @default(true) @map("is_active")
+  note       String?
+
+  @@index([customerId])
+  @@map("customer_contacts")
+}
+
+model CustomerAddress {
+  id                   Int                 @id @default(autoincrement())
+  customerId           Int                 @map("customer_id")
+  customer             Customer            @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  addressType          CustomerAddressType @map("address_type")
+  label                String?
+  province             String?
+  city                 String?
+  addressLine          String              @map("address_line")
+  postalCode           String?             @map("postal_code")
+  phone                String?
+  deliveryInstructions String?             @map("delivery_instructions")
+  // At most one default per (customer, addressType) — enforced by
+  // CustomerAddressesService, not a DB constraint.
+  isDefault            Boolean             @default(false) @map("is_default")
+  isActive             Boolean             @default(true) @map("is_active")
+
+  @@index([customerId])
+  @@map("customer_addresses")
+}
+
+// Credit/payment policy — one row per customer, created empty with the
+// customer. Edited only with customers.finance. No balance here: balances
+// belong to the future Sales/finance modules.
+model CustomerFinancialProfile {
+  id                     Int            @id @default(autoincrement())
+  customerId             Int            @unique @map("customer_id")
+  customer               Customer       @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  paymentTermId          Int?           @map("payment_term_id")
+  paymentTerm            PaymentTerm?   @relation(fields: [paymentTermId], references: [id])
+  preferredPaymentMethod PaymentMethod? @map("preferred_payment_method")
+  creditLimit            Decimal?       @map("credit_limit") @db.Decimal(15, 0)
+  creditHold             Boolean        @default(false) @map("credit_hold")
+  creditHoldReason       String?        @map("credit_hold_reason")
+  updatedAt              DateTime       @default(now()) @updatedAt @map("updated_at")
+
+  @@map("customer_financial_profiles")
+}
+
+model CustomerNote {
+  id              Int              @id @default(autoincrement())
+  customerId      Int              @map("customer_id")
+  customer        Customer         @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  noteType        CustomerNoteType @default(GENERAL) @map("note_type")
+  body            String
+  isPinned        Boolean          @default(false) @map("is_pinned")
+  createdByUserId Int?             @map("created_by_user_id")
+  createdByUser   User?            @relation(fields: [createdByUserId], references: [id])
+  createdAt       DateTime         @default(now()) @map("created_at")
+
+  @@index([customerId])
+  @@map("customer_notes")
+}
+
+model CustomerDocument {
+  id               Int                  @id @default(autoincrement())
+  customerId       Int                  @map("customer_id")
+  customer         Customer             @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  documentType     CustomerDocumentType @map("document_type")
+  documentNumber   String?              @map("document_number")
+  date             DateTime?
+  expiresAt        DateTime?            @map("expires_at")
+  // Set by its own upload endpoint (metadata first, file second — same as
+  // PurchaseDocument.filePath). Served only via the guarded
+  // /uploads/customers/:filename route.
+  filePath         String?              @map("file_path")
+  note             String?
+  uploadedByUserId Int?                 @map("uploaded_by_user_id")
+  uploadedByUser   User?                @relation(fields: [uploadedByUserId], references: [id])
+  createdAt        DateTime             @default(now()) @map("created_at")
+
+  @@index([customerId])
+  @@map("customer_documents")
+}
+
+// Minimal complaint/issue register (business decision 8). No linked
+// transaction — there is no Sales module yet.
+model CustomerComplaint {
+  id              Int               @id @default(autoincrement())
+  customerId      Int               @map("customer_id")
+  customer        Customer          @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  date            DateTime
+  category        String
+  description     String
+  severity        ComplaintSeverity @default(MEDIUM)
+  status          ComplaintStatus   @default(OPEN)
+  resolution      String?
+  ownerUserId     Int?              @map("owner_user_id")
+  ownerUser       User?             @relation("CustomerComplaintOwner", fields: [ownerUserId], references: [id])
+  createdByUserId Int?              @map("created_by_user_id")
+  createdByUser   User?             @relation("CustomerComplaintCreatedBy", fields: [createdByUserId], references: [id])
+  createdAt       DateTime          @default(now()) @map("created_at")
+  updatedAt       DateTime          @default(now()) @updatedAt @map("updated_at")
+
+  @@index([customerId])
+  @@map("customer_complaints")
 }
 
 // Master data shared by Purchase Item (and, later, Sales Item) — see
@@ -310,16 +551,25 @@ model ItemCategory {
 // PurchaseRequestItem keep a free-text name and never reference this table.
 // Will be referenced by SalesItem once Sales exists.
 model Item {
-  id          Int          @id @default(autoincrement())
-  code        String       @unique
-  name        String
-  categoryId  Int          @map("category_id")
-  category    ItemCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
-  unitId      Int          @map("unit_id")
-  unit        Unit         @relation(fields: [unitId], references: [id], onDelete: Restrict)
-  description String?
-  status      ItemStatus   @default(active)
-  note        String?
+  id                   Int                   @id @default(autoincrement())
+  code                 String                @unique
+  name                 String
+  categoryId           Int                   @map("category_id")
+  category             ItemCategory          @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  unitId               Int                   @map("unit_id")
+  unit                 Unit                  @relation(fields: [unitId], references: [id], onDelete: Restrict)
+  description          String?
+  status               ItemStatus            @default(active)
+  note                 String?
+  // Default selling price (Rial, same precision as Purchase.totalAmount).
+  // Optional — an item without one is priced manually on each sales line
+  // (Sales batches, later). Only a default; never a historical fact.
+  sellingPrice         Decimal?              @map("selling_price") @db.Decimal(15, 0)
+  // Inventory (stock ledger) — all Restrict: an item with stock history
+  // can't be deleted, only deactivated.
+  stockBalances        StockBalance[]
+  stockMovements       StockMovement[]
+  stockAdjustmentItems StockAdjustmentItem[]
 
   @@index([categoryId])
   @@index([unitId])
@@ -590,6 +840,175 @@ model PurchaseReturnItem {
   @@map("purchase_return_items")
 }
 
+// ---------------------------------------------------------------------------
+// Document numbering (Sales batch 1, 2026-10-06)
+// ---------------------------------------------------------------------------
+
+// Gap-free per-type, per-Jalali-year counter. Incremented via an atomic
+// UPDATE … SET last_value = last_value + 1 RETURNING inside the posting
+// transaction — the row lock serializes concurrent posts; a rollback rolls
+// the increment back too, so there are never gaps. Drafts carry no number.
+// See backend/src/common/document-sequence.ts (the only writer).
+model DocumentSequence {
+  docType    String @map("doc_type") // "ADJ" today; "SO","DN","INV","RMA","CN","RCP" in later batches
+  fiscalYear Int    @map("fiscal_year") // Jalali year, e.g. 1405
+  lastValue  Int    @default(0) @map("last_value")
+
+  @@id([docType, fiscalYear])
+  @@map("document_sequences")
+}
+
+// ---------------------------------------------------------------------------
+// Inventory (stock ledger) — Sales batch 1, 2026-10-06.
+// StockMovement/StockBalance are written ONLY by
+// backend/src/inventory/stock-ledger.ts (applyMovements), always inside the
+// same transaction as the source document (CLAUDE.md rule 10).
+// ---------------------------------------------------------------------------
+
+enum StockBucket {
+  ON_HAND
+  RESERVED
+  QC
+}
+
+enum StockMovementType {
+  OPENING_BALANCE
+  MANUAL_RECEIPT
+  ADJUSTMENT_IN
+  ADJUSTMENT_OUT
+  RESERVE
+  RELEASE
+  DELIVERY_ISSUE
+  RETURN_RECEIPT
+  RETURN_RESTOCK
+  RETURN_WRITE_OFF
+}
+
+// What kind of source document a StockMovement came from. Deliberately NOT
+// a foreign key (business decision 2026-10-06, resolving CLAUDE.md rule 9):
+// referenceId/referenceLineId are the source header/line ids, enforced
+// procedurally by stock-ledger.ts. A new source module adds an enum value,
+// not a schema relation.
+enum StockReferenceType {
+  STOCK_ADJUSTMENT
+  SALES_ORDER
+  DELIVERY
+  SALES_RETURN
+}
+
+enum StockAdjustmentKind {
+  OPENING
+  RECEIPT
+  CORRECTION
+}
+
+enum StockDocumentStatus {
+  DRAFT
+  POSTED
+}
+
+// Single warehouse for now (one seeded MAIN row, no management UI); the
+// locationId on every stock row keeps multi-warehouse additive later.
+model InventoryLocation {
+  id               Int               @id @default(autoincrement())
+  code             String            @unique
+  name             String
+  isActive         Boolean           @default(true) @map("is_active")
+  isDefault        Boolean           @default(false) @map("is_default")
+  note             String?
+  stockBalances    StockBalance[]
+  stockMovements   StockMovement[]
+  stockAdjustments StockAdjustment[]
+
+  @@map("inventory_locations")
+}
+
+// Running balance per item+location, per bucket. Always equal to the SUM of
+// that item+location+bucket's StockMovement rows (InventoryService
+// .verifyBalances() checks this).
+model StockBalance {
+  id         Int               @id @default(autoincrement())
+  itemId     Int               @map("item_id")
+  item       Item              @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  locationId Int               @map("location_id")
+  location   InventoryLocation @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  onHand     Decimal           @default(0) @map("on_hand") @db.Decimal(12, 2)
+  reserved   Decimal           @default(0) @db.Decimal(12, 2)
+  qc         Decimal           @default(0) @db.Decimal(12, 2)
+  updatedAt  DateTime          @default(now()) @updatedAt @map("updated_at")
+
+  @@unique([itemId, locationId])
+  @@map("stock_balances")
+}
+
+// Append-only. No update/delete code path should ever exist; corrections are new rows.
+model StockMovement {
+  id              Int                @id @default(autoincrement())
+  itemId          Int                @map("item_id")
+  item            Item               @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  locationId      Int                @map("location_id")
+  location        InventoryLocation  @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  bucket          StockBucket
+  movementType    StockMovementType  @map("movement_type")
+  quantity        Decimal            @db.Decimal(12, 2) // signed
+  movementDate    DateTime           @map("movement_date")
+  referenceType   StockReferenceType @map("reference_type")
+  referenceId     Int                @map("reference_id")
+  referenceLineId Int?               @map("reference_line_id")
+  referenceNumber String?            @map("reference_number")
+  note            String?
+  createdByUserId Int?               @map("created_by_user_id")
+  createdByUser   User?              @relation("StockMovementCreatedBy", fields: [createdByUserId], references: [id])
+  createdAt       DateTime           @default(now()) @map("created_at")
+
+  @@index([itemId, locationId])
+  @@index([referenceType, referenceId])
+  @@map("stock_movements")
+}
+
+// Manual stock receipt/adjustment document ("رسید/اصلاح موجودی") — the only
+// way stock enters the system (no Purchases/Production integration, rule 7).
+// DRAFT is editable/deletable; POSTED is immutable and carries the
+// gap-free number (ADJ-<jalali year>-000001) assigned at posting.
+model StockAdjustment {
+  id               Int                   @id @default(autoincrement())
+  adjustmentNumber String?               @unique @map("adjustment_number")
+  kind             StockAdjustmentKind
+  status           StockDocumentStatus   @default(DRAFT)
+  locationId       Int                   @map("location_id")
+  location         InventoryLocation     @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  adjustmentDate   DateTime              @map("adjustment_date")
+  reason           String
+  note             String?
+  createdByUserId  Int?                  @map("created_by_user_id")
+  createdByUser    User?                 @relation("StockAdjustmentCreatedBy", fields: [createdByUserId], references: [id])
+  postedByUserId   Int?                  @map("posted_by_user_id")
+  postedByUser     User?                 @relation("StockAdjustmentPostedBy", fields: [postedByUserId], references: [id])
+  postedAt         DateTime?             @map("posted_at")
+  createdAt        DateTime              @default(now()) @map("created_at")
+  updatedAt        DateTime              @default(now()) @updatedAt @map("updated_at")
+  items            StockAdjustmentItem[]
+
+  @@index([status])
+  @@map("stock_adjustments")
+}
+
+model StockAdjustmentItem {
+  id                Int             @id @default(autoincrement())
+  // Cascade — only draft lines are ever deleted (a posted adjustment has no
+  // delete path).
+  stockAdjustmentId Int             @map("stock_adjustment_id")
+  stockAdjustment   StockAdjustment @relation(fields: [stockAdjustmentId], references: [id], onDelete: Cascade)
+  itemId            Int             @map("item_id")
+  item              Item            @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  quantity          Decimal         @db.Decimal(12, 2) // signed for CORRECTION, positive otherwise
+  note              String?
+
+  @@index([stockAdjustmentId])
+  @@index([itemId])
+  @@map("stock_adjustment_items")
+}
+
 model Role {
   id          Int              @id @default(autoincrement())
   name        String           @unique
@@ -622,24 +1041,35 @@ model RolePermission {
 // A person's Employee record (Master Data) and their User account (if any)
 // are separate, unrelated entities — see database_plan.txt at the project root.
 model User {
-  id           Int              @id @default(autoincrement())
-  username     String           @unique
-  passwordHash String           @map("password_hash")
-  email        String?
-  phone        String?
-  roleId       Int              @map("role_id")
-  role         Role             @relation(fields: [roleId], references: [id])
-  status       UserStatus       @default(ACTIVE)
-  createdAt    DateTime         @default(now()) @map("created_at")
-  lastLoginAt  DateTime?        @map("last_login_at")
-  auditLogs    AuditLog[]
-  permissions  UserPermission[]
+  id                        Int                 @id @default(autoincrement())
+  username                  String              @unique
+  passwordHash              String              @map("password_hash")
+  email                     String?
+  phone                     String?
+  roleId                    Int                 @map("role_id")
+  role                      Role                @relation(fields: [roleId], references: [id])
+  status                    UserStatus          @default(ACTIVE)
+  createdAt                 DateTime            @default(now()) @map("created_at")
+  lastLoginAt               DateTime?           @map("last_login_at")
+  auditLogs                 AuditLog[]
+  permissions               UserPermission[]
   // Purchase Requests this account entered (PurchaseRequest.createdByUser) — data-entry
   // provenance, distinct from requestedByEmployee (who actually asked for it).
-  createdPurchaseRequests PurchaseRequest[]
+  createdPurchaseRequests   PurchaseRequest[]
   // Returns-to-vendor this account entered (PurchaseReturn.createdByUser) —
   // same data-entry provenance meaning as createdPurchaseRequests above.
-  createdPurchaseReturns  PurchaseReturn[]
+  createdPurchaseReturns    PurchaseReturn[]
+  // Customer-module data-entry provenance — same meaning as above.
+  createdCustomers          Customer[]
+  customerNotes             CustomerNote[]
+  uploadedCustomerDocuments CustomerDocument[]
+  ownedCustomerComplaints   CustomerComplaint[] @relation("CustomerComplaintOwner")
+  createdCustomerComplaints CustomerComplaint[] @relation("CustomerComplaintCreatedBy")
+  // Inventory data-entry provenance — same meaning as above. Each *ByUserId
+  // field has its own named relation.
+  createdStockMovements     StockMovement[]     @relation("StockMovementCreatedBy")
+  createdStockAdjustments   StockAdjustment[]   @relation("StockAdjustmentCreatedBy")
+  postedStockAdjustments    StockAdjustment[]   @relation("StockAdjustmentPostedBy")
 
   @@map("users")
 }
@@ -664,6 +1094,10 @@ model AuditLog {
   createdAt  DateTime @default(now()) @map("created_at")
   details    String?
   ipAddress  String?  @map("ip_address")
+  // Optional field-level diff: [{ field, from, to }]. Sensitive fields
+  // (e.g. Customer.nationalId) are recorded as "changed" with masked values,
+  // never the real value. See AuditService.log().
+  changes    Json?
 
   @@map("audit_logs")
 }

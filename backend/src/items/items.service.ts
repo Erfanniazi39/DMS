@@ -2,7 +2,7 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException }
 import { ItemStatus, Prisma } from '@prisma/client';
 import { toSkipTake, type PaginationParams } from '../common/pagination';
 import { PrismaService } from '../prisma/prisma.service';
-import { AUDIT_ENTITY, AuditService } from '../audit/audit.service';
+import { AUDIT_ENTITY, AuditService, diffChanges } from '../audit/audit.service';
 import type { CreateItemDto, UpdateItemDto } from './dto/item.dto';
 
 export type ItemListFilters = { q?: string; status?: string; categoryId?: string };
@@ -73,6 +73,7 @@ export class ItemsService {
         unitId: dto.unitId,
         description: dto.description,
         note: dto.note,
+        sellingPrice: dto.sellingPrice,
         status: dto.status,
       },
       include: itemInclude,
@@ -94,17 +95,30 @@ export class ItemsService {
         unitId: dto.unitId,
         description: dto.description ?? null,
         note: dto.note ?? null,
+        // Full-record form: omitted/blank clears the default price.
+        sellingPrice: dto.sellingPrice ?? null,
         status: dto.status,
       },
       include: itemInclude,
     });
-    await this.audit.log({ userId, ipAddress, action: 'ITEM_UPDATED', entityType: AUDIT_ENTITY.ITEM, entityId: id, details: updated.code });
+    // The default selling price is recorded field-level (from → to) so a
+    // price change is never a silent overwrite.
+    await this.audit.log({
+      userId,
+      ipAddress,
+      action: 'ITEM_UPDATED',
+      entityType: AUDIT_ENTITY.ITEM,
+      entityId: id,
+      details: updated.code,
+      changes: diffChanges(existing, updated, ['sellingPrice']),
+    });
     return updated;
   }
 
-  // Nothing references Item yet. Once SalesItem exists its FK will be
-  // onDelete: Restrict, and P2003 below turns that into a clear message
-  // instead of a 500 — the fallback there is setting status=inactive.
+  // Inventory references Item (StockBalance/StockMovement/
+  // StockAdjustmentItem, all onDelete: Restrict), and SalesItem will too.
+  // P2003 below turns that into a clear message instead of a 500 — the
+  // fallback there is setting status=inactive.
   async remove(id: number, userId: number | null = null, ipAddress?: string) {
     const item = await this.get(id);
     try {

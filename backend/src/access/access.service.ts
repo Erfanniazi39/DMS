@@ -8,6 +8,11 @@ export const PERMISSION_CATALOG = [
   { code: 'suppliers.manage', label: 'مدیریت تأمین‌کنندگان', module: 'تأمین‌کنندگان' },
   { code: 'customers.view', label: 'مشاهده مشتریان', module: 'مشتریان' },
   { code: 'customers.manage', label: 'مدیریت مشتریان', module: 'مشتریان' },
+  // Editing a customer's credit/payment policy (CustomerFinancialProfile) —
+  // deliberately separate from customers.manage (business decision 2026-10-06).
+  { code: 'customers.finance', label: 'مدیریت اطلاعات مالی مشتریان', module: 'مشتریان' },
+  // Moving a customer into or out of ARCHIVED status.
+  { code: 'customers.archive', label: 'بایگانی مشتریان', module: 'مشتریان' },
   { code: 'employees.view', label: 'مشاهده کارکنان', module: 'کارکنان' },
   { code: 'employees.manage', label: 'مدیریت کارکنان', module: 'کارکنان' },
   { code: 'purchases.view', label: 'مشاهده خرید', module: 'خرید' },
@@ -16,8 +21,21 @@ export const PERMISSION_CATALOG = [
   // Covers both Item and Item Category (one master-data domain).
   { code: 'items.view', label: 'مشاهده کالاها', module: 'کالاها' },
   { code: 'items.manage', label: 'مدیریت کالاها', module: 'کالاها' },
+  // Sales permission set (Sales batch 1, 2026-10-06) — all added at once so
+  // the seed only changes once; most get their routes in later batches.
+  // Separation of duties: no single role sells, delivers and collects.
+  { code: 'sales.view', label: 'مشاهده فروش', module: 'فروش' },
   { code: 'sales.manage', label: 'مدیریت فروش', module: 'فروش' },
   { code: 'sales.edit', label: 'ویرایش فروش', module: 'فروش' },
+  { code: 'sales.approve', label: 'تأیید فروش', module: 'فروش' },
+  { code: 'sales.deliver', label: 'تحویل کالا', module: 'فروش' },
+  { code: 'sales.invoice', label: 'صدور فاکتور', module: 'فروش' },
+  { code: 'receivables.view', label: 'مشاهده مطالبات', module: 'مطالبات' },
+  { code: 'receivables.manage', label: 'مدیریت دریافت‌ها', module: 'مطالبات' },
+  // Inventory: view = stock list + adjustment documents; adjust = create/
+  // edit/post/delete stock adjustment documents.
+  { code: 'inventory.view', label: 'مشاهده موجودی', module: 'موجودی' },
+  { code: 'inventory.adjust', label: 'اصلاح موجودی', module: 'موجودی' },
   { code: 'documents.upload', label: 'بارگذاری اسناد', module: 'اسناد' },
   { code: 'reports.view', label: 'مشاهده گزارش‌ها', module: 'گزارش‌ها' },
 ] as const;

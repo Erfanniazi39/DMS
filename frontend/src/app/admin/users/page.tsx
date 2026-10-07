@@ -8,10 +8,10 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { apiFetch, type ApiError } from "@/lib/api";
-import { ROLE_LABELS, roleLabel } from "@/lib/roles";
+import { ROLE_LABELS, roleLabel, type RoleName } from "@/lib/roles";
 
 type UserStatus = "ACTIVE" | "DISABLED" | "LOCKED";
-type UserRole = "ADMIN" | "DATA_OPERATOR" | "PURCHASE_MANAGER" | "SALES_MANAGER" | "VIEWER";
+type UserRole = RoleName;
 // USER records only — no Employee data is joined in or displayed here.
 type UserRecord = {
   id: number;
@@ -30,7 +30,7 @@ const statusLabels: Record<UserStatus, string> = {
   LOCKED: "قفل‌شده",
 };
 
-const roleOptions: UserRole[] = ["ADMIN", "DATA_OPERATOR", "PURCHASE_MANAGER", "SALES_MANAGER", "VIEWER"];
+const roleOptions = Object.keys(ROLE_LABELS) as UserRole[];
 const statusOptions: UserStatus[] = ["ACTIVE", "DISABLED", "LOCKED"];
 
 function formatDate(value: string | null) {

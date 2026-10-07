@@ -4,7 +4,13 @@ import { randomBytes } from 'node:crypto';
 
 const prisma = new PrismaClient();
 
-const ROLES = ['ADMIN', 'DATA_OPERATOR', 'PURCHASE_MANAGER', 'SALES_MANAGER', 'VIEWER'] as const;
+// SALESPERSON / WAREHOUSE / ACCOUNTANT added in Sales batch 1 (2026-10-06):
+// separation of duties — no single person should sell, deliver, and collect.
+const ROLES = ['ADMIN', 'DATA_OPERATOR', 'PURCHASE_MANAGER', 'SALES_MANAGER', 'VIEWER', 'SALESPERSON', 'WAREHOUSE', 'ACCOUNTANT'] as const;
+
+// Single warehouse for now (business decision 2026-10-06) — the default
+// InventoryLocation that stock adjustments post to when no location is given.
+const DEFAULT_INVENTORY_LOCATION = { code: 'MAIN', name: 'انبار مرکزی' } as const;
 
 // Purchase Type seed list — exact codes from database_plan.txt.
 const PURCHASE_TYPES = [
@@ -61,6 +67,11 @@ const PERMISSIONS = [
   'suppliers.manage',
   'customers.view',
   'customers.manage',
+  // Customer credit/payment policy and archive/unarchive (2026-10-06).
+  // Granted to ADMIN only (via PERMISSIONS below) — which other roles get
+  // them is a business decision not yet made.
+  'customers.finance',
+  'customers.archive',
   'employees.view',
   'employees.manage',
   'purchases.view',
@@ -69,8 +80,18 @@ const PERMISSIONS = [
   // Item + Item Category master data (one permission pair for both).
   'items.view',
   'items.manage',
+  // Sales / receivables / inventory set (Sales batch 1, 2026-10-06) — keep
+  // in sync with PERMISSION_CATALOG in src/access/access.service.ts.
+  'sales.view',
   'sales.manage',
   'sales.edit',
+  'sales.approve',
+  'sales.deliver',
+  'sales.invoice',
+  'receivables.view',
+  'receivables.manage',
+  'inventory.view',
+  'inventory.adjust',
   'documents.upload',
   'reports.view',
 ] as const;
@@ -105,15 +126,34 @@ async function main() {
 
   const rolePermissions = {
     ADMIN: PERMISSIONS,
-    DATA_OPERATOR: ['suppliers.view', 'suppliers.manage', 'customers.view', 'customers.manage', 'employees.view', 'employees.manage', 'purchases.view', 'purchases.manage', 'purchases.edit', 'items.view', 'items.manage', 'sales.manage', 'sales.edit', 'documents.upload', 'reports.view'],
+    // Sales narrowed to sales.view only (business decision 2026-10-06,
+    // separation of duties) — sales.manage/sales.edit are revoked below.
+    DATA_OPERATOR: ['suppliers.view', 'suppliers.manage', 'customers.view', 'customers.manage', 'employees.view', 'employees.manage', 'purchases.view', 'purchases.manage', 'purchases.edit', 'items.view', 'items.manage', 'sales.view', 'documents.upload', 'reports.view'],
     // employees.view (without employees.manage) is deliberate: the Purchase and
     // Purchase Request forms load GET /employees for buyer/requester dropdowns.
     PURCHASE_MANAGER: ['suppliers.view', 'suppliers.manage', 'employees.view', 'purchases.view', 'purchases.manage', 'purchases.edit', 'documents.upload', 'reports.view'],
     // items.* granted ahead of Sales: SalesItem will reference Item.
     // customers.* granted ahead of Sales too: Customer is sales-side master data.
-    SALES_MANAGER: ['customers.view', 'customers.manage', 'items.view', 'items.manage', 'sales.manage', 'sales.edit', 'documents.upload', 'reports.view'],
+    // Sales batch 1: + sales.view/approve/invoice, receivables.view,
+    // inventory.view. NOT receivables.manage — a manager sees money owed but
+    // doesn't record/allocate payments (separation of duties).
+    SALES_MANAGER: ['customers.view', 'customers.manage', 'items.view', 'items.manage', 'sales.view', 'sales.manage', 'sales.edit', 'sales.approve', 'sales.invoice', 'receivables.view', 'inventory.view', 'documents.upload', 'reports.view'],
     VIEWER: ['reports.view'],
+    // New roles, Sales batch 1 (2026-10-06).
+    SALESPERSON: ['sales.view', 'sales.manage', 'customers.view', 'items.view', 'inventory.view'],
+    WAREHOUSE: ['sales.view', 'sales.deliver', 'inventory.view', 'inventory.adjust'],
+    ACCOUNTANT: ['sales.view', 'sales.invoice', 'receivables.view', 'receivables.manage', 'customers.finance'],
   } as const;
+
+  // The grants above are upserted (additive) — that alone can never take a
+  // permission away from a role on an existing database. Explicit, targeted
+  // revocations go here instead. Deliberately NOT a full "sync role to this
+  // list": that would also wipe any grant an admin added through the
+  // roles UI. Per-user extra grants (user_permissions) are not touched.
+  const revokedRolePermissions: Record<string, readonly string[]> = {
+    // Business decision 2026-10-06: DATA_OPERATOR keeps sales.view only.
+    DATA_OPERATOR: ['sales.manage', 'sales.edit'],
+  };
 
   const allPermissions = await prisma.permission.findMany();
 
@@ -128,6 +168,12 @@ async function main() {
         create: { roleId: role.id, permissionId: permission.id },
       });
     }
+  }
+
+  for (const [roleName, permissionNames] of Object.entries(revokedRolePermissions)) {
+    const role = await prisma.role.findUniqueOrThrow({ where: { name: roleName } });
+    const permissionIds = allPermissions.filter(({ name }) => permissionNames.includes(name)).map(({ id }) => id);
+    await prisma.rolePermission.deleteMany({ where: { roleId: role.id, permissionId: { in: permissionIds } } });
   }
 
   const adminRole = await prisma.role.findUniqueOrThrow({ where: { name: 'ADMIN' } });
@@ -165,6 +211,12 @@ async function main() {
     where: { code: OTHER_SUPPLIER.code },
     update: {},
     create: { ...OTHER_SUPPLIER, status: 'active' },
+  });
+
+  await prisma.inventoryLocation.upsert({
+    where: { code: DEFAULT_INVENTORY_LOCATION.code },
+    update: {},
+    create: { ...DEFAULT_INVENTORY_LOCATION, isActive: true, isDefault: true },
   });
 
   const existingAdmin = await prisma.user.findUnique({ where: { username: 'admin' } });

@@ -17,6 +17,13 @@ describe('createUserSchema', () => {
     }
   });
 
+  it('accepts the Sales-batch-1 roles (SALESPERSON / WAREHOUSE / ACCOUNTANT) and rejects unknown ones', () => {
+    for (const roleName of ['SALESPERSON', 'WAREHOUSE', 'ACCOUNTANT']) {
+      expect(createUserSchema.safeParse({ username: 'test-user', password: '12345678', roleName }).success).toBe(true);
+    }
+    expect(createUserSchema.safeParse({ username: 'test-user', password: '12345678', roleName: 'CASHIER' }).success).toBe(false);
+  });
+
   it('does not require email or phone', () => {
     const result = createUserSchema.safeParse({
       username: 'test-user',

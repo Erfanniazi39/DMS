@@ -10,6 +10,8 @@ import { Label } from "@/components/ui/label";
 import { LIST_PAGE_SIZE, ListPagination, totalPages, type Paginated } from "@/components/ui/list-pagination";
 import { useToasts, ToastViewport } from "@/components/ui/toast";
 import { apiFetch, type ApiError } from "@/lib/api";
+import { formatMoney } from "@/lib/format";
+import { normalizeDigits } from "@/lib/number-input";
 import { useAdminUser } from "@/app/admin/layout";
 
 // Item = things the company produces/sells. It is NOT a purchasing catalog
@@ -28,6 +30,9 @@ type Item = {
   description: string | null;
   status: ItemStatus;
   note: string | null;
+  // Default selling price (Rial). Decimal → JSON string; null = none (priced
+  // manually on each sales line).
+  sellingPrice: string | null;
 };
 type FormState = {
   code: string;
@@ -37,10 +42,11 @@ type FormState = {
   description: string;
   status: ItemStatus;
   note: string;
+  sellingPrice: string;
 };
 type StatusFilter = "all" | ItemStatus;
 
-const emptyForm: FormState = { code: "", name: "", categoryId: "", unitId: "", description: "", status: "active", note: "" };
+const emptyForm: FormState = { code: "", name: "", categoryId: "", unitId: "", description: "", status: "active", note: "", sellingPrice: "" };
 const statusLabels: Record<ItemStatus, string> = { active: "فعال", inactive: "غیرفعال" };
 const textareaClass = "min-h-16 rounded-md border border-input bg-transparent px-3 py-2 text-sm outline-none placeholder:text-muted-foreground";
 const selectClass = "h-9 rounded-md border border-input bg-transparent px-3 text-sm";
@@ -173,6 +179,7 @@ export default function ItemsPage() {
       description: item.description ?? "",
       status: item.status,
       note: item.note ?? "",
+      sellingPrice: item.sellingPrice ?? "",
     });
     setFormOpen(true);
   }
@@ -192,6 +199,9 @@ export default function ItemsPage() {
     if (!form.name.trim()) missing.push("نام کالا الزامی است.");
     if (!form.categoryId) missing.push("انتخاب دسته‌بندی الزامی است.");
     if (!form.unitId) missing.push("انتخاب واحد الزامی است.");
+    // Optional; when given, a whole Rial amount (the backend re-validates).
+    const sellingPrice = normalizeDigits(form.sellingPrice).trim();
+    if (sellingPrice !== "" && !/^\d+$/.test(sellingPrice)) missing.push("قیمت فروش باید عدد صحیح (ریال، بدون اعشار) باشد.");
     if (missing.length) {
       pushErrors(missing);
       return;
@@ -206,6 +216,8 @@ export default function ItemsPage() {
         description: form.description.trim(),
         status: form.status,
         note: form.note.trim(),
+        // Blank = no default price (also clears it on edit).
+        sellingPrice: sellingPrice === "" ? null : Number(sellingPrice),
       };
       await apiFetch(editingItem ? `/items/${editingItem.id}` : "/items", {
         method: editingItem ? "PATCH" : "POST",
@@ -345,6 +357,7 @@ export default function ItemsPage() {
                       <th className="px-4 py-3 font-medium">کالا</th>
                       <th className="px-4 py-3 font-medium">دسته‌بندی</th>
                       <th className="px-4 py-3 font-medium">واحد</th>
+                      <th className="px-4 py-3 font-medium">قیمت فروش (ریال)</th>
                       <th className="px-4 py-3 font-medium">وضعیت</th>
                       {canManage ? <th className="px-4 py-3 font-medium">عملیات</th> : null}
                     </tr>
@@ -358,6 +371,7 @@ export default function ItemsPage() {
                         </td>
                         <td className="px-4 py-3 text-muted-foreground">{item.category.nameFa}</td>
                         <td className="px-4 py-3 text-muted-foreground">{item.unit.nameFa}</td>
+                        <td className="px-4 py-3 tabular-nums text-muted-foreground">{formatMoney(item.sellingPrice)}</td>
                         <td className="px-4 py-3">
                           <span
                             className={`inline-flex rounded px-2 py-0.5 text-xs ${
@@ -455,6 +469,17 @@ export default function ItemsPage() {
                   <option value="inactive">غیرفعال</option>
                 </select>
               </div>
+              <div className="flex flex-col gap-2">
+                <Label htmlFor="item-selling-price">قیمت فروش (ریال)</Label>
+                <Input
+                  id="item-selling-price"
+                  dir="ltr"
+                  inputMode="numeric"
+                  placeholder="اختیاری"
+                  value={form.sellingPrice}
+                  onChange={(event) => update("sellingPrice", event.target.value)}
+                />
+              </div>
               <div className="flex flex-col gap-2 md:col-span-2">
                 <Label htmlFor="item-description">توضیحات</Label>
                 <textarea
@@ -515,6 +540,10 @@ export default function ItemsPage() {
                   <div>
                     <dt className="text-xs text-muted-foreground">وضعیت</dt>
                     <dd className="mt-1">{statusLabels[detailItem.status]}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-xs text-muted-foreground">قیمت فروش</dt>
+                    <dd className="mt-1 tabular-nums">{detailItem.sellingPrice ? `${formatMoney(detailItem.sellingPrice)} ریال` : "-"}</dd>
                   </div>
                 </dl>
                 <div className="border-t border-border pt-4">

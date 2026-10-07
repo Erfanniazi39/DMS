@@ -179,6 +179,24 @@ describe('ItemsService', () => {
       expect((prisma as any).auditLog.create).toHaveBeenCalledWith({ data: expect.objectContaining({ action: 'ITEM_UPDATED', entityId: '4' }) });
     });
 
+    it('saves the default selling price, clears it when omitted, and audits the price change field-level', async () => {
+      const prisma = createPrismaMock();
+      const service = new ItemsService(prisma as never, new AuditService(prisma as never));
+      (prisma as any).item.findUnique.mockResolvedValue({ id: 4, categoryId: 1, unitId: 2, sellingPrice: new Prisma.Decimal(1000) });
+      (prisma as any).item.findFirst.mockResolvedValue(null);
+      (prisma as any).item.update.mockResolvedValue({ id: 4, code: 'ITM1', sellingPrice: new Prisma.Decimal(1500) });
+
+      await service.update(4, { ...baseDto, sellingPrice: 1500 }, 3);
+      expect((prisma as any).item.update.mock.calls[0][0].data.sellingPrice).toBe(1500);
+      expect((prisma as any).auditLog.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ action: 'ITEM_UPDATED', changes: [{ field: 'sellingPrice', from: '1000', to: '1500' }] }),
+      });
+
+      (prisma as any).item.update.mockResolvedValue({ id: 4, code: 'ITM1', sellingPrice: null });
+      await service.update(4, baseDto, 3);
+      expect((prisma as any).item.update.mock.calls[1][0].data.sellingPrice).toBeNull();
+    });
+
     it('lets an item keep a category/unit that has since been deactivated', async () => {
       const prisma = createPrismaMock();
       const service = new ItemsService(prisma as never, new AuditService(prisma as never));

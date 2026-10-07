@@ -25,7 +25,7 @@ export const updateUserSchema = z
     email: optionalEmail,
     phone: optionalPhone,
     roleName: z
-      .enum(['ADMIN', 'DATA_OPERATOR', 'PURCHASE_MANAGER', 'SALES_MANAGER', 'VIEWER'])
+      .enum(['ADMIN', 'DATA_OPERATOR', 'PURCHASE_MANAGER', 'SALES_MANAGER', 'VIEWER', 'SALESPERSON', 'WAREHOUSE', 'ACCOUNTANT'])
       .optional(),
     status: z.enum(['ACTIVE', 'DISABLED', 'LOCKED']).optional(),
   })

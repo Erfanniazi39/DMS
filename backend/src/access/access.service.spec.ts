@@ -37,7 +37,9 @@ describe('AccessService', () => {
     const service = new AccessService(prisma as never);
     (prisma as any).role.findUnique.mockResolvedValue(null);
 
-    await expect(service.createRole('MANAGER', ['inventory.view'])).rejects.toBeInstanceOf(ConflictException);
+    // (Was 'inventory.view' until that became a real permission in Sales
+    // batch 1 — 'products.manage' is still a phantom code.)
+    await expect(service.createRole('MANAGER', ['products.manage'])).rejects.toBeInstanceOf(ConflictException);
     expect((prisma as any).permission.findMany).not.toHaveBeenCalled();
     expect((prisma as any).role.create).not.toHaveBeenCalled();
   });
