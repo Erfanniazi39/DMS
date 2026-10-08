@@ -328,7 +328,18 @@ export class CustomersService {
     }
     await this.prisma.$transaction(async (tx) => {
       await tx.customerFinancialProfile.deleteMany({ where: { customerId: id } });
-      await tx.customer.delete({ where: { id } });
+      // Sales orders reference the customer (onDelete: Restrict) — this
+      // module doesn't count them (they're Sales' data), so the FK error is
+      // turned into the same "archive instead" message (same idea as
+      // ItemsService.remove()).
+      try {
+        await tx.customer.delete({ where: { id } });
+      } catch (error) {
+        if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003') {
+          throw new ConflictException('این مشتری در اسناد فروش استفاده شده است و قابل حذف نیست. به‌جای حذف، آن را بایگانی کنید.');
+        }
+        throw error;
+      }
       await this.audit.log(
         { userId, ipAddress, action: 'CUSTOMER_DELETED', entityType: AUDIT_ENTITY.CUSTOMER, entityId: id, details: customer.customerNumber },
         tx,

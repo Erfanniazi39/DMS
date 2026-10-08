@@ -230,6 +230,8 @@ model Employee {
   purchasesAsBuyer            Purchase[]
   // Purchase Requests this employee personally raised (PurchaseRequest.requestedByEmployee) — optional, distinct from purchasesAsBuyer.
   purchaseRequestsAsRequester PurchaseRequest[]
+  // Sales orders this employee is the salesperson on (SalesOrder.salespersonEmployee).
+  salesOrdersAsSalesperson    SalesOrder[]
 
   @@map("employees")
 }
@@ -344,6 +346,7 @@ model PaymentTerm {
   isActive          Boolean                    @default(true) @map("is_active")
   sortOrder         Int                        @default(0) @map("sort_order")
   financialProfiles CustomerFinancialProfile[]
+  salesOrders       SalesOrder[]
 
   @@map("payment_terms")
 }
@@ -388,12 +391,19 @@ model Customer {
   legacyAddress      String?       @map("address")
   legacyNote         String?       @map("note")
 
-  contacts         CustomerContact[]
-  addresses        CustomerAddress[]
-  financialProfile CustomerFinancialProfile?
-  notes            CustomerNote[]
-  documents        CustomerDocument[]
-  complaints       CustomerComplaint[]
+  contacts           CustomerContact[]
+  addresses          CustomerAddress[]
+  financialProfile   CustomerFinancialProfile?
+  notes              CustomerNote[]
+  documents          CustomerDocument[]
+  complaints         CustomerComplaint[]
+  salesOrders        SalesOrder[]
+  deliveries         Delivery[]
+  salesInvoices      SalesInvoice[]
+  customerPayments   CustomerPayment[]
+  paymentAllocations PaymentAllocation[]
+  salesReturns       SalesReturn[]
+  creditNotes        CreditNote[]
 
   @@index([customerGroupId])
   @@index([status])
@@ -434,6 +444,8 @@ model CustomerAddress {
   // CustomerAddressesService, not a DB constraint.
   isDefault            Boolean             @default(false) @map("is_default")
   isActive             Boolean             @default(true) @map("is_active")
+  // Sales orders delivering here (live ref, SetNull — orders keep a text snapshot).
+  salesOrders          SalesOrder[]
 
   @@index([customerId])
   @@map("customer_addresses")
@@ -528,6 +540,7 @@ model Unit {
   purchaseItems        PurchaseItem[]
   purchaseRequestItems PurchaseRequestItem[]
   items                Item[]
+  salesOrderItems      SalesOrderItem[]
 
   @@map("units")
 }
@@ -570,6 +583,10 @@ model Item {
   stockBalances        StockBalance[]
   stockMovements       StockMovement[]
   stockAdjustmentItems StockAdjustmentItem[]
+  salesOrderItems      SalesOrderItem[]
+  deliveryItems        DeliveryItem[]
+  salesInvoiceItems    SalesInvoiceItem[]
+  salesReturnItems     SalesReturnItem[]
 
   @@index([categoryId])
   @@index([unitId])
@@ -919,6 +936,9 @@ model InventoryLocation {
   stockBalances    StockBalance[]
   stockMovements   StockMovement[]
   stockAdjustments StockAdjustment[]
+  salesOrders      SalesOrder[]
+  deliveries       Delivery[]
+  salesReturns     SalesReturn[]
 
   @@map("inventory_locations")
 }
@@ -1009,6 +1029,582 @@ model StockAdjustmentItem {
   @@map("stock_adjustment_items")
 }
 
+// ---------------------------------------------------------------------------
+// Sales — Sales batch 2 (2026-10-07): sales orders. See
+// docs/sales-module-build-plan.md §4.2. Delivery arrived in batch 3;
+// SalesInvoice / SalesReturn (and their back-relations) arrive in later batches.
+// ---------------------------------------------------------------------------
+
+// OPENING_BALANCE is excluded from sales statistics. Used by SalesInvoice
+// (Batch 4); declared with the rest of the Sales enums.
+enum SalesSourceType {
+  OPERATIONAL
+  OPENING_BALANCE
+}
+
+// Transitions: backend/src/sales/sales-rules.ts (ALLOWED_SALES_ORDER_STATUS_TRANSITIONS).
+enum SalesOrderStatus {
+  DRAFT
+  PENDING_APPROVAL
+  CONFIRMED
+  COMPLETED
+  CLOSED
+  CANCELLED
+}
+
+// The three progress axes below are derived — never set by hand, never via
+// an endpoint. Reused by Delivery / SalesInvoice in later batches.
+enum SalesDeliveryStatus {
+  NOT_DELIVERED
+  PARTIALLY_DELIVERED
+  DELIVERED
+}
+
+enum SalesInvoicingStatus {
+  NOT_INVOICED
+  PARTIALLY_INVOICED
+  INVOICED
+}
+
+// "Overdue" is computed at query time, not stored.
+enum SalesPaymentStatus {
+  UNPAID
+  PARTIALLY_PAID
+  PAID
+}
+
+// سفارش فروش. DRAFT is editable/deletable and carries no number; the
+// gap-free number (SO-<jalali year>-000001) and the stock reservation are
+// assigned together at CONFIRMED (SalesOrdersService.confirm()/approve()).
+// Customer / address / payment-term fields are snapshots: refreshed on every
+// DRAFT save, frozen once the order leaves DRAFT.
+model SalesOrder {
+  id                     Int                  @id @default(autoincrement())
+  orderNumber            String?              @unique @map("order_number")
+  orderDate              DateTime             @map("order_date")
+  customerId             Int                  @map("customer_id")
+  customer               Customer             @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  customerName           String               @map("customer_name")
+  customerEconomicCode   String?              @map("customer_economic_code")
+  // Live ref; the text snapshot below is what the order keeps if the address
+  // is later edited or removed (hence SetNull, not Restrict).
+  deliveryAddressId      Int?                 @map("delivery_address_id")
+  deliveryAddress        CustomerAddress?     @relation(fields: [deliveryAddressId], references: [id], onDelete: SetNull)
+  deliveryAddressText    String?              @map("delivery_address_text")
+  paymentTermId          Int?                 @map("payment_term_id")
+  paymentTerm            PaymentTerm?         @relation(fields: [paymentTermId], references: [id], onDelete: Restrict)
+  paymentTermName        String?              @map("payment_term_name")
+  paymentDueDays         Int                  @default(0) @map("payment_due_days")
+  // Employee, never User (CLAUDE.md hard rule 1).
+  salespersonEmployeeId  Int?                 @map("salesperson_employee_id")
+  salespersonEmployee    Employee?            @relation(fields: [salespersonEmployeeId], references: [id], onDelete: Restrict)
+  locationId             Int                  @map("location_id")
+  location               InventoryLocation    @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  customerReference      String?              @map("customer_reference")
+  requestedDeliveryDate  DateTime?            @map("requested_delivery_date")
+  status                 SalesOrderStatus     @default(DRAFT)
+  deliveryStatus         SalesDeliveryStatus  @default(NOT_DELIVERED) @map("delivery_status")
+  invoicingStatus        SalesInvoicingStatus @default(NOT_INVOICED) @map("invoicing_status")
+  paymentStatus          SalesPaymentStatus   @default(UNPAID) @map("payment_status")
+  // Derived money fields — written only from sales-totals.ts results.
+  subtotal               Decimal              @default(0) @db.Decimal(15, 0)
+  discountTotal          Decimal              @default(0) @map("discount_total") @db.Decimal(15, 0)
+  taxTotal               Decimal              @default(0) @map("tax_total") @db.Decimal(15, 0)
+  totalAmount            Decimal              @default(0) @map("total_amount") @db.Decimal(15, 0)
+  approvalReason         String?              @map("approval_reason")
+  approvedByUserId       Int?                 @map("approved_by_user_id")
+  approvedByUser         User?                @relation("SalesOrderApprovedBy", fields: [approvedByUserId], references: [id])
+  approvedAt             DateTime?            @map("approved_at")
+  creditOverrideByUserId Int?                 @map("credit_override_by_user_id")
+  creditOverrideByUser   User?                @relation("SalesOrderCreditOverrideBy", fields: [creditOverrideByUserId], references: [id])
+  creditOverrideAt       DateTime?            @map("credit_override_at")
+  creditOverrideReason   String?              @map("credit_override_reason")
+  confirmedByUserId      Int?                 @map("confirmed_by_user_id")
+  confirmedByUser        User?                @relation("SalesOrderConfirmedBy", fields: [confirmedByUserId], references: [id])
+  confirmedAt            DateTime?            @map("confirmed_at")
+  cancelledByUserId      Int?                 @map("cancelled_by_user_id")
+  cancelledByUser        User?                @relation("SalesOrderCancelledBy", fields: [cancelledByUserId], references: [id])
+  cancelledAt            DateTime?            @map("cancelled_at")
+  cancelReason           String?              @map("cancel_reason")
+  closedByUserId         Int?                 @map("closed_by_user_id")
+  closedByUser           User?                @relation("SalesOrderClosedBy", fields: [closedByUserId], references: [id])
+  closedAt               DateTime?            @map("closed_at")
+  closeReason            String?              @map("close_reason")
+  internalNote           String?              @map("internal_note")
+  // Printed on documents.
+  customerNote           String?              @map("customer_note")
+  createdByUserId        Int?                 @map("created_by_user_id")
+  createdByUser          User?                @relation("SalesOrderCreatedBy", fields: [createdByUserId], references: [id])
+  createdAt              DateTime             @default(now()) @map("created_at")
+  updatedAt              DateTime             @default(now()) @updatedAt @map("updated_at")
+  items                  SalesOrderItem[]
+  deliveries             Delivery[]
+  invoices               SalesInvoice[]
+  returns                SalesReturn[]
+
+  @@index([customerId])
+  @@index([status])
+  @@index([orderDate])
+  @@map("sales_orders")
+}
+
+model SalesOrderItem {
+  id                  Int                @id @default(autoincrement())
+  // Cascade — only DRAFT orders are ever deleted.
+  salesOrderId        Int                @map("sales_order_id")
+  salesOrder          SalesOrder         @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
+  lineNo              Int                @map("line_no")
+  itemId              Int                @map("item_id")
+  item                Item               @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  // Snapshots, refreshed on every DRAFT save.
+  itemCode            String             @map("item_code")
+  itemName            String             @map("item_name")
+  unitId              Int                @map("unit_id")
+  unit                Unit               @relation(fields: [unitId], references: [id], onDelete: Restrict)
+  unitName            String             @map("unit_name")
+  quantity            Decimal            @db.Decimal(12, 2)
+  // Item.sellingPrice at the time of the last DRAFT save.
+  listUnitPrice       Decimal?           @map("list_unit_price") @db.Decimal(15, 0)
+  unitPrice           Decimal            @map("unit_price") @db.Decimal(15, 0)
+  // Required only when unitPrice < listUnitPrice (B2).
+  priceOverrideReason String?            @map("price_override_reason")
+  // Only settable by a sales.approve holder (B3).
+  discountPercent     Decimal?           @map("discount_percent") @db.Decimal(5, 2)
+  discountAmount      Decimal            @default(0) @map("discount_amount") @db.Decimal(15, 0)
+  // Adjustable, defaults to 0 (B14).
+  taxRate             Decimal            @default(0) @map("tax_rate") @db.Decimal(5, 2)
+  taxAmount           Decimal            @default(0) @map("tax_amount") @db.Decimal(15, 0)
+  lineTotal           Decimal            @map("line_total") @db.Decimal(15, 0)
+  // Progress counters — service-layer invariants: delivered ≤ quantity;
+  // invoiced ≤ delivered; returned ≤ delivered; reserved ≤ quantity − delivered.
+  reservedQty         Decimal            @default(0) @map("reserved_qty") @db.Decimal(12, 2)
+  deliveredQty        Decimal            @default(0) @map("delivered_qty") @db.Decimal(12, 2)
+  invoicedQty         Decimal            @default(0) @map("invoiced_qty") @db.Decimal(12, 2)
+  returnedQty         Decimal            @default(0) @map("returned_qty") @db.Decimal(12, 2)
+  note                String?
+  deliveryItems       DeliveryItem[]
+  invoiceItems        SalesInvoiceItem[]
+
+  @@unique([salesOrderId, lineNo])
+  @@index([itemId])
+  @@map("sales_order_items")
+}
+
+// Delivery, SalesInvoice and CreditNote: DRAFT → POSTED only, one-way;
+// POSTED is immutable and terminal (build plan §5).
+enum SalesDocumentStatus {
+  DRAFT
+  POSTED
+}
+
+// حواله تحویل — Sales batch 3 (2026-10-07). The ONLY document that lowers
+// ON_HAND stock. A DRAFT is editable/deletable and carries no number; the
+// gap-free number (DN-<jalali year>-000001), the DELIVERY_ISSUE ledger rows
+// and the order's deliveredQty / deliveryStatus are all written together at
+// POSTED (DeliveriesService.post()).
+model Delivery {
+  id                  Int                 @id @default(autoincrement())
+  deliveryNumber      String?             @unique @map("delivery_number")
+  salesOrderId        Int                 @map("sales_order_id")
+  salesOrder          SalesOrder          @relation(fields: [salesOrderId], references: [id], onDelete: Restrict)
+  // Denormalized from the order, for queues/filters.
+  customerId          Int                 @map("customer_id")
+  customer            Customer            @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  locationId          Int                 @map("location_id")
+  location            InventoryLocation   @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  deliveryDate        DateTime            @map("delivery_date")
+  status              SalesDocumentStatus @default(DRAFT)
+  // Snapshot of the order's delivery address text.
+  deliveryAddressText String?             @map("delivery_address_text")
+  // Driver / vehicle, free text.
+  carrierNote         String?             @map("carrier_note")
+  // Customer-side signatory.
+  receivedByName      String?             @map("received_by_name")
+  note                String?
+  postedByUserId      Int?                @map("posted_by_user_id")
+  postedByUser        User?               @relation("DeliveryPostedBy", fields: [postedByUserId], references: [id])
+  postedAt            DateTime?           @map("posted_at")
+  createdByUserId     Int?                @map("created_by_user_id")
+  createdByUser       User?               @relation("DeliveryCreatedBy", fields: [createdByUserId], references: [id])
+  createdAt           DateTime            @default(now()) @map("created_at")
+  updatedAt           DateTime            @default(now()) @updatedAt @map("updated_at")
+  items               DeliveryItem[]
+  returns             SalesReturn[]
+
+  @@index([salesOrderId])
+  @@index([customerId])
+  @@index([status])
+  @@map("deliveries")
+}
+
+model DeliveryItem {
+  id               Int                @id @default(autoincrement())
+  // Cascade — only DRAFT deliveries are ever deleted.
+  deliveryId       Int                @map("delivery_id")
+  delivery         Delivery           @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+  salesOrderItemId Int                @map("sales_order_item_id")
+  salesOrderItem   SalesOrderItem     @relation(fields: [salesOrderItemId], references: [id], onDelete: Restrict)
+  itemId           Int                @map("item_id")
+  item             Item               @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  quantity         Decimal            @db.Decimal(12, 2)
+  // Progress counters for Batches 4 (invoices) and 6 (returns).
+  invoicedQty      Decimal            @default(0) @map("invoiced_qty") @db.Decimal(12, 2)
+  returnedQty      Decimal            @default(0) @map("returned_qty") @db.Decimal(12, 2)
+  invoiceItems     SalesInvoiceItem[]
+  returnItems      SalesReturnItem[]
+
+  @@index([deliveryId])
+  @@index([salesOrderItemId])
+  @@map("delivery_items")
+}
+
+// فاکتور فروش — Sales batch 4 (2026-10-07). The AR anchor. A DRAFT carries
+// no number and has no effect; at POSTED (SalesInvoicesService.post()) the
+// gap-free number (INV-<jalali year>-000001), dueDate, the delivery/order
+// lines' invoicedQty and the order's invoicingStatus are written together.
+// OPENING_BALANCE invoices (historical AR, no order/delivery) are excluded
+// from sales statistics. paidAmount / creditedAmount / paymentStatus are
+// written ONLY by SalesInvoicesService.applySettlement() (Receivables).
+model SalesInvoice {
+  id                   Int                 @id @default(autoincrement())
+  invoiceNumber        String?             @unique @map("invoice_number")
+  sourceType           SalesSourceType     @default(OPERATIONAL) @map("source_type")
+  customerId           Int                 @map("customer_id")
+  customer             Customer            @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  // null only for OPENING_BALANCE.
+  salesOrderId         Int?                @map("sales_order_id")
+  salesOrder           SalesOrder?         @relation(fields: [salesOrderId], references: [id], onDelete: Restrict)
+  invoiceDate          DateTime            @map("invoice_date")
+  // Set at posting: invoiceDate + paymentDueDays.
+  dueDate              DateTime?           @map("due_date")
+  status               SalesDocumentStatus @default(DRAFT)
+  // Snapshots, taken when the draft is created.
+  customerName         String              @map("customer_name")
+  customerEconomicCode String?             @map("customer_economic_code")
+  billingAddressText   String?             @map("billing_address_text")
+  paymentTermName      String?             @map("payment_term_name")
+  paymentDueDays       Int                 @default(0) @map("payment_due_days")
+  // Derived money fields — written only from sales-totals.ts results.
+  subtotal             Decimal             @default(0) @db.Decimal(15, 0)
+  discountTotal        Decimal             @default(0) @map("discount_total") @db.Decimal(15, 0)
+  taxTotal             Decimal             @default(0) @map("tax_total") @db.Decimal(15, 0)
+  totalAmount          Decimal             @default(0) @map("total_amount") @db.Decimal(15, 0)
+  // Settlement — written ONLY by SalesInvoicesService.applySettlement().
+  paidAmount           Decimal             @default(0) @map("paid_amount") @db.Decimal(15, 0)
+  creditedAmount       Decimal             @default(0) @map("credited_amount") @db.Decimal(15, 0)
+  paymentStatus        SalesPaymentStatus  @default(UNPAID) @map("payment_status")
+  note                 String?
+  postedByUserId       Int?                @map("posted_by_user_id")
+  postedByUser         User?               @relation("SalesInvoicePostedBy", fields: [postedByUserId], references: [id])
+  postedAt             DateTime?           @map("posted_at")
+  createdByUserId      Int?                @map("created_by_user_id")
+  createdByUser        User?               @relation("SalesInvoiceCreatedBy", fields: [createdByUserId], references: [id])
+  createdAt            DateTime            @default(now()) @map("created_at")
+  updatedAt            DateTime            @default(now()) @updatedAt @map("updated_at")
+  items                SalesInvoiceItem[]
+  paymentAllocations   PaymentAllocation[]
+  creditNotes          CreditNote[]
+
+  @@index([customerId, status])
+  @@index([salesOrderId])
+  @@index([dueDate])
+  @@map("sales_invoices")
+}
+
+model SalesInvoiceItem {
+  id               Int              @id @default(autoincrement())
+  // Cascade — only DRAFT invoices are ever deleted.
+  salesInvoiceId   Int              @map("sales_invoice_id")
+  salesInvoice     SalesInvoice     @relation(fields: [salesInvoiceId], references: [id], onDelete: Cascade)
+  lineNo           Int              @map("line_no")
+  // Invoice-what-is-delivered; null only for OPENING_BALANCE.
+  deliveryItemId   Int?             @map("delivery_item_id")
+  deliveryItem     DeliveryItem?    @relation(fields: [deliveryItemId], references: [id], onDelete: Restrict)
+  salesOrderItemId Int?             @map("sales_order_item_id")
+  salesOrderItem   SalesOrderItem?  @relation(fields: [salesOrderItemId], references: [id], onDelete: Restrict)
+  itemId           Int?             @map("item_id")
+  item             Item?            @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  // Snapshots ("مانده افتتاحیه" for an opening balance line).
+  itemCode         String?          @map("item_code")
+  itemName         String           @map("item_name")
+  unitName         String?          @map("unit_name")
+  quantity         Decimal          @db.Decimal(12, 2)
+  unitPrice        Decimal          @map("unit_price") @db.Decimal(15, 0)
+  discountAmount   Decimal          @default(0) @map("discount_amount") @db.Decimal(15, 0)
+  taxRate          Decimal          @default(0) @map("tax_rate") @db.Decimal(5, 2)
+  taxAmount        Decimal          @default(0) @map("tax_amount") @db.Decimal(15, 0)
+  lineTotal        Decimal          @map("line_total") @db.Decimal(15, 0)
+  // Credit-note progress (Batch 6).
+  creditedQty      Decimal          @default(0) @map("credited_qty") @db.Decimal(12, 2)
+  creditNoteItems  CreditNoteItem[]
+
+  @@unique([salesInvoiceId, lineNo])
+  @@index([deliveryItemId])
+  @@index([salesOrderItemId])
+  @@map("sales_invoice_items")
+}
+
+// ---------------------------------------------------------------------------
+// Sales — Sales batch 6 (2026-10-07): returns + credit notes. See
+// docs/sales-module-build-plan.md §4.2/§4.3/§5/§6. Returns always reference a
+// Delivery (B8 deferred — isUnreferenced stays false/unused). Credit notes
+// are return-based only (B15 deferred — no standalone credit notes yet).
+// ---------------------------------------------------------------------------
+
+enum ReturnReason {
+  DAMAGED
+  EXPIRED
+  WRONG_ITEM
+  QUALITY
+  CUSTOMER_REFUSED
+  OTHER
+}
+
+// Transitions: backend/src/sales/sales-rules.ts (ALLOWED_SALES_RETURN_STATUS_TRANSITIONS).
+// REQUESTED → APPROVED|REJECTED|CANCELLED, APPROVED → RECEIVED|CANCELLED,
+// RECEIVED → INSPECTED, INSPECTED → COMPLETED (build plan §5).
+enum SalesReturnStatus {
+  REQUESTED
+  APPROVED
+  REJECTED
+  RECEIVED
+  INSPECTED
+  COMPLETED
+  CANCELLED
+}
+
+// مرجوعی فروش (RMA). returnNumber ("RMA-<jalali year>-000001") is assigned at
+// APPROVED, not at request — a REQUESTED/REJECTED/CANCELLED-before-approval
+// return never gets one (no gap). Stock effects (RETURN_RECEIPT at RECEIVED;
+// RETURN_RESTOCK/RETURN_WRITE_OFF at INSPECTED, per line disposition) go
+// through inventory/stock-ledger.ts, same as every other Sales document.
+model SalesReturn {
+  id                Int               @id @default(autoincrement())
+  returnNumber      String?           @unique @map("return_number")
+  customerId        Int               @map("customer_id")
+  customer          Customer          @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  // Required in practice (B8 is deferred — every return references a
+  // delivery today); kept nullable here only so B8's unreferenced returns
+  // don't need a migration later.
+  salesOrderId      Int?              @map("sales_order_id")
+  salesOrder        SalesOrder?       @relation(fields: [salesOrderId], references: [id], onDelete: Restrict)
+  deliveryId        Int?              @map("delivery_id")
+  delivery          Delivery?         @relation(fields: [deliveryId], references: [id], onDelete: Restrict)
+  locationId        Int               @map("location_id")
+  location          InventoryLocation @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  requestDate       DateTime          @map("request_date")
+  reason            ReturnReason
+  status            SalesReturnStatus @default(REQUESTED)
+  // Unused unless B8 changes.
+  isUnreferenced    Boolean           @default(false) @map("is_unreferenced")
+  rejectReason      String?           @map("reject_reason")
+  note              String?
+  requestedByUserId Int?              @map("requested_by_user_id")
+  requestedByUser   User?             @relation("SalesReturnRequestedBy", fields: [requestedByUserId], references: [id])
+  approvedByUserId  Int?              @map("approved_by_user_id")
+  approvedByUser    User?             @relation("SalesReturnApprovedBy", fields: [approvedByUserId], references: [id])
+  approvedAt        DateTime?         @map("approved_at")
+  receivedByUserId  Int?              @map("received_by_user_id")
+  receivedByUser    User?             @relation("SalesReturnReceivedBy", fields: [receivedByUserId], references: [id])
+  receivedAt        DateTime?         @map("received_at")
+  inspectedByUserId Int?              @map("inspected_by_user_id")
+  inspectedByUser   User?             @relation("SalesReturnInspectedBy", fields: [inspectedByUserId], references: [id])
+  inspectedAt       DateTime?         @map("inspected_at")
+  createdAt         DateTime          @default(now()) @map("created_at")
+  updatedAt         DateTime          @default(now()) @updatedAt @map("updated_at")
+  items             SalesReturnItem[]
+  creditNotes       CreditNote[]
+
+  @@index([customerId])
+  @@index([salesOrderId])
+  @@index([deliveryId])
+  @@index([status])
+  @@map("sales_returns")
+}
+
+model SalesReturnItem {
+  id              Int              @id @default(autoincrement())
+  // Cascade — a return's lines only ever exist alongside it.
+  salesReturnId   Int              @map("sales_return_id")
+  salesReturn     SalesReturn      @relation(fields: [salesReturnId], references: [id], onDelete: Cascade)
+  // Caps requested/received quantity: Σ returned per delivery line ≤
+  // delivered − already returned (deliveryItem.returnedQty).
+  deliveryItemId  Int?             @map("delivery_item_id")
+  deliveryItem    DeliveryItem?    @relation(fields: [deliveryItemId], references: [id], onDelete: Restrict)
+  itemId          Int              @map("item_id")
+  item            Item             @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  itemName        String           @map("item_name")
+  unitName        String           @map("unit_name")
+  // Price actually charged, snapshotted from the invoice/order line.
+  unitPrice       Decimal          @map("unit_price") @db.Decimal(15, 0)
+  requestedQty    Decimal          @map("requested_qty") @db.Decimal(12, 2)
+  receivedQty     Decimal          @default(0) @map("received_qty") @db.Decimal(12, 2)
+  restockQty      Decimal          @default(0) @map("restock_qty") @db.Decimal(12, 2)
+  // restockQty + writeOffQty = receivedQty (service-layer invariant).
+  writeOffQty     Decimal          @default(0) @map("write_off_qty") @db.Decimal(12, 2)
+  creditedQty     Decimal          @default(0) @map("credited_qty") @db.Decimal(12, 2)
+  conditionNote   String?          @map("condition_note")
+  creditNoteItems CreditNoteItem[]
+
+  @@index([salesReturnId])
+  @@index([deliveryItemId])
+  @@map("sales_return_items")
+}
+
+// یادداشت اعتباری — only ever created from an INSPECTED SalesReturn (B15:
+// no standalone/goodwill credit notes this batch). DRAFT → POSTED, one-way,
+// like Delivery/SalesInvoice (reuses SalesDocumentStatus). creditNoteNumber
+// ("CN-<jalali year>-000001") is assigned at posting. Posting calls
+// SalesInvoicesService.applySettlement() (reduces AR via creditedAmount —
+// never writes it directly) and then the return's markCredited().
+model CreditNote {
+  id                 Int                 @id @default(autoincrement())
+  creditNoteNumber   String?             @unique @map("credit_note_number")
+  customerId         Int                 @map("customer_id")
+  customer           Customer            @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  salesInvoiceId     Int                 @map("sales_invoice_id")
+  salesInvoice       SalesInvoice        @relation(fields: [salesInvoiceId], references: [id], onDelete: Restrict)
+  // Null only if B15 ever changes — always set today (return-based only).
+  salesReturnId      Int?                @map("sales_return_id")
+  salesReturn        SalesReturn?        @relation(fields: [salesReturnId], references: [id], onDelete: Restrict)
+  creditDate         DateTime            @map("credit_date")
+  reason             String
+  status             SalesDocumentStatus @default(DRAFT)
+  subtotal           Decimal             @default(0) @db.Decimal(15, 0)
+  taxTotal           Decimal             @default(0) @map("tax_total") @db.Decimal(15, 0)
+  totalAmount        Decimal             @default(0) @map("total_amount") @db.Decimal(15, 0)
+  postedByUserId     Int?                @map("posted_by_user_id")
+  postedByUser       User?               @relation("CreditNotePostedBy", fields: [postedByUserId], references: [id])
+  postedAt           DateTime?           @map("posted_at")
+  createdByUserId    Int?                @map("created_by_user_id")
+  createdByUser      User?               @relation("CreditNoteCreatedBy", fields: [createdByUserId], references: [id])
+  createdAt          DateTime            @default(now()) @map("created_at")
+  updatedAt          DateTime            @default(now()) @updatedAt @map("updated_at")
+  items              CreditNoteItem[]
+  paymentAllocations PaymentAllocation[] @relation("PaymentAllocationSourceCreditNote")
+
+  @@index([customerId])
+  @@index([salesInvoiceId])
+  @@index([salesReturnId])
+  @@index([status])
+  @@map("credit_notes")
+}
+
+model CreditNoteItem {
+  id                 Int              @id @default(autoincrement())
+  // Cascade — a credit note's lines only ever exist alongside it; a DRAFT
+  // credit note has no other delete path either (it has no number yet).
+  creditNoteId       Int              @map("credit_note_id")
+  creditNote         CreditNote       @relation(fields: [creditNoteId], references: [id], onDelete: Cascade)
+  // Restrict — an invoice line credited against can't be deleted (invoice
+  // lines never are, posted or not, but this matches the project's
+  // convention for referenced lines).
+  salesInvoiceItemId Int              @map("sales_invoice_item_id")
+  salesInvoiceItem   SalesInvoiceItem @relation(fields: [salesInvoiceItemId], references: [id], onDelete: Restrict)
+  salesReturnItemId  Int?             @map("sales_return_item_id")
+  salesReturnItem    SalesReturnItem? @relation(fields: [salesReturnItemId], references: [id], onDelete: Restrict)
+  // Null = an amount-only correction (not produced by this batch's
+  // return-based flow, but kept per build plan §4.3's schema).
+  quantity           Decimal?         @db.Decimal(12, 2)
+  unitPrice          Decimal?         @map("unit_price") @db.Decimal(15, 0)
+  taxAmount          Decimal          @default(0) @map("tax_amount") @db.Decimal(15, 0)
+  lineTotal          Decimal          @map("line_total") @db.Decimal(15, 0)
+
+  @@index([creditNoteId])
+  @@map("credit_note_items")
+}
+
+// ---------------------------------------------------------------------------
+// Receivables — Sales batch 5 (2026-10-07), extended in batch 6 (2026-10-07):
+// CreditNote/CreditNoteItem are defined above (with the Sales models they
+// reference), and PaymentAllocation.sourceCreditNoteId/targetRefundId now
+// carry real FKs (to CreditNote and CustomerPayment respectively).
+// ---------------------------------------------------------------------------
+
+enum CustomerPaymentDirection {
+  RECEIPT
+  REFUND
+}
+
+// دریافت/پرداخت نقدی مشتری. direction=RECEIPT lowers AR (once COMPLETED);
+// REFUND raises it back. status reuses the shared PaymentStatus enum
+// (Purchases): COMPLETED immediately for cash/bank/card, PENDING for an
+// uncleared cheque (B9) until CustomerPaymentsService.clearCheque() moves it
+// to COMPLETED (bounceCheque() moves it to CANCELLED instead, reversing its
+// allocations). A COMPLETED payment may also be CANCELLED directly (reason
+// required), which also reverses its allocations — never deleted.
+model CustomerPayment {
+  id                        Int                      @id @default(autoincrement())
+  // Numbered on save (RCP-<jalali year>-000001) — no draft stage, unlike
+  // Sales documents.
+  paymentNumber             String                   @unique @map("payment_number")
+  direction                 CustomerPaymentDirection @default(RECEIPT)
+  customerId                Int                      @map("customer_id")
+  customer                  Customer                 @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  paymentDate               DateTime                 @map("payment_date")
+  amount                    Decimal                  @db.Decimal(15, 0)
+  method                    PaymentMethod
+  status                    PaymentStatus            @default(COMPLETED)
+  referenceNumber           String?                  @map("reference_number")
+  // B9: required when status is PENDING at creation (an uncleared cheque).
+  chequeDueDate             DateTime?                @map("cheque_due_date")
+  bankName                  String?                  @map("bank_name")
+  note                      String?
+  cancelledByUserId         Int?                     @map("cancelled_by_user_id")
+  cancelledByUser           User?                    @relation("CustomerPaymentCancelledBy", fields: [cancelledByUserId], references: [id])
+  cancelledAt               DateTime?                @map("cancelled_at")
+  cancelReason              String?                  @map("cancel_reason")
+  createdByUserId           Int?                     @map("created_by_user_id")
+  createdByUser             User?                    @relation("CustomerPaymentCreatedBy", fields: [createdByUserId], references: [id])
+  createdAt                 DateTime                 @default(now()) @map("created_at")
+  updatedAt                 DateTime                 @default(now()) @updatedAt @map("updated_at")
+  allocationsAsSource       PaymentAllocation[]      @relation("PaymentAllocationSourcePayment")
+  allocationsAsRefundTarget PaymentAllocation[]      @relation("PaymentAllocationTargetRefund")
+
+  @@index([customerId])
+  @@index([status])
+  @@map("customer_payments")
+}
+
+// Open-item AR ledger: one credit source (a RECEIPT CustomerPayment, or —
+// since Batch 6 — a CreditNote) settles one debit target (a SalesInvoice, or
+// — since Batch 6 — a REFUND CustomerPayment; see the hand-added CHECK in
+// the migration). sourceCreditNoteId → CreditNote.id and targetRefundId →
+// CustomerPayment.id are real FKs as of Batch 6 (both Restrict — an
+// allocation keeps its source/target from being deleted out from under it).
+// Reversal is a stamp (reversedAt/reversedByUserId), never a delete —
+// recomputeInvoiceSettlement() sums only non-reversed rows.
+model PaymentAllocation {
+  id                 Int              @id @default(autoincrement())
+  customerId         Int              @map("customer_id")
+  customer           Customer         @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  // A RECEIPT CustomerPayment.
+  sourcePaymentId    Int?             @map("source_payment_id")
+  sourcePayment      CustomerPayment? @relation("PaymentAllocationSourcePayment", fields: [sourcePaymentId], references: [id], onDelete: Restrict)
+  // A posted CreditNote.
+  sourceCreditNoteId Int?             @map("source_credit_note_id")
+  sourceCreditNote   CreditNote?      @relation("PaymentAllocationSourceCreditNote", fields: [sourceCreditNoteId], references: [id], onDelete: Restrict)
+  targetInvoiceId    Int?             @map("target_invoice_id")
+  targetInvoice      SalesInvoice?    @relation(fields: [targetInvoiceId], references: [id], onDelete: Restrict)
+  // A REFUND CustomerPayment.
+  targetRefundId     Int?             @map("target_refund_id")
+  targetRefund       CustomerPayment? @relation("PaymentAllocationTargetRefund", fields: [targetRefundId], references: [id], onDelete: Restrict)
+  amount             Decimal          @db.Decimal(15, 0)
+  allocatedAt        DateTime         @default(now()) @map("allocated_at")
+  allocatedByUserId  Int?             @map("allocated_by_user_id")
+  allocatedByUser    User?            @relation("PaymentAllocationAllocatedBy", fields: [allocatedByUserId], references: [id])
+  reversedAt         DateTime?        @map("reversed_at")
+  reversedByUserId   Int?             @map("reversed_by_user_id")
+  reversedByUser     User?            @relation("PaymentAllocationReversedBy", fields: [reversedByUserId], references: [id])
+
+  @@index([customerId])
+  @@index([targetInvoiceId])
+  @@index([sourcePaymentId])
+  @@index([sourceCreditNoteId])
+  @@index([targetRefundId])
+  @@map("payment_allocations")
+}
+
 model Role {
   id          Int              @id @default(autoincrement())
   name        String           @unique
@@ -1041,35 +1637,61 @@ model RolePermission {
 // A person's Employee record (Master Data) and their User account (if any)
 // are separate, unrelated entities — see database_plan.txt at the project root.
 model User {
-  id                        Int                 @id @default(autoincrement())
-  username                  String              @unique
-  passwordHash              String              @map("password_hash")
-  email                     String?
-  phone                     String?
-  roleId                    Int                 @map("role_id")
-  role                      Role                @relation(fields: [roleId], references: [id])
-  status                    UserStatus          @default(ACTIVE)
-  createdAt                 DateTime            @default(now()) @map("created_at")
-  lastLoginAt               DateTime?           @map("last_login_at")
-  auditLogs                 AuditLog[]
-  permissions               UserPermission[]
+  id                          Int                 @id @default(autoincrement())
+  username                    String              @unique
+  passwordHash                String              @map("password_hash")
+  email                       String?
+  phone                       String?
+  roleId                      Int                 @map("role_id")
+  role                        Role                @relation(fields: [roleId], references: [id])
+  status                      UserStatus          @default(ACTIVE)
+  createdAt                   DateTime            @default(now()) @map("created_at")
+  lastLoginAt                 DateTime?           @map("last_login_at")
+  auditLogs                   AuditLog[]
+  permissions                 UserPermission[]
   // Purchase Requests this account entered (PurchaseRequest.createdByUser) — data-entry
   // provenance, distinct from requestedByEmployee (who actually asked for it).
-  createdPurchaseRequests   PurchaseRequest[]
+  createdPurchaseRequests     PurchaseRequest[]
   // Returns-to-vendor this account entered (PurchaseReturn.createdByUser) —
   // same data-entry provenance meaning as createdPurchaseRequests above.
-  createdPurchaseReturns    PurchaseReturn[]
+  createdPurchaseReturns      PurchaseReturn[]
   // Customer-module data-entry provenance — same meaning as above.
-  createdCustomers          Customer[]
-  customerNotes             CustomerNote[]
-  uploadedCustomerDocuments CustomerDocument[]
-  ownedCustomerComplaints   CustomerComplaint[] @relation("CustomerComplaintOwner")
-  createdCustomerComplaints CustomerComplaint[] @relation("CustomerComplaintCreatedBy")
+  createdCustomers            Customer[]
+  customerNotes               CustomerNote[]
+  uploadedCustomerDocuments   CustomerDocument[]
+  ownedCustomerComplaints     CustomerComplaint[] @relation("CustomerComplaintOwner")
+  createdCustomerComplaints   CustomerComplaint[] @relation("CustomerComplaintCreatedBy")
   // Inventory data-entry provenance — same meaning as above. Each *ByUserId
   // field has its own named relation.
-  createdStockMovements     StockMovement[]     @relation("StockMovementCreatedBy")
-  createdStockAdjustments   StockAdjustment[]   @relation("StockAdjustmentCreatedBy")
-  postedStockAdjustments    StockAdjustment[]   @relation("StockAdjustmentPostedBy")
+  createdStockMovements       StockMovement[]     @relation("StockMovementCreatedBy")
+  createdStockAdjustments     StockAdjustment[]   @relation("StockAdjustmentCreatedBy")
+  postedStockAdjustments      StockAdjustment[]   @relation("StockAdjustmentPostedBy")
+  // Sales-order provenance (Sales batch 2) — one named relation per field.
+  createdSalesOrders          SalesOrder[]        @relation("SalesOrderCreatedBy")
+  approvedSalesOrders         SalesOrder[]        @relation("SalesOrderApprovedBy")
+  creditOverriddenSalesOrders SalesOrder[]        @relation("SalesOrderCreditOverrideBy")
+  confirmedSalesOrders        SalesOrder[]        @relation("SalesOrderConfirmedBy")
+  cancelledSalesOrders        SalesOrder[]        @relation("SalesOrderCancelledBy")
+  closedSalesOrders           SalesOrder[]        @relation("SalesOrderClosedBy")
+  // Delivery provenance (Sales batch 3).
+  createdDeliveries           Delivery[]          @relation("DeliveryCreatedBy")
+  postedDeliveries            Delivery[]          @relation("DeliveryPostedBy")
+  // Sales-invoice provenance (Sales batch 4).
+  createdSalesInvoices        SalesInvoice[]      @relation("SalesInvoiceCreatedBy")
+  postedSalesInvoices         SalesInvoice[]      @relation("SalesInvoicePostedBy")
+  // Receivables provenance (Sales batch 5).
+  cancelledCustomerPayments   CustomerPayment[]   @relation("CustomerPaymentCancelledBy")
+  createdCustomerPayments     CustomerPayment[]   @relation("CustomerPaymentCreatedBy")
+  allocatedPaymentAllocations PaymentAllocation[] @relation("PaymentAllocationAllocatedBy")
+  reversedPaymentAllocations  PaymentAllocation[] @relation("PaymentAllocationReversedBy")
+  // Sales-return provenance (Sales batch 6) — one named relation per field.
+  requestedSalesReturns       SalesReturn[]       @relation("SalesReturnRequestedBy")
+  approvedSalesReturns        SalesReturn[]       @relation("SalesReturnApprovedBy")
+  receivedSalesReturns        SalesReturn[]       @relation("SalesReturnReceivedBy")
+  inspectedSalesReturns       SalesReturn[]       @relation("SalesReturnInspectedBy")
+  // Credit-note provenance (Sales batch 6).
+  createdCreditNotes          CreditNote[]        @relation("CreditNoteCreatedBy")
+  postedCreditNotes           CreditNote[]        @relation("CreditNotePostedBy")
 
   @@map("users")
 }

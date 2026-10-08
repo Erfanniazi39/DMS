@@ -106,5 +106,35 @@ describe('InventoryService', () => {
       expect(args.where.item.OR).toHaveLength(2);
       expect(args).toEqual(expect.objectContaining({ skip: 20, take: 20 }));
     });
+
+    it('sorts by available (onHand − reserved) ascending by default — lowest stock first', async () => {
+      const db = createInventoryDb();
+      db.stockBalance.findMany = jest.fn().mockResolvedValue([
+        { id: 1, onHand: new Prisma.Decimal(10), reserved: new Prisma.Decimal(2) }, // available 8
+        { id: 2, onHand: new Prisma.Decimal(5), reserved: new Prisma.Decimal(4) }, // available 1
+        { id: 3, onHand: new Prisma.Decimal(20), reserved: new Prisma.Decimal(20) }, // available 0
+      ]);
+      const service = buildInventoryService(db);
+
+      const result = (await service.listBalances({ sortBy: 'available' })) as { id: number }[];
+      expect(result.map((row) => row.id)).toEqual([3, 2, 1]);
+    });
+
+    it('sorts by available descending on request, and paginates after sorting (not before)', async () => {
+      const db = createInventoryDb();
+      db.stockBalance.findMany = jest.fn().mockResolvedValue([
+        { id: 1, onHand: new Prisma.Decimal(10), reserved: new Prisma.Decimal(2) }, // available 8
+        { id: 2, onHand: new Prisma.Decimal(5), reserved: new Prisma.Decimal(4) }, // available 1
+        { id: 3, onHand: new Prisma.Decimal(20), reserved: new Prisma.Decimal(20) }, // available 0
+      ]);
+      const service = buildInventoryService(db);
+
+      const result = (await service.listBalances({ sortBy: 'available', sortDir: 'desc' }, { page: 1, pageSize: 2 })) as {
+        items: { id: number }[];
+        total: number;
+      };
+      expect(result.items.map((row) => row.id)).toEqual([1, 2]);
+      expect(result.total).toBe(3);
+    });
   });
 });

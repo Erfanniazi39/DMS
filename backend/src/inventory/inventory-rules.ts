@@ -21,11 +21,11 @@ import type {
 // transfer QC → ON_HAND, written as two rows (QC −, ON_HAND +) with the
 // same reference.
 //
-// Only OPENING_BALANCE / MANUAL_RECEIPT / ADJUSTMENT_IN / ADJUSTMENT_OUT are
-// produced today (by stock adjustments). The rest are reserved for the later
-// Sales batches (orders reserve/release, deliveries issue, returns receive
-// into QC and then restock or write off) — their direction here follows
-// from their meaning, and those batches are where they get callers.
+// Produced today: OPENING_BALANCE / MANUAL_RECEIPT / ADJUSTMENT_IN /
+// ADJUSTMENT_OUT (stock adjustments), RESERVE / RELEASE (sales orders,
+// batch 2), DELIVERY_ISSUE (deliveries, batch 3). The RETURN_* types are
+// reserved for Sales batch 6 (returns receive into QC and then restock or
+// write off) — their direction here follows from their meaning.
 export type MovementDirection = 'IN' | 'OUT';
 
 export const MOVEMENT_TYPE_BUCKETS: Record<StockMovementType, Partial<Record<StockBucket, MovementDirection>>> = {
@@ -35,7 +35,10 @@ export const MOVEMENT_TYPE_BUCKETS: Record<StockMovementType, Partial<Record<Sto
   ADJUSTMENT_OUT: { ON_HAND: 'OUT' },
   RESERVE: { RESERVED: 'IN' },
   RELEASE: { RESERVED: 'OUT' },
-  DELIVERY_ISSUE: { ON_HAND: 'OUT' },
+  // Build plan §5: a posted delivery takes ON_HAND −q and, for the part the
+  // order had reserved, RESERVED −min(q, reservedQty) — two rows, same
+  // reference (stock-ledger.ts issueForDelivery()).
+  DELIVERY_ISSUE: { ON_HAND: 'OUT', RESERVED: 'OUT' },
   RETURN_RECEIPT: { QC: 'IN' },
   RETURN_RESTOCK: { QC: 'OUT', ON_HAND: 'IN' },
   RETURN_WRITE_OFF: { QC: 'OUT' },

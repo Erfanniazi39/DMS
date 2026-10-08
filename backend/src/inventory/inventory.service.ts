@@ -3,7 +3,15 @@ import { Prisma, type StockBucket } from '@prisma/client';
 import { toSkipTake, type PaginationParams } from '../common/pagination';
 import { PrismaService } from '../prisma/prisma.service';
 
-export type StockBalanceListFilters = { q?: string; locationId?: number };
+export type StockBalanceListFilters = {
+  q?: string;
+  locationId?: number;
+  // 'available' sorts by onHand − reserved (قابل فروش) — surfaces the
+  // lowest-stock items first when sortDir is 'asc' (the default). Plain item
+  // name is the page's original sort and stays the default sortBy.
+  sortBy?: 'name' | 'available';
+  sortDir?: 'asc' | 'desc';
+};
 
 export type BalanceMismatch = {
   itemId: number;
@@ -26,9 +34,10 @@ const BUCKETS: { bucket: StockBucket; column: 'onHand' | 'reserved' | 'qc' }[] =
 // through stock-ledger.ts applyMovements() (called by
 // StockAdjustmentsService today; by Sales/Returns in later batches).
 //
-// The higher-level stock events (reserve/release/issue/receive-to-QC/
-// restock/write-off) are intentionally NOT here yet — they get built with
-// the Sales batches that actually trigger them.
+// The higher-level stock events are plain functions in stock-ledger.ts
+// (they need the caller's transaction): reserve/release since Sales batch 2;
+// issue/receive-to-QC/restock/write-off get built with the batches that
+// trigger them.
 @Injectable()
 export class InventoryService {
   constructor(private readonly prisma: PrismaService) {}
@@ -61,21 +70,38 @@ export class InventoryService {
         ],
       };
     }
-    const query = {
-      where,
-      include: {
-        item: { select: { id: true, code: true, name: true, status: true, unit: { select: { id: true, nameFa: true } } } },
-        location: { select: { id: true, code: true, name: true } },
-      },
-      orderBy: [{ item: { name: 'asc' } }, { id: 'asc' }],
-    } satisfies Prisma.StockBalanceFindManyArgs;
+    const include = {
+      item: { select: { id: true, code: true, name: true, status: true, unit: { select: { id: true, nameFa: true } } } },
+      location: { select: { id: true, code: true, name: true } },
+    } satisfies Prisma.StockBalanceInclude;
 
-    if (!pagination) return this.prisma.stockBalance.findMany(query);
-    const [items, total] = await Promise.all([
-      this.prisma.stockBalance.findMany({ ...query, ...toSkipTake(pagination) }),
-      this.prisma.stockBalance.count({ where }),
-    ]);
-    return { items, total, page: pagination.page, pageSize: pagination.pageSize };
+    if (filters.sortBy !== 'available') {
+      const query = { where, include, orderBy: [{ item: { name: 'asc' } }, { id: 'asc' }] } satisfies Prisma.StockBalanceFindManyArgs;
+      if (!pagination) return this.prisma.stockBalance.findMany(query);
+      const [items, total] = await Promise.all([
+        this.prisma.stockBalance.findMany({ ...query, ...toSkipTake(pagination) }),
+        this.prisma.stockBalance.count({ where }),
+      ]);
+      return { items, total, page: pagination.page, pageSize: pagination.pageSize };
+    }
+
+    // available = onHand − reserved has no DB column to order by directly
+    // (Prisma 6 can't orderBy a computed expression). The filtered set is
+    // one row per item+location that has ever had a movement — bounded by
+    // the catalog, not the whole transaction history — so sorting it
+    // in-memory and paginating after is a deliberate, bounded exception to
+    // "never sort/paginate in application code" rather than a scalability
+    // risk.
+    const sortDir = filters.sortDir ?? 'asc';
+    const rows = await this.prisma.stockBalance.findMany({ where, include, orderBy: [{ item: { name: 'asc' } }, { id: 'asc' }] });
+    const availableOf = (row: (typeof rows)[number]) => new Prisma.Decimal(row.onHand).minus(row.reserved);
+    const sorted = [...rows].sort((a, b) => {
+      const diff = availableOf(a).comparedTo(availableOf(b));
+      return sortDir === 'asc' ? diff : -diff;
+    });
+    if (!pagination) return sorted;
+    const { skip, take } = toSkipTake(pagination);
+    return { items: sorted.slice(skip, skip + take), total: sorted.length, page: pagination.page, pageSize: pagination.pageSize };
   }
 
   // Item picker for the stock-adjustment form. Exists because the
@@ -103,6 +129,23 @@ export class InventoryService {
     const reserved = balance ? new Prisma.Decimal(balance.reserved) : zero;
     const qc = balance ? new Prisma.Decimal(balance.qc) : zero;
     return { itemId, locationId, onHand, reserved, qc, available: onHand.minus(reserved) };
+  }
+
+  // Availability for every item with a balance row at this location (same
+  // definition as getAvailability()). An item missing from the result has
+  // zero stock. For the sales-order form's per-line availability display —
+  // display only; the authoritative check at confirmation is
+  // stock-ledger.ts reserveAvailable(), under a row lock.
+  async listAvailability(locationId: number) {
+    const balances = await this.prisma.stockBalance.findMany({
+      where: { locationId },
+      select: { itemId: true, onHand: true, reserved: true },
+    });
+    return balances.map((balance) => {
+      const onHand = new Prisma.Decimal(balance.onHand);
+      const reserved = new Prisma.Decimal(balance.reserved);
+      return { itemId: balance.itemId, onHand, reserved, available: onHand.minus(reserved) };
+    });
   }
 
   // Consistency check: every StockBalance bucket must equal the SUM of its

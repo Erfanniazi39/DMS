@@ -203,3 +203,284 @@ export async function applyMovements(tx: Prisma.TransactionClient, rows: Movemen
     })),
   });
 }
+
+// ---------------------------------------------------------------------------
+// Higher-level stock events (Sales batch 2). Both still write only through
+// applyMovements() above; they exist so the caller never has to read a
+// balance outside the lock that protects it.
+// ---------------------------------------------------------------------------
+
+export type StockEventContext = {
+  locationId: number;
+  movementDate: Date;
+  referenceType: StockReferenceType;
+  referenceId: number;
+  referenceNumber?: string | null;
+  createdByUserId?: number | null;
+  note?: string | null;
+};
+
+export type ReserveLine = { referenceLineId: number; itemId: number; quantity: Prisma.Decimal | number | string };
+
+export type ReserveResult = {
+  referenceLineId: number;
+  itemId: number;
+  requested: Prisma.Decimal;
+  reserved: Prisma.Decimal;
+  // requested − reserved: the visible backorder (never silent, build plan §5).
+  shortfall: Prisma.Decimal;
+};
+
+// RESERVE: for each line, RESERVED += min(requested, available), where
+// available = onHand − reserved at this location (QC stock is not sellable —
+// same definition as InventoryService.getAvailability()). Lines are served in
+// the given order; several lines for the same item share that item's
+// availability. A line that can't be (fully) covered is NOT an error — its
+// shortfall is returned so the caller can show a backorder warning.
+//
+// Availability is read under the same FOR UPDATE lock applyMovements() then
+// takes (re-locking a row this transaction already holds is a no-op), so two
+// concurrent reservations can't both claim the same free stock.
+export async function reserveAvailable(tx: Prisma.TransactionClient, context: StockEventContext, lines: ReserveLine[]): Promise<ReserveResult[]> {
+  const zero = new Prisma.Decimal(0);
+  const itemIds = [...new Set(lines.map((line) => line.itemId))].sort((a, b) => a - b);
+  // Lock existing rows only: an item with no balance row has nothing to
+  // reserve, and creating the row here would be a write without a movement.
+  const free = new Map<number, Prisma.Decimal>();
+  for (const itemId of itemIds) {
+    const rows = await tx.$queryRaw<{ on_hand: unknown; reserved: unknown }[]>`
+      SELECT on_hand, reserved FROM stock_balances
+      WHERE item_id = ${itemId} AND location_id = ${context.locationId}
+      FOR UPDATE`;
+    const row = rows?.[0];
+    const available = row ? new Prisma.Decimal(String(row.on_hand)).minus(new Prisma.Decimal(String(row.reserved))) : zero;
+    free.set(itemId, Prisma.Decimal.max(zero, available));
+  }
+
+  const results: ReserveResult[] = lines.map((line) => {
+    const requested = new Prisma.Decimal(line.quantity);
+    const remaining = free.get(line.itemId) ?? zero;
+    const reserved = Prisma.Decimal.min(requested, remaining);
+    free.set(line.itemId, remaining.minus(reserved));
+    return { referenceLineId: line.referenceLineId, itemId: line.itemId, requested, reserved, shortfall: requested.minus(reserved) };
+  });
+
+  await applyMovements(
+    tx,
+    results
+      .filter((result) => result.reserved.greaterThan(0))
+      .map((result) => ({
+        itemId: result.itemId,
+        locationId: context.locationId,
+        bucket: 'RESERVED' as const,
+        movementType: 'RESERVE' as const,
+        quantity: result.reserved,
+        movementDate: context.movementDate,
+        referenceType: context.referenceType,
+        referenceId: context.referenceId,
+        referenceLineId: result.referenceLineId,
+        referenceNumber: context.referenceNumber ?? null,
+        note: context.note ?? null,
+        createdByUserId: context.createdByUserId ?? null,
+      })),
+  );
+  return results;
+}
+
+// RELEASE: RESERVED −= quantity per line (lines with nothing reserved are
+// skipped). The caller passes what it actually holds (e.g.
+// SalesOrderItem.reservedQty); releasing more than the bucket holds is a 409
+// from applyMovements(), never a silent clamp.
+export async function releaseReserved(
+  tx: Prisma.TransactionClient,
+  context: StockEventContext,
+  lines: { referenceLineId: number; itemId: number; quantity: Prisma.Decimal | number | string }[],
+): Promise<void> {
+  await applyMovements(
+    tx,
+    lines
+      .map((line) => ({ ...line, quantity: new Prisma.Decimal(line.quantity) }))
+      .filter((line) => line.quantity.greaterThan(0))
+      .map((line) => ({
+        itemId: line.itemId,
+        locationId: context.locationId,
+        bucket: 'RESERVED' as const,
+        movementType: 'RELEASE' as const,
+        quantity: line.quantity.negated(),
+        movementDate: context.movementDate,
+        referenceType: context.referenceType,
+        referenceId: context.referenceId,
+        referenceLineId: line.referenceLineId,
+        referenceNumber: context.referenceNumber ?? null,
+        note: context.note ?? null,
+        createdByUserId: context.createdByUserId ?? null,
+      })),
+  );
+}
+
+// Distinct 409 code: the delivery would take stock another order holds.
+export const STOCK_RESERVED_FOR_OTHERS = 'STOCK_RESERVED_FOR_OTHERS';
+
+export type IssueLine = {
+  referenceLineId: number;
+  itemId: number;
+  // What is physically leaving the warehouse on this line (> 0).
+  quantity: Prisma.Decimal | number | string;
+  // What the source order line still holds in RESERVED for this item
+  // (SalesOrderItem.reservedQty) — consumed first.
+  reservedQty: Prisma.Decimal | number | string;
+};
+
+export type IssueResult = { referenceLineId: number; itemId: number; issued: Prisma.Decimal; reservedConsumed: Prisma.Decimal };
+
+// DELIVERY_ISSUE (Sales batch 3, build plan §5): per line, ON_HAND −q and
+// RESERVED −min(q, reservedQty). Several lines of the same item are judged
+// together.
+//
+// Two blocks, both under the same FOR UPDATE lock applyMovements() takes
+// (re-locking a row this transaction already holds is a no-op):
+//   - ON_HAND would go negative → 409 NEGATIVE_STOCK from applyMovements().
+//     No override, ever (B11).
+//   - The part NOT covered by this order's own reservation may only come
+//     from free stock (onHand − reserved): a delivery never takes stock that
+//     is reserved for another order. Equivalently, the issue must not leave
+//     RESERVED > ON_HAND. → 409 STOCK_RESERVED_FOR_OTHERS.
+// So an order whose confirm-time shortfall was never reserved (a backorder)
+// can still be delivered from stock that arrived later, as long as it is
+// free — no re-reservation step is needed first.
+export async function issueForDelivery(tx: Prisma.TransactionClient, context: StockEventContext, lines: IssueLine[]): Promise<IssueResult[]> {
+  const zero = new Prisma.Decimal(0);
+  const results: IssueResult[] = lines.map((line) => {
+    const issued = new Prisma.Decimal(line.quantity);
+    const held = Prisma.Decimal.max(zero, new Prisma.Decimal(line.reservedQty));
+    return { referenceLineId: line.referenceLineId, itemId: line.itemId, issued, reservedConsumed: Prisma.Decimal.min(issued, held) };
+  });
+
+  const perItem = new Map<number, { issued: Prisma.Decimal; consumed: Prisma.Decimal }>();
+  for (const result of results) {
+    const entry = perItem.get(result.itemId) ?? { issued: zero, consumed: zero };
+    perItem.set(result.itemId, { issued: entry.issued.plus(result.issued), consumed: entry.consumed.plus(result.reservedConsumed) });
+  }
+
+  const itemIds = [...perItem.keys()].sort((a, b) => a - b);
+  for (const itemId of itemIds) {
+    const rows = await tx.$queryRaw<{ on_hand: unknown; reserved: unknown }[]>`
+      SELECT on_hand, reserved FROM stock_balances
+      WHERE item_id = ${itemId} AND location_id = ${context.locationId}
+      FOR UPDATE`;
+    const row = rows?.[0];
+    // No row / not enough on hand: applyMovements() raises NEGATIVE_STOCK.
+    if (!row) continue;
+    const onHand = new Prisma.Decimal(String(row.on_hand));
+    const reserved = new Prisma.Decimal(String(row.reserved));
+    const { issued, consumed } = perItem.get(itemId)!;
+    if (issued.greaterThan(onHand)) continue;
+    const fromFree = issued.minus(consumed);
+    const free = Prisma.Decimal.max(zero, onHand.minus(reserved));
+    if (fromFree.greaterThan(free)) {
+      const item = await tx.item.findUnique({ where: { id: itemId }, select: { code: true, name: true } });
+      const itemLabel = item ? `«${item.name}» (${item.code})` : `کالای #${itemId}`;
+      throw new ConflictException({
+        statusCode: 409,
+        code: STOCK_RESERVED_FOR_OTHERS,
+        message:
+          `موجودی آزاد ${itemLabel} کافی نیست: از مقدار ${issued.toString()} فقط ${consumed.toString()} برای این سفارش رزرو شده و ` +
+          `موجودی آزاد (رزرونشده) ${free.toString()} است. بقیهٔ موجودی انبار برای سفارش‌های دیگر رزرو شده است.`,
+        details: { itemId, onHand: onHand.toString(), reserved: reserved.toString(), issued: issued.toString(), reservedForThisOrder: consumed.toString(), free: free.toString() },
+      });
+    }
+  }
+
+  const movements: MovementInput[] = [];
+  for (const result of results) {
+    const base = {
+      itemId: result.itemId,
+      locationId: context.locationId,
+      movementType: 'DELIVERY_ISSUE' as const,
+      movementDate: context.movementDate,
+      referenceType: context.referenceType,
+      referenceId: context.referenceId,
+      referenceLineId: result.referenceLineId,
+      referenceNumber: context.referenceNumber ?? null,
+      note: context.note ?? null,
+      createdByUserId: context.createdByUserId ?? null,
+    };
+    movements.push({ ...base, bucket: 'ON_HAND', quantity: result.issued.negated() });
+    if (result.reservedConsumed.greaterThan(0)) movements.push({ ...base, bucket: 'RESERVED', quantity: result.reservedConsumed.negated() });
+  }
+  await applyMovements(tx, movements);
+  return results;
+}
+
+// ---------------------------------------------------------------------------
+// Returns (Sales batch 6, build plan §5's stock-effect table). Both
+// functions below only ever write through applyMovements() above.
+// ---------------------------------------------------------------------------
+
+export type ReceiveReturnLine = { referenceLineId: number; itemId: number; quantity: Prisma.Decimal | number | string };
+
+// RETURN_RECEIPT: QC += quantity per line (SalesReturn APPROVED → RECEIVED).
+// Lines with a zero/negative quantity are skipped (nothing physically came
+// back on that line). No negative-balance concern here — QC only ever goes
+// up on receipt.
+export async function receiveReturn(tx: Prisma.TransactionClient, context: StockEventContext, lines: ReceiveReturnLine[]): Promise<void> {
+  const movements: MovementInput[] = lines
+    .map((line) => ({ ...line, quantity: new Prisma.Decimal(line.quantity) }))
+    .filter((line) => line.quantity.greaterThan(0))
+    .map((line) => ({
+      itemId: line.itemId,
+      locationId: context.locationId,
+      bucket: 'QC' as const,
+      movementType: 'RETURN_RECEIPT' as const,
+      quantity: line.quantity,
+      movementDate: context.movementDate,
+      referenceType: context.referenceType,
+      referenceId: context.referenceId,
+      referenceLineId: line.referenceLineId,
+      referenceNumber: context.referenceNumber ?? null,
+      note: context.note ?? null,
+      createdByUserId: context.createdByUserId ?? null,
+    }));
+  await applyMovements(tx, movements);
+}
+
+export type InspectReturnLine = {
+  referenceLineId: number;
+  itemId: number;
+  // restockQty + writeOffQty must already equal the line's receivedQty —
+  // enforced by the caller (SalesReturnsService.inspect()), not here.
+  restockQty: Prisma.Decimal | number | string;
+  writeOffQty: Prisma.Decimal | number | string;
+};
+
+// Per-line disposition (SalesReturn RECEIVED → INSPECTED): RETURN_RESTOCK
+// (QC −r, ON_HAND +r) for a line's restockQty, and/or RETURN_WRITE_OFF
+// (QC −w) for its writeOffQty. QC going negative here would mean the caller
+// tried to dispose of more than was received — applyMovements() blocks it
+// (409 NEGATIVE_STOCK) the same as every other bucket.
+export async function inspectReturn(tx: Prisma.TransactionClient, context: StockEventContext, lines: InspectReturnLine[]): Promise<void> {
+  const movements: MovementInput[] = [];
+  for (const line of lines) {
+    const restock = new Prisma.Decimal(line.restockQty);
+    const writeOff = new Prisma.Decimal(line.writeOffQty);
+    const base = {
+      itemId: line.itemId,
+      locationId: context.locationId,
+      movementDate: context.movementDate,
+      referenceType: context.referenceType,
+      referenceId: context.referenceId,
+      referenceLineId: line.referenceLineId,
+      referenceNumber: context.referenceNumber ?? null,
+      note: context.note ?? null,
+      createdByUserId: context.createdByUserId ?? null,
+    };
+    if (restock.greaterThan(0)) {
+      movements.push({ ...base, bucket: 'QC', movementType: 'RETURN_RESTOCK', quantity: restock.negated() });
+      movements.push({ ...base, bucket: 'ON_HAND', movementType: 'RETURN_RESTOCK', quantity: restock });
+    }
+    if (writeOff.greaterThan(0)) {
+      movements.push({ ...base, bucket: 'QC', movementType: 'RETURN_WRITE_OFF', quantity: writeOff.negated() });
+    }
+  }
+  await applyMovements(tx, movements);
+}

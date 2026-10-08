@@ -89,7 +89,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
   return (
     <SessionUserContext.Provider value={user}>
       <div className="min-h-screen bg-background text-foreground">
-        <header className="sticky top-0 z-20 flex h-16 items-center justify-between border-b border-border bg-card px-4 shadow-sm sm:px-6">
+        <header className="sticky top-0 z-20 flex h-16 print:hidden items-center justify-between border-b border-border bg-card px-4 shadow-sm sm:px-6">
           <div className="flex min-w-0 items-center gap-3">
             <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground" aria-hidden="true">
               <BarChart3 className="size-5" />
@@ -132,7 +132,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
         </header>
 
         <div className="mx-auto flex max-w-[1600px] flex-col lg:flex-row">
-          <aside className="border-b border-border bg-sidebar text-sidebar-foreground lg:min-h-[calc(100vh-4rem)] lg:w-64 lg:shrink-0 lg:border-b-0 lg:border-e lg:border-sidebar-border">
+          <aside className="border-b border-border bg-sidebar print:hidden text-sidebar-foreground lg:min-h-[calc(100vh-4rem)] lg:w-64 lg:shrink-0 lg:border-b-0 lg:border-e lg:border-sidebar-border">
             <nav className="flex gap-1 overflow-x-auto p-3 lg:sticky lg:top-16 lg:block lg:space-y-5 lg:p-4" aria-label="ناوبری اصلی">
               <button className={`flex shrink-0 items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium lg:w-full ${pathname === "/main" ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"}`} onClick={() => router.push("/main")}>
                 <LayoutDashboard className="size-4" />

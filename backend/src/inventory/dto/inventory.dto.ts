@@ -111,9 +111,19 @@ export const stockAdjustmentListQuerySchema = z.object({
   pageSize: z.string({ error: 'تعداد ردیف در هر صفحه نامعتبر است' }).optional(),
 });
 
+// sortBy=available sorts by onHand − reserved (قابل فروش) — the "which item
+// is running low" view (Sales batch 7, in place of a deferred reorder-level
+// report; Item has no reorder-level field yet). Default stays the name sort
+// the page always had; sortDir defaults to ascending so the lowest-stock
+// items surface first when a caller does switch to it.
+export const STOCK_BALANCE_SORT_FIELDS = ['name', 'available'] as const;
+export const SORT_DIRECTIONS = ['asc', 'desc'] as const;
+
 export const stockBalanceListQuerySchema = z.object({
   q: z.string({ error: 'عبارت جستجو نامعتبر است' }).optional(),
   locationId: optionalId('فیلتر انبار نامعتبر است'),
+  sortBy: z.preprocess(emptyToUndefined, enumField(STOCK_BALANCE_SORT_FIELDS, 'فیلتر مرتب‌سازی نامعتبر است').optional()),
+  sortDir: z.preprocess(emptyToUndefined, enumField(SORT_DIRECTIONS, 'جهت مرتب‌سازی نامعتبر است').optional()),
   page: z.string({ error: 'شماره صفحه نامعتبر است' }).optional(),
   pageSize: z.string({ error: 'تعداد ردیف در هر صفحه نامعتبر است' }).optional(),
 });
@@ -127,4 +137,6 @@ export type UpdateStockAdjustmentDto = z.infer<typeof updateStockAdjustmentSchem
 export type PostStockAdjustmentDto = z.infer<typeof postStockAdjustmentSchema>;
 export type StockAdjustmentListQuery = z.infer<typeof stockAdjustmentListQuerySchema>;
 export type StockBalanceListQuery = z.infer<typeof stockBalanceListQuerySchema>;
+export type StockBalanceSortField = (typeof STOCK_BALANCE_SORT_FIELDS)[number];
+export type SortDirection = (typeof SORT_DIRECTIONS)[number];
 export type AvailabilityQuery = z.infer<typeof availabilityQuerySchema>;

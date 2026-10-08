@@ -71,7 +71,23 @@ function shortJalali(isoDate: string) {
 const compactNumber = new Intl.NumberFormat("fa-IR", { notation: "compact", maximumFractionDigits: 1 });
 const fullNumber = new Intl.NumberFormat("fa-IR");
 
-export default function PurchaseTrendChart({ points, bucket }: { points: TrendPoint[]; bucket: "day" | "week" }) {
+// seriesLabel/ariaLabel default to the original purchases wording so the
+// existing call site needs no change — the sales trend (main/page.tsx) passes
+// its own Persian labels since this is the same bar-chart shape, just a
+// different series.
+export default function PurchaseTrendChart({
+  points,
+  bucket,
+  seriesLabel = "مبلغ خرید",
+  countLabel = "خرید",
+  ariaLabel = "نمودار مبلغ خرید در بازه انتخاب‌شده",
+}: {
+  points: TrendPoint[];
+  bucket: "day" | "week";
+  seriesLabel?: string;
+  countLabel?: string;
+  ariaLabel?: string;
+}) {
   const tokens = useChartTokens();
 
   const option = {
@@ -93,7 +109,7 @@ export default function PurchaseTrendChart({ points, bucket }: { points: TrendPo
         const heading = bucket === "week" ? `هفته از ${formatJalali(localDate(point.date))}` : formatJalali(localDate(point.date));
         return `<div style="font-weight:600;margin-bottom:2px">${heading}</div>`
           + `<div>مبلغ: ${fullNumber.format(Number(point.amount))} ریال</div>`
-          + `<div>تعداد: ${toPersianDigits(point.count)} خرید</div>`;
+          + `<div>تعداد: ${toPersianDigits(point.count)} ${countLabel}</div>`;
       },
     },
     xAxis: {
@@ -115,7 +131,7 @@ export default function PurchaseTrendChart({ points, bucket }: { points: TrendPo
     series: [
       {
         type: "bar",
-        name: "مبلغ خرید",
+        name: seriesLabel,
         data: points.map((point) => Number(point.amount)),
         barMaxWidth: 22,
         itemStyle: { color: tokens.bar, borderRadius: [4, 4, 0, 0] },
@@ -131,7 +147,7 @@ export default function PurchaseTrendChart({ points, bucket }: { points: TrendPo
       notMerge
       style={{ height: 256, width: "100%" }}
       opts={{ renderer: "canvas" }}
-      aria-label="نمودار مبلغ خرید در بازه انتخاب‌شده"
+      aria-label={ariaLabel}
     />
   );
 }

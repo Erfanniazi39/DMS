@@ -441,6 +441,16 @@ describe('CustomersService', () => {
       expect(prisma.customer.delete).not.toHaveBeenCalled();
     });
 
+    it('turns the sales-order FK violation (P2003) into a Persian 409, not a raw 500', async () => {
+      const prisma = createPrismaMock();
+      const service = buildCustomersService(prisma);
+      prisma.customer.findUnique.mockResolvedValue({ id: 5, customerNumber: 'CUS-000005', _count: counts });
+      prisma.customer.delete.mockRejectedValue(new Prisma.PrismaClientKnownRequestError('fk', { code: 'P2003', clientVersion: 'test' }));
+
+      await expect(service.remove(5, 1)).rejects.toThrow('اسناد فروش');
+      expect(prisma.auditLog.create).not.toHaveBeenCalled();
+    });
+
     it('404s for an unknown customer', async () => {
       const prisma = createPrismaMock();
       prisma.customer.findUnique.mockResolvedValue(null);

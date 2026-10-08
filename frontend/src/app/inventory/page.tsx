@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ClipboardPen, Search, X } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, ClipboardPen, Search, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { LIST_PAGE_SIZE, ListPagination, totalPages, type Paginated } from "@/components/ui/list-pagination";
@@ -34,6 +34,12 @@ export default function InventoryPage() {
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [reloadKey, setReloadKey] = useState(0);
+  // "قابل فروش" (available) is sortable in place of the deferred low-stock
+  // report (Item has no reorder-level field yet) — clicking the column the
+  // first time sorts ascending, so the lowest-stock items surface first.
+  // The default stays the plain item-name sort the page always had.
+  const [sortBy, setSortBy] = useState<"name" | "available">("name");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const lastQueryRef = useRef(q);
 
   useEffect(() => {
@@ -52,6 +58,10 @@ export default function InventoryPage() {
         const params = new URLSearchParams();
         if (q.trim()) params.set("q", q.trim());
         if (locationId) params.set("locationId", locationId);
+        if (sortBy === "available") {
+          params.set("sortBy", "available");
+          params.set("sortDir", sortDir);
+        }
         params.set("page", String(page));
         params.set("pageSize", String(LIST_PAGE_SIZE));
         const data = await apiFetch<Paginated<StockBalanceRow>>(`/inventory/balances?${params.toString()}`);
@@ -76,7 +86,17 @@ export default function InventoryPage() {
       cancelled = true;
       clearTimeout(timeout);
     };
-  }, [q, locationId, page, reloadKey, canView]);
+  }, [q, locationId, page, sortBy, sortDir, reloadKey, canView]);
+
+  function toggleAvailableSort() {
+    setPage(1);
+    if (sortBy !== "available") {
+      setSortBy("available");
+      setSortDir("asc");
+    } else {
+      setSortDir((current) => (current === "asc" ? "desc" : "asc"));
+    }
+  }
 
   if (!canView) return <NoAccess message="اجازه مشاهده موجودی را ندارید." />;
 
@@ -181,7 +201,21 @@ export default function InventoryPage() {
                     <th className="px-3 py-2.5 font-medium">موجودی انبار</th>
                     <th className="px-3 py-2.5 font-medium">رزروشده</th>
                     <th className="px-3 py-2.5 font-medium">کنترل کیفیت</th>
-                    <th className="px-3 py-2.5 font-medium">قابل فروش</th>
+                    <th className="px-3 py-2.5 font-medium">
+                      <button
+                        type="button"
+                        className="inline-flex items-center gap-1 hover:text-foreground"
+                        onClick={toggleAvailableSort}
+                        aria-label={`مرتب‌سازی بر اساس قابل فروش${sortBy === "available" ? (sortDir === "asc" ? " (صعودی)" : " (نزولی)") : ""}`}
+                      >
+                        قابل فروش
+                        {sortBy === "available" ? (
+                          sortDir === "asc" ? <ArrowUp className="size-3.5" aria-hidden="true" /> : <ArrowDown className="size-3.5" aria-hidden="true" />
+                        ) : (
+                          <ArrowUpDown className="size-3.5 opacity-40" aria-hidden="true" />
+                        )}
+                      </button>
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">

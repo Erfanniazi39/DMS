@@ -32,7 +32,9 @@ type FinancialForm = {
 // «اطلاعات مالی» — credit/payment POLICY only (payment term, preferred
 // payment method, credit limit, credit hold). Read and edited only with
 // customers.finance (GET/PATCH /customers/:id/financial); without it the
-// section just says so. No balance: there is no Sales/finance module yet.
+// section just says so. The actual balance/open-invoices live in
+// AccountSection below (receivables.view, not customers.finance) — this
+// section is the credit policy only, never the money owed.
 export function FinancialSection({
   customerId,
   canFinance,
@@ -186,7 +188,7 @@ export function FinancialSection({
               </div>
             </dl>
             <p className="rounded-md border border-dashed border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-              موجودی پس از راه‌اندازی ماژول فروش/مالی در دسترس خواهد بود
+              مانده حساب و فاکتورهای باز در بخش «حساب مشتری» این صفحه در دسترس است
             </p>
           </div>
         )}

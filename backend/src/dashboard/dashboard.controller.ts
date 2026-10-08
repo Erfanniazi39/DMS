@@ -22,6 +22,15 @@ export class DashboardController {
     return this.dashboardService.getPurchasesSummary(query);
   }
 
+  // Same query shape as purchases-summary (period/from/to), reused verbatim
+  // — gated on sales.view, the permission every sales-adjacent role actually
+  // holds (sales.manage was narrowed away from most roles in Sales Batch 1).
+  @Get('sales-summary')
+  @RequirePermissions('sales.view')
+  salesSummary(@Query(new ZodValidationPipe(purchasesSummaryQuerySchema)) query: PurchasesSummaryQueryDto) {
+    return this.dashboardService.getSalesSummary(query);
+  }
+
   // Same gate as purchases-summary: the feed only covers Purchase and
   // PurchaseRequest audit entries (see DashboardService.getRecentActivity).
   @Get('recent-activity')

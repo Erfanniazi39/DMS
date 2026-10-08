@@ -12,6 +12,7 @@ import { OverviewSection } from "./_sections/OverviewSection";
 import { ContactsSection } from "./_sections/ContactsSection";
 import { AddressesSection } from "./_sections/AddressesSection";
 import { FinancialSection } from "./_sections/FinancialSection";
+import { AccountSection } from "./_sections/AccountSection";
 import { NotesSection } from "./_sections/NotesSection";
 import { DocumentsSection } from "./_sections/DocumentsSection";
 import { ComplaintsSection } from "./_sections/ComplaintsSection";
@@ -19,8 +20,9 @@ import { HistorySection } from "./_sections/HistorySection";
 
 // Customer detail page. The loaded customer and the stale-record flag live
 // here; each section in ./_sections owns its own dialog state and calls
-// `onChanged` (reload) after a write. No Transactions/Sales tab — Sales
-// doesn't exist yet.
+// `onChanged` (reload) after a write. AccountSection (balance/open invoices/
+// statement) calls Receivables' API directly — the Customers module itself
+// still has no dependency on Sales/Receivables (build plan §4).
 export default function CustomerDetailPage() {
   const params = useParams<{ id: string }>();
   const customerId = Number(params.id);
@@ -30,6 +32,7 @@ export default function CustomerDetailPage() {
   const canManage = user?.permissions.includes("customers.manage") ?? false;
   const canFinance = user?.permissions.includes("customers.finance") ?? false;
   const canArchive = user?.permissions.includes("customers.archive") ?? false;
+  const canViewReceivables = user?.permissions.includes("receivables.view") ?? false;
 
   const [customer, setCustomer] = useState<CustomerDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -135,6 +138,7 @@ export default function CustomerDetailPage() {
         <ContactsSection customer={customer} canManage={canManage} onChanged={reloadCustomer} toasts={toastActions} />
         <AddressesSection customer={customer} canManage={canManage} onChanged={reloadCustomer} toasts={toastActions} />
         <FinancialSection customerId={customer.id} canFinance={canFinance} onChanged={reloadCustomer} toasts={toastActions} />
+        <AccountSection customerId={customer.id} canViewReceivables={canViewReceivables} />
         <NotesSection customer={customer} canManage={canManage} onChanged={reloadCustomer} toasts={toastActions} />
         <DocumentsSection customer={customer} canManage={canManage} onChanged={reloadCustomer} toasts={toastActions} />
         <ComplaintsSection customer={customer} canManage={canManage} onChanged={reloadCustomer} toasts={toastActions} />

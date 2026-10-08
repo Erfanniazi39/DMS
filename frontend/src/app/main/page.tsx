@@ -58,15 +58,17 @@ const periodOptions: { key: PeriodKey; label: string }[] = [
 
 type KpiKey = "purchases" | "sales" | "unpaid" | "openRequests";
 
-// The Sales card is placeholder-only until the Sales module exists. An
-// Inventory card used to be listed here gated on `inventory.view`, a
+// An Inventory card used to be listed here gated on `inventory.view`, a
 // permission that does not exist in PERMISSION_CATALOG, so it could never
 // render for anyone — it was removed; add it back (with a real catalog
-// permission) once Inventory is built. The three purchase cards share the
-// permission the backend's /dashboard/purchases-summary endpoint requires.
+// permission) once Inventory is built. The sales card is gated on
+// `sales.view` — the permission every sales-adjacent role actually holds
+// (`sales.manage` was narrowed away from most roles in Sales Batch 1). The
+// three purchase cards share the permission the backend's
+// /dashboard/purchases-summary endpoint requires.
 const kpis: { key: KpiKey; label: string; icon: typeof ShoppingCart; permission: string }[] = [
   { key: "purchases", label: "مجموع خریدها", icon: ShoppingCart, permission: "purchases.manage" },
-  { key: "sales", label: "مجموع فروش‌ها", icon: ReceiptText, permission: "sales.manage" },
+  { key: "sales", label: "مجموع فروش‌ها", icon: ReceiptText, permission: "sales.view" },
   { key: "unpaid", label: "پرداخت‌های پرداخت‌نشده", icon: Wallet, permission: "purchases.manage" },
   { key: "openRequests", label: "درخواست‌های خرید باز", icon: ClipboardList, permission: "purchases.manage" },
 ];
@@ -89,6 +91,16 @@ type PurchasesSummary = {
   trend: TrendPoint[];
   recentPurchases: RecentPurchase[];
   topSuppliers: SupplierSpend[];
+};
+
+// GET /dashboard/sales-summary — same shape as PurchasesSummary's own
+// totals/outstanding/trend (dashboard.service.ts's getSalesSummary() mirrors
+// getPurchasesSummary() exactly), over SalesInvoice instead of Purchase.
+type SalesSummary = {
+  period: { key: PeriodKey; from: string; to: string; bucket: "day" | "week" };
+  totals: { salesAmount: string; salesCount: number };
+  outstanding: { amount: string; invoiceCount: number };
+  trend: TrendPoint[];
 };
 
 // Spend data only — purchase amounts per supplier. There is no
@@ -295,7 +307,16 @@ export default function AdminDashboardPage() {
   const [openItemsReloadKey, setOpenItemsReloadKey] = useState(0);
   const [openItemsTab, setOpenItemsTab] = useState<OpenItemsTab>("purchases");
 
+  // Sales KPI card + trend, same period selector as the purchases summary
+  // but its own loading/error state (a sales.view-only user has no
+  // purchases.manage, so the two must be independent).
+  const [salesSummary, setSalesSummary] = useState<SalesSummary | null>(null);
+  const [salesLoading, setSalesLoading] = useState(false);
+  const [salesError, setSalesError] = useState<string | null>(null);
+  const [salesReloadKey, setSalesReloadKey] = useState(0);
+
   const canViewPurchases = user?.permissions.includes("purchases.manage") ?? false;
+  const canViewSales = user?.permissions.includes("sales.view") ?? false;
   const customIncomplete = period === "custom" && (!customFrom || !customTo);
   const customReversed = period === "custom" && !!customFrom && !!customTo && customFrom > customTo;
   const rangeInvalid = customIncomplete || customReversed;
@@ -328,6 +349,35 @@ export default function AdminDashboardPage() {
       cancelled = true;
     };
   }, [canViewPurchases, rangeInvalid, period, customFrom, customTo, reloadKey]);
+
+  useEffect(() => {
+    if (!canViewSales || rangeInvalid) return;
+    let cancelled = false;
+    async function loadSalesSummary() {
+      setSalesLoading(true);
+      setSalesError(null);
+      try {
+        const params = new URLSearchParams({ period });
+        if (period === "custom") {
+          params.set("from", customFrom);
+          params.set("to", customTo);
+        }
+        const data = await apiFetch<SalesSummary>(`/dashboard/sales-summary?${params.toString()}`);
+        if (!cancelled) setSalesSummary(data);
+      } catch (reason) {
+        if (!cancelled) {
+          setSalesSummary(null);
+          setSalesError((reason as ApiError).message ?? "دریافت اطلاعات فروش ناموفق بود.");
+        }
+      } finally {
+        if (!cancelled) setSalesLoading(false);
+      }
+    }
+    void loadSalesSummary();
+    return () => {
+      cancelled = true;
+    };
+  }, [canViewSales, rangeInvalid, period, customFrom, customTo, salesReloadKey]);
 
   useEffect(() => {
     if (!canViewPurchases) return;
@@ -373,16 +423,20 @@ export default function AdminDashboardPage() {
 
   if (!user) return null;
 
-  const canViewSales = user.permissions.includes("sales.manage");
   const canViewTransactions = canViewPurchases || canViewSales;
   const visibleKpis = kpis.filter((kpi) => user.permissions.includes(kpi.permission));
   const activeChartMetric = chartMetric === "خریدها" && !canViewPurchases ? "فروش‌ها" : chartMetric;
   const periodLabel = periodOptions.find((option) => option.key === period)?.label ?? "";
+  // Either summary carries the same echoed period/from/to — whichever one
+  // has actually loaded (a sales.view-only user without purchases.manage
+  // never gets `summary`) drives the displayed custom-range description.
+  const periodEcho = summary ?? salesSummary;
   const periodDescription =
-    period === "custom" && summary && !rangeInvalid
-      ? `${formatJalali(`${summary.period.from}T00:00:00`)} تا ${formatJalali(`${summary.period.to}T00:00:00`)}`
+    period === "custom" && periodEcho && !rangeInvalid
+      ? `${formatJalali(`${periodEcho.period.from}T00:00:00`)} تا ${formatJalali(`${periodEcho.period.to}T00:00:00`)}`
       : periodLabel;
   const retry = () => setReloadKey((key) => key + 1);
+  const retrySales = () => setSalesReloadKey((key) => key + 1);
 
   // Shared "not ready" state for every purchase-backed section. Returns
   // null once real data is available (loaded, no error).
@@ -393,10 +447,33 @@ export default function AdminDashboardPage() {
       : loading || !summary
         ? "در حال بارگذاری..."
         : null;
+  // Same shape for the sales-backed sections — kept independent of the
+  // purchases loading/summary state above: a sales.view-only user (no
+  // purchases.manage) never triggers the purchases fetch at all, so
+  // `pendingMessage` would otherwise stay stuck on "در حال بارگذاری..."
+  // forever for them.
+  const salesPendingMessage = customIncomplete
+    ? "تاریخ شروع و پایان بازه را انتخاب کنید."
+    : customReversed
+      ? "تاریخ پایان نمی‌تواند قبل از تاریخ شروع باشد."
+      : salesLoading || !salesSummary
+        ? "در حال بارگذاری..."
+        : null;
 
   function renderKpiBody(key: KpiKey) {
     if (key === "sales") {
-      return <p className="mt-3 text-sm font-medium text-muted-foreground">اطلاعاتی برای نمایش وجود ندارد</p>;
+      if (salesError && !rangeInvalid) return <p className="mt-3 text-sm font-medium text-destructive">{salesError}</p>;
+      if (salesPendingMessage || !salesSummary) return <p className="mt-3 text-sm text-muted-foreground">{salesPendingMessage}</p>;
+      const value = `${formatMoney(salesSummary.totals.salesAmount)} ریال`;
+      const caption = salesSummary.totals.salesCount > 0
+        ? `${toPersianDigits(salesSummary.totals.salesCount)} فاکتور — ${periodDescription}`
+        : `فاکتوری در بازه «${periodDescription}» ثبت نشده است`;
+      return (
+        <>
+          <p className="mt-2 text-xl font-semibold tabular-nums tracking-tight">{value}</p>
+          <p className="mt-1 text-xs text-muted-foreground">{caption}</p>
+        </>
+      );
     }
     if (error && !rangeInvalid) return <p className="mt-3 text-sm font-medium text-destructive">{error}</p>;
     if (pendingMessage || !summary) return <p className="mt-3 text-sm text-muted-foreground">{pendingMessage}</p>;
@@ -426,6 +503,20 @@ export default function AdminDashboardPage() {
   }
 
   function renderTrend() {
+    if (activeChartMetric === "فروش‌ها") {
+      if (salesError && !rangeInvalid) return <ErrorState message={salesError} onRetry={retrySales} />;
+      if (salesPendingMessage || !salesSummary) return <SectionMessage message={salesPendingMessage ?? ""} />;
+      if (salesSummary.totals.salesCount === 0) return <EmptyState message="در این بازه فاکتوری ثبت نشده است." />;
+      return (
+        <PurchaseTrendChart
+          points={salesSummary.trend}
+          bucket={salesSummary.period.bucket}
+          seriesLabel="مبلغ فروش"
+          countLabel="فاکتور"
+          ariaLabel="نمودار مبلغ فروش در بازه انتخاب‌شده"
+        />
+      );
+    }
     if (activeChartMetric !== "خریدها") {
       return <EmptyState message={`برای نمایش روند ${activeChartMetric} هنوز داده‌ای ثبت نشده است.`} />;
     }
@@ -737,7 +828,7 @@ export default function AdminDashboardPage() {
 
         {canViewTransactions ? <section className="grid gap-6 xl:grid-cols-[minmax(0,1.6fr)_minmax(20rem,1fr)]">
           <Card>
-            <CardHeader className="border-b border-border"><div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center"><div><CardTitle>روند خرید و فروش</CardTitle><p className="mt-1 text-sm text-muted-foreground">گزارش دوره: {periodDescription}{summary?.period.bucket === "week" && activeChartMetric === "خریدها" ? " (هفتگی)" : ""}</p></div><select className="h-8 rounded-lg border border-input bg-background px-2.5 text-sm outline-none focus:border-ring focus:ring-3 focus:ring-ring/20" value={activeChartMetric} onChange={(event) => setChartMetric(event.target.value)}>{canViewPurchases ? <option>خریدها</option> : null}{canViewSales ? <option>فروش‌ها</option> : null}</select></div></CardHeader>
+            <CardHeader className="border-b border-border"><div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center"><div><CardTitle>روند خرید و فروش</CardTitle><p className="mt-1 text-sm text-muted-foreground">گزارش دوره: {periodDescription}{(activeChartMetric === "خریدها" ? summary?.period.bucket : salesSummary?.period.bucket) === "week" ? " (هفتگی)" : ""}</p></div><select className="h-8 rounded-lg border border-input bg-background px-2.5 text-sm outline-none focus:border-ring focus:ring-3 focus:ring-ring/20" value={activeChartMetric} onChange={(event) => setChartMetric(event.target.value)}>{canViewPurchases ? <option>خریدها</option> : null}{canViewSales ? <option>فروش‌ها</option> : null}</select></div></CardHeader>
             <CardContent className="pt-4">{renderTrend()}</CardContent>
           </Card>
           <Card><CardHeader className="border-b border-border"><CardTitle>فعالیت‌های اخیر</CardTitle></CardHeader><CardContent className="pt-4">{renderActivity()}</CardContent></Card>

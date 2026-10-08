@@ -44,7 +44,7 @@ export class InventoryController {
   @RequirePermissions('inventory.view')
   listBalances(@Query(new ZodValidationPipe(stockBalanceListQuerySchema)) query: StockBalanceListQuery) {
     return this.inventoryService.listBalances(
-      { q: query.q?.trim() || undefined, locationId: query.locationId },
+      { q: query.q?.trim() || undefined, locationId: query.locationId, sortBy: query.sortBy, sortDir: query.sortDir },
       parsePagination(query.page, query.pageSize),
     );
   }

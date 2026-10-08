@@ -22,6 +22,17 @@ export const AUDIT_ENTITY = {
   // Inventory (Sales batch 1). StockMovement rows are their own audit trail
   // (append-only, with createdByUserId); the source document is what's logged.
   STOCK_ADJUSTMENT: 'StockAdjustment',
+  // Sales (batch 2).
+  SALES_ORDER: 'SalesOrder',
+  // Sales (batch 3).
+  DELIVERY: 'Delivery',
+  // Sales (batch 4).
+  SALES_INVOICE: 'SalesInvoice',
+  // Receivables (Sales batch 5).
+  CUSTOMER_PAYMENT: 'CustomerPayment',
+  // Sales (batch 6).
+  SALES_RETURN: 'SalesReturn',
+  CREDIT_NOTE: 'CreditNote',
 } as const;
 
 // One field-level change recorded in AuditLog.changes (added 2026-10-06 for

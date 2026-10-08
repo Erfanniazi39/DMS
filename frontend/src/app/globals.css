@@ -159,3 +159,13 @@
     @apply font-sans;
   }
 }
+
+/* Browser-print documents (/<doc>/[id]/print — components/print/). A4
+   portrait with modest margins; the app chrome is hidden via print:hidden
+   in AppShell, and the sheet itself drops its screen border/padding. */
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 12mm;
+  }
+}

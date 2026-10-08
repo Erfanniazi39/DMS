@@ -4,6 +4,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { AUDIT_ENTITY, AuditService } from '../audit/audit.service';
 import { OPEN_PURCHASE_REQUEST_WHERE } from '../purchase-requests/purchase-request-rules';
 import { COUNTABLE_PURCHASE_WHERE, OPEN_PURCHASE_WHERE, OUTSTANDING_PURCHASE_WHERE } from '../purchases/purchase-rules';
+import { OPEN_SALES_INVOICE_WHERE, SALES_STATISTICS_INVOICE_WHERE } from '../sales/sales-rules';
 import type { DashboardPeriod, PurchasesSummaryQueryDto } from './dto/purchases-summary.dto';
 
 const MS_PER_DAY = 86_400_000;
@@ -222,6 +223,68 @@ export class DashboardService {
       trend: buckets.map((bucket) => ({ date: toIsoDate(bucket.date), amount: bucket.amount.toString(), count: bucket.count })),
       recentPurchases,
       topSuppliers,
+    };
+  }
+
+  // Sales KPI card + chart data for the admin dashboard (build plan §7,
+  // Batch 7) — mirrors getPurchasesSummary()'s own shape (period totals,
+  // outstanding, trend) exactly, but over SalesInvoice instead of Purchase.
+  // "What counts as a sale" (POSTED + OPERATIONAL, OPENING_BALANCE excluded)
+  // and "what counts as outstanding" (POSTED, not yet PAID) are both
+  // imported from sales/sales-rules.ts — never redefined here, same
+  // discipline as the purchases summary above (CLAUDE.md rule 11).
+  async getSalesSummary(query: PurchasesSummaryQueryDto, now: Date = new Date()) {
+    const range = resolvePeriodRange(query, now);
+    const periodWhere: Prisma.SalesInvoiceWhereInput = {
+      ...SALES_STATISTICS_INVOICE_WHERE,
+      invoiceDate: { gte: range.from, lt: range.toExclusive },
+    };
+
+    const [periodTotals, perDate, outstanding] = await Promise.all([
+      this.prisma.salesInvoice.aggregate({ where: periodWhere, _sum: { totalAmount: true }, _count: { _all: true } }),
+      this.prisma.salesInvoice.groupBy({ by: ['invoiceDate'], where: periodWhere, _sum: { totalAmount: true }, _count: { _all: true } }),
+      // Current state, not period-scoped: every posted invoice still owed.
+      this.prisma.salesInvoice.aggregate({
+        where: OPEN_SALES_INVOICE_WHERE,
+        _sum: { totalAmount: true, paidAmount: true, creditedAmount: true },
+        _count: { _all: true },
+      }),
+    ]);
+
+    const bucketDays = range.bucket === 'day' ? 1 : 7;
+    const bucketCount = Math.ceil(range.days / bucketDays);
+    const buckets = Array.from({ length: bucketCount }, (_, index) => ({
+      date: addDays(range.from, index * bucketDays),
+      amount: new Prisma.Decimal(0),
+      count: 0,
+    }));
+    for (const row of perDate) {
+      const index = Math.floor((row.invoiceDate.getTime() - range.from.getTime()) / (bucketDays * MS_PER_DAY));
+      const bucket = buckets[Math.min(Math.max(index, 0), bucketCount - 1)];
+      bucket.amount = bucket.amount.plus(row._sum.totalAmount ?? 0);
+      bucket.count += row._count._all;
+    }
+
+    const outstandingTotal = outstanding._sum.totalAmount ?? new Prisma.Decimal(0);
+    const outstandingPaid = outstanding._sum.paidAmount ?? new Prisma.Decimal(0);
+    const outstandingCredited = outstanding._sum.creditedAmount ?? new Prisma.Decimal(0);
+
+    return {
+      period: {
+        key: range.period,
+        from: toIsoDate(range.from),
+        to: toIsoDate(addDays(range.toExclusive, -1)),
+        bucket: range.bucket,
+      },
+      totals: {
+        salesAmount: (periodTotals._sum.totalAmount ?? new Prisma.Decimal(0)).toString(),
+        salesCount: periodTotals._count._all,
+      },
+      outstanding: {
+        amount: outstandingTotal.minus(outstandingPaid).minus(outstandingCredited).toString(),
+        invoiceCount: outstanding._count._all,
+      },
+      trend: buckets.map((bucket) => ({ date: toIsoDate(bucket.date), amount: bucket.amount.toString(), count: bucket.count })),
     };
   }
 
