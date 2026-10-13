@@ -6,6 +6,11 @@ import { optionalMoney, optionalTrimmedString } from '../../common/zod-fields';
 
 export const ITEM_STATUSES = ['active', 'inactive'] as const;
 
+// Inventory build plan I1, B2: which stock role the item plays.
+// FINISHED_GOOD is the only kind Sales pickers show; RAW_MATERIAL/PACKAGING
+// are consumed by production and tracked as stock, never sellable.
+export const ITEM_KINDS = ['FINISHED_GOOD', 'RAW_MATERIAL', 'PACKAGING'] as const;
+
 const foreignKeyId = (requiredMessage: string) =>
   z.number({ error: requiredMessage }).int(requiredMessage).positive(requiredMessage);
 
@@ -23,10 +28,13 @@ export const createItemSchema = z.object({
   // Unlike Supplier, status is offered on the create form too — defaults
   // to active when omitted.
   status: z.enum(ITEM_STATUSES).default('active'),
+  // Defaults to FINISHED_GOOD when omitted (every existing item is one).
+  itemKind: z.enum(ITEM_KINDS).default('FINISHED_GOOD'),
 });
 
 export const updateItemSchema = createItemSchema.extend({
   status: z.enum(ITEM_STATUSES),
+  itemKind: z.enum(ITEM_KINDS),
 });
 
 export type CreateItemDto = z.infer<typeof createItemSchema>;

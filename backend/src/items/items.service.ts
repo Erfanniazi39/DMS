@@ -3,6 +3,9 @@ import { ItemStatus, Prisma } from '@prisma/client';
 import { toSkipTake, type PaginationParams } from '../common/pagination';
 import { PrismaService } from '../prisma/prisma.service';
 import { AUDIT_ENTITY, AuditService, diffChanges } from '../audit/audit.service';
+// Plain function import (no module dependency) — see inventory-queries.ts's
+// header comment and build plan §4's DI-cycle note.
+import { hasStockHistory } from '../inventory/inventory-queries';
 import type { CreateItemDto, UpdateItemDto } from './dto/item.dto';
 
 export type ItemListFilters = { q?: string; status?: string; categoryId?: string };
@@ -75,6 +78,7 @@ export class ItemsService {
         note: dto.note,
         sellingPrice: dto.sellingPrice,
         status: dto.status,
+        itemKind: dto.itemKind,
       },
       include: itemInclude,
     });
@@ -86,6 +90,12 @@ export class ItemsService {
     const existing = await this.get(id);
     await this.ensureUnique(dto.code, dto.name, id);
     await this.ensureReferences(dto.categoryId, dto.unitId, existing);
+    // Inventory build plan I1, finding §2.3-1: changing the unit after the
+    // item has stock history would silently change the meaning of every
+    // past quantity. An item with no movements yet is unaffected.
+    if (dto.unitId !== existing.unitId && (await hasStockHistory(this.prisma, id))) {
+      throw new BadRequestException('این کالا دارای سابقهٔ موجودی است؛ واحد آن پس از ثبت اولین رویداد انباری قابل تغییر نیست.');
+    }
     const updated = await this.prisma.item.update({
       where: { id },
       data: {
@@ -98,6 +108,7 @@ export class ItemsService {
         // Full-record form: omitted/blank clears the default price.
         sellingPrice: dto.sellingPrice ?? null,
         status: dto.status,
+        itemKind: dto.itemKind,
       },
       include: itemInclude,
     });

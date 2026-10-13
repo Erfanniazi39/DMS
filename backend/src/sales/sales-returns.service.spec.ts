@@ -1,8 +1,26 @@
 import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { RECORD_MODIFIED_CODE } from '../common/optimistic-lock';
-import { balanceOf, seedStock, setBucket } from '../inventory/inventory.spec-helpers';
+import { balanceOf, damagedOf, seedBatch, seedStock, setBucket, trackItem } from '../inventory/inventory.spec-helpers';
 import { buildSalesReturnsService, createSalesDb, VERSION, type SalesDb } from './sales.spec-helpers';
+
+// Seeds a posted DELIVERY_ISSUE movement directly into the Inventory fake's
+// movement log, as if issueForDelivery() had already drawn deliveryItemId's
+// stock from this batch — the shape listIssuedBatches() (inventory-queries.ts)
+// reads back (I4, §5.4a R7).
+function seedIssuedBatch(db: SalesDb, args: { itemId: number; locationId?: number; deliveryId: number; deliveryItemId: number; batchId: number; quantity: number }) {
+  db.state.movements.push({
+    itemId: args.itemId,
+    locationId: args.locationId ?? 1,
+    bucket: 'ON_HAND',
+    movementType: 'DELIVERY_ISSUE',
+    quantity: new Prisma.Decimal(-args.quantity),
+    referenceType: 'DELIVERY',
+    referenceId: args.deliveryId,
+    referenceLineId: args.deliveryItemId,
+    batchId: args.batchId,
+  } as never);
+}
 
 // SalesReturnsService — the full RMA lifecycle. Stock and the document
 // sequence run on the Inventory in-memory fake (real rollback), so the
@@ -103,6 +121,39 @@ describe('SalesReturnsService', () => {
       world(db);
       db.delivery.findUnique.mockResolvedValue(null);
       await expect(buildSalesReturnsService(db).deliveryContext(999)).rejects.toBeInstanceOf(NotFoundException);
+    });
+  });
+
+  // I4 (§5.4a R7): the receive form's batch picker.
+  describe('receiveOptions', () => {
+    it('lists the issued batch(es) for a tracked item’s line, and an empty list for an untracked one', async () => {
+      const db = createSalesDb();
+      trackItem(db, 1);
+      const batch = seedBatch(db, { itemId: 1, batchNumber: 'LOT-1', onHand: 3 });
+      seedIssuedBatch(db, { itemId: 1, deliveryId: 41, deliveryItemId: 401, batchId: batch.id, quantity: 3 });
+      world(db, { salesReturn: requestedReturn({ status: 'APPROVED', returnNumber: 'RMA-1405-000001' }) });
+
+      const result = await buildSalesReturnsService(db).receiveOptions(81);
+      expect(result.lines).toEqual([
+        expect.objectContaining({
+          salesReturnItemId: 801,
+          batchTracked: true,
+          batches: [expect.objectContaining({ batchId: batch.id, batchNumber: 'LOT-1', quantity: '3' })],
+        }),
+      ]);
+    });
+
+    it('an untracked item’s line reports batchTracked: false and no batch choices', async () => {
+      const db = createSalesDb();
+      world(db, { salesReturn: requestedReturn({ status: 'APPROVED', returnNumber: 'RMA-1405-000001' }) });
+      const result = await buildSalesReturnsService(db).receiveOptions(81);
+      expect(result.lines).toEqual([expect.objectContaining({ salesReturnItemId: 801, batchTracked: false, batches: [] })]);
+    });
+
+    it('404s for an unknown return', async () => {
+      const db = createSalesDb();
+      db.salesReturn.findUnique.mockResolvedValue(null);
+      await expect(buildSalesReturnsService(db).receiveOptions(999)).rejects.toBeInstanceOf(NotFoundException);
     });
   });
 
@@ -269,6 +320,97 @@ describe('SalesReturnsService', () => {
     });
   });
 
+  // I4 (§5.4a R7/B22/B24, build plan §16 resume step 6): batch selection at
+  // receive() for a tracked item — never reads stock_movements/stock_batches
+  // directly, only via Inventory's exported listIssuedBatches()/resolveBatches().
+  describe('receive — batch-tracked items (I4)', () => {
+    it('auto-selects the single batch the delivery line issued from, with no batchId given', async () => {
+      const db = createSalesDb();
+      trackItem(db, 1);
+      seedStock(db, 1, 10);
+      const batch = seedBatch(db, { itemId: 1, batchNumber: 'LOT-1', onHand: 2 });
+      seedIssuedBatch(db, { itemId: 1, deliveryId: 41, deliveryItemId: 401, batchId: batch.id, quantity: 3 });
+      const state = world(db, { salesReturn: requestedReturn({ status: 'APPROVED', returnNumber: 'RMA-1405-000001' }) });
+
+      await buildSalesReturnsService(db).receive(81, { updatedAt: VERSION } as never, ACTOR);
+
+      expect(state.salesReturn.items[0].batchId).toBe(batch.id);
+      const receipt = db.state.movements.find((m: any) => m.movementType === 'RETURN_RECEIPT');
+      expect(receipt).toEqual(expect.objectContaining({ batchId: batch.id }));
+    });
+
+    it('refuses a client-given batchId that does not match the single issued batch', async () => {
+      const db = createSalesDb();
+      trackItem(db, 1);
+      seedStock(db, 1, 10);
+      const batch = seedBatch(db, { itemId: 1, batchNumber: 'LOT-1', onHand: 2 });
+      seedIssuedBatch(db, { itemId: 1, deliveryId: 41, deliveryItemId: 401, batchId: batch.id, quantity: 3 });
+      world(db, { salesReturn: requestedReturn({ status: 'APPROVED', returnNumber: 'RMA-1405-000001' }) });
+
+      await expect(
+        buildSalesReturnsService(db).receive(81, { updatedAt: VERSION, items: [{ salesReturnItemId: 801, batchId: batch.id + 999 }] } as never, ACTOR),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('requires an explicit batchId when the delivery line issued from more than one batch, and refuses one not among them', async () => {
+      const db = createSalesDb();
+      trackItem(db, 1);
+      seedStock(db, 1, 10);
+      const batchA = seedBatch(db, { itemId: 1, batchNumber: 'A', onHand: 1 });
+      const batchB = seedBatch(db, { itemId: 1, batchNumber: 'B', onHand: 2 });
+      seedIssuedBatch(db, { itemId: 1, deliveryId: 41, deliveryItemId: 401, batchId: batchA.id, quantity: 1 });
+      seedIssuedBatch(db, { itemId: 1, deliveryId: 41, deliveryItemId: 401, batchId: batchB.id, quantity: 2 });
+      const state = world(db, { salesReturn: requestedReturn({ status: 'APPROVED', returnNumber: 'RMA-1405-000001' }) });
+      const service = buildSalesReturnsService(db);
+
+      await expect(service.receive(81, { updatedAt: VERSION } as never, ACTOR)).rejects.toBeInstanceOf(BadRequestException);
+      await expect(
+        service.receive(81, { updatedAt: VERSION, items: [{ salesReturnItemId: 801, batchId: 999999 }] } as never, ACTOR),
+      ).rejects.toBeInstanceOf(BadRequestException);
+
+      await service.receive(81, { updatedAt: VERSION, items: [{ salesReturnItemId: 801, receivedQty: 2, batchId: batchB.id }] } as never, ACTOR);
+      expect(state.salesReturn.items[0].batchId).toBe(batchB.id);
+    });
+
+    it('B22: no batch was issued (a pre-cutover delivery) — requires a typed lot number, which resolves/creates the batch', async () => {
+      const db = createSalesDb();
+      trackItem(db, 1);
+      seedStock(db, 1, 10);
+      world(db, { salesReturn: requestedReturn({ status: 'APPROVED', returnNumber: 'RMA-1405-000001' }) });
+      const service = buildSalesReturnsService(db);
+
+      await expect(service.receive(81, { updatedAt: VERSION } as never, ACTOR)).rejects.toBeInstanceOf(BadRequestException);
+
+      await service.receive(81, { updatedAt: VERSION, items: [{ salesReturnItemId: 801, batchNumber: 'OLD-LOT' }] } as never, ACTOR);
+      const created = db.state.batches.find((b: any) => b.batchNumber === 'OLD-LOT');
+      expect(created).toBeDefined();
+      const receipt = db.state.movements.find((m: any) => m.movementType === 'RETURN_RECEIPT');
+      expect(receipt).toEqual(expect.objectContaining({ batchId: created!.id }));
+    });
+
+    it('per-batch cap (B24): refuses receiving more than this batch’s issued quantity minus what other return lines already received from it', async () => {
+      const db = createSalesDb();
+      trackItem(db, 1);
+      seedStock(db, 1, 10);
+      const batch = seedBatch(db, { itemId: 1, batchNumber: 'LOT-1', onHand: 2 });
+      seedIssuedBatch(db, { itemId: 1, deliveryId: 41, deliveryItemId: 401, batchId: batch.id, quantity: 2 });
+      // Another return's line already received 1 of this batch's 2 issued units.
+      db.salesReturnItem.findMany = jest.fn().mockResolvedValue([{ receivedQty: dec(1) }]);
+      world(db, {
+        salesReturn: requestedReturn({
+          status: 'APPROVED',
+          returnNumber: 'RMA-1405-000001',
+          items: [{ id: 801, deliveryItemId: 401, itemId: 1, itemName: 'شیر', unitName: 'عدد', unitPrice: dec(1000), requestedQty: dec(3), receivedQty: dec(0), restockQty: dec(0), writeOffQty: dec(0), creditedQty: dec(0) }],
+        }),
+      });
+
+      // Only 1 remains from this batch (2 issued − 1 already received elsewhere); requesting 2 is refused.
+      await expect(
+        buildSalesReturnsService(db).receive(81, { updatedAt: VERSION, items: [{ salesReturnItemId: 801, receivedQty: 2, batchId: batch.id }] } as never, ACTOR),
+      ).rejects.toBeInstanceOf(ConflictException);
+    });
+  });
+
   describe('inspect (RECEIVED → INSPECTED)', () => {
     function receivedReturn(overrides: Record<string, unknown> = {}) {
       return requestedReturn({
@@ -303,6 +445,50 @@ describe('SalesReturnsService', () => {
       ).rejects.toThrow('باید برابر');
     });
 
+    // I8 (build plan §5.8, B9): a third disposition alongside restock/write-off.
+    it('splits a line’s receivedQty three ways — restock, write-off and "to damaged" (RETURN_TO_DAMAGED: QC −d, DAMAGED +d)', async () => {
+      const db = createSalesDb();
+      seedStock(db, 1, 10);
+      setBucket(db, 1, 'QC', 3);
+      const state = world(db, { salesReturn: receivedReturn() });
+
+      await buildSalesReturnsService(db).inspect(
+        81,
+        { updatedAt: VERSION, items: [{ salesReturnItemId: 801, restockQty: 1, writeOffQty: 1, damagedQty: 1 }] } as never,
+        ACTOR,
+      );
+
+      expect(balanceOf(db, 1)).toEqual({ onHand: '11', reserved: '0', qc: '0' });
+      expect(damagedOf(db, 1)).toBe('1');
+      expect(state.salesReturn.items[0]).toEqual(expect.objectContaining({ restockQty: dec(1), writeOffQty: dec(1), damagedQty: dec(1) }));
+      expect(actions(db)).toEqual(['SALES_RETURN_INSPECTED']);
+    });
+
+    it('omitting damagedQty entirely behaves exactly as before I8 (restock + write-off only)', async () => {
+      const db = createSalesDb();
+      seedStock(db, 1, 10);
+      setBucket(db, 1, 'QC', 3);
+      world(db, { salesReturn: receivedReturn() });
+
+      await buildSalesReturnsService(db).inspect(81, { updatedAt: VERSION, items: [{ salesReturnItemId: 801, restockQty: 2, writeOffQty: 1 }] } as never, ACTOR);
+
+      expect(damagedOf(db, 1)).toBe('0');
+    });
+
+    it('refuses a disposition that does not sum to receivedQty, including damagedQty in the total', async () => {
+      const db = createSalesDb();
+      seedStock(db, 1, 10);
+      setBucket(db, 1, 'QC', 3);
+      world(db, { salesReturn: receivedReturn() });
+      await expect(
+        buildSalesReturnsService(db).inspect(
+          81,
+          { updatedAt: VERSION, items: [{ salesReturnItemId: 801, restockQty: 1, writeOffQty: 1, damagedQty: 2 }] } as never,
+          ACTOR,
+        ),
+      ).rejects.toThrow('باید برابر');
+    });
+
     it('refuses to inspect without listing every received line, and a non-RECEIVED return', async () => {
       const db = createSalesDb();
       seedStock(db, 1, 10);
@@ -324,6 +510,43 @@ describe('SalesReturnsService', () => {
       await expect(
         service.inspect(81, { updatedAt: VERSION, items: [{ salesReturnItemId: 801, restockQty: 3, writeOffQty: 0 }] } as never, ACTOR),
       ).rejects.toBeInstanceOf(ConflictException);
+    });
+
+    it('I4 (§5.4a R7): disposes of the SAME batch the line received into (the batchId receive() stored on the line)', async () => {
+      const db = createSalesDb();
+      trackItem(db, 1);
+      seedStock(db, 1, 10);
+      setBucket(db, 1, 'QC', 3);
+      const batch = seedBatch(db, { itemId: 1, batchNumber: 'LOT-1', qc: 3 });
+      world(db, { salesReturn: receivedReturn({ items: [{ id: 801, deliveryItemId: 401, itemId: 1, itemName: 'شیر', unitName: 'عدد', unitPrice: dec(1000), requestedQty: dec(3), receivedQty: dec(3), restockQty: dec(0), writeOffQty: dec(0), creditedQty: dec(0), batchId: batch.id }] }) });
+
+      await buildSalesReturnsService(db).inspect(81, { updatedAt: VERSION, items: [{ salesReturnItemId: 801, restockQty: 2, writeOffQty: 1 }] } as never, ACTOR);
+
+      const forBatch = db.state.movements.filter((m: any) => m.batchId === batch.id);
+      expect(forBatch.map((m: any) => [m.movementType, m.bucket, m.quantity.toString()])).toEqual([
+        ['RETURN_RESTOCK', 'QC', '-2'],
+        ['RETURN_RESTOCK', 'ON_HAND', '2'],
+        ['RETURN_WRITE_OFF', 'QC', '-1'],
+      ]);
+    });
+
+    it('I4/I8: RETURN_TO_DAMAGED disposes of the same batch too (QC out, DAMAGED in, at the batch level)', async () => {
+      const db = createSalesDb();
+      trackItem(db, 1);
+      seedStock(db, 1, 10);
+      setBucket(db, 1, 'QC', 3);
+      const batch = seedBatch(db, { itemId: 1, batchNumber: 'LOT-1', qc: 3 });
+      world(db, { salesReturn: receivedReturn({ items: [{ id: 801, deliveryItemId: 401, itemId: 1, itemName: 'شیر', unitName: 'عدد', unitPrice: dec(1000), requestedQty: dec(3), receivedQty: dec(3), restockQty: dec(0), writeOffQty: dec(0), creditedQty: dec(0), batchId: batch.id }] }) });
+
+      await buildSalesReturnsService(db).inspect(81, { updatedAt: VERSION, items: [{ salesReturnItemId: 801, restockQty: 1, writeOffQty: 1, damagedQty: 1 }] } as never, ACTOR);
+
+      const forBatch = db.state.movements.filter((m: any) => m.batchId === batch.id && m.movementType === 'RETURN_TO_DAMAGED');
+      expect(forBatch.map((m: any) => [m.bucket, m.quantity.toString()]).sort()).toEqual([
+        ['DAMAGED', '1'],
+        ['QC', '-1'],
+      ]);
+      const batchBalance = db.state.batchBalances.find((b: any) => b.batchId === batch.id);
+      expect(batchBalance.damaged.toString()).toBe('1');
     });
   });
 

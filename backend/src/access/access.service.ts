@@ -33,9 +33,30 @@ export const PERMISSION_CATALOG = [
   { code: 'receivables.view', label: 'مشاهده مطالبات', module: 'مطالبات' },
   { code: 'receivables.manage', label: 'مدیریت دریافت‌ها', module: 'مطالبات' },
   // Inventory: view = stock list + adjustment documents; adjust = create/
-  // edit/post/delete stock adjustment documents.
+  // edit/post/submit/delete stock adjustment documents. approve = approve/
+  // reject a PENDING_APPROVAL document (I2, B10/B20) — never granted to
+  // WAREHOUSE, no self-approval either way (enforced in the service).
   { code: 'inventory.view', label: 'مشاهده موجودی', module: 'موجودی' },
   { code: 'inventory.adjust', label: 'اصلاح موجودی', module: 'موجودی' },
+  { code: 'inventory.approve', label: 'تأیید اسناد موجودی', module: 'موجودی' },
+  // I3: locations, stock levels (min/reorder/max), item inventory settings,
+  // batch correction — admin-level inventory configuration, never granted to
+  // WAREHOUSE or SALES_MANAGER. Also now gates GET /inventory/integrity
+  // (moved here from inventory.adjust, which was only a stand-in).
+  { code: 'inventory.manage', label: 'تنظیمات موجودی', module: 'موجودی' },
+  // I5: create/edit/post goods receipts (raw materials/packaging from
+  // suppliers), QC release, and production output — every inbound stock
+  // document (and goods returns, I8).
+  { code: 'inventory.receive', label: 'رسید و برگشت کالا', module: 'موجودی' },
+  // I5 (B15): see and enter unit costs on receipts/production output (and
+  // valuation, I9). Never granted to Sales roles.
+  { code: 'inventory.cost', label: 'مشاهده بهای موجودی', module: 'موجودی' },
+  // I6 (B13 — adopted the architect's default, not yet confirmed by the
+  // business owner): create/start/enter/submit/cancel a stock count (blind
+  // entry while COUNTING). Approving a count's variances (REVIEW → POSTED)
+  // and requesting a recount use inventory.approve instead — same
+  // separation of duties as adjustments (B10), no self-approval.
+  { code: 'inventory.count', label: 'شمارش موجودی', module: 'موجودی' },
   { code: 'documents.upload', label: 'بارگذاری اسناد', module: 'اسناد' },
   { code: 'reports.view', label: 'مشاهده گزارش‌ها', module: 'گزارش‌ها' },
 ] as const;

@@ -19,11 +19,14 @@ function createPrismaMock() {
     // active — stubbed as active by default in every test.
     itemCategory: { findUnique: jest.fn().mockResolvedValue({ isActive: true }) },
     unit: { findUnique: jest.fn().mockResolvedValue({ isActive: true }) },
+    // hasStockHistory() (inventory-queries.ts) — no stock history by
+    // default; individual tests override this to assert the unitId lock.
+    stockMovement: { findFirst: jest.fn().mockResolvedValue(null) },
     auditLog: { create: jest.fn() },
   } as never;
 }
 
-const baseDto = { code: 'ITM1', name: 'شیر پاستوریزه', categoryId: 1, unitId: 2, status: 'active' as const };
+const baseDto = { code: 'ITM1', name: 'شیر پاستوریزه', categoryId: 1, unitId: 2, status: 'active' as const, itemKind: 'FINISHED_GOOD' as const };
 
 describe('ItemsService', () => {
   describe('list', () => {
@@ -209,6 +212,44 @@ describe('ItemsService', () => {
       await expect(service.update(4, baseDto)).resolves.toBeDefined();
     });
 
+    // Inventory build plan I1, finding §2.3-1: changing the unit after the
+    // item has stock history would silently change the meaning of every
+    // past quantity (hasStockHistory() — inventory-queries.ts).
+    it('rejects a unitId change once the item has stock history', async () => {
+      const prisma = createPrismaMock();
+      const service = new ItemsService(prisma as never, new AuditService(prisma as never));
+      (prisma as any).item.findUnique.mockResolvedValue({ id: 4, categoryId: 1, unitId: 2 });
+      (prisma as any).item.findFirst.mockResolvedValue(null);
+      (prisma as any).stockMovement.findFirst.mockResolvedValue({ id: 99 });
+
+      await expect(service.update(4, { ...baseDto, unitId: 3 })).rejects.toBeInstanceOf(BadRequestException);
+      expect((prisma as any).item.update).not.toHaveBeenCalled();
+    });
+
+    it('allows a unitId change when the item has no stock history', async () => {
+      const prisma = createPrismaMock();
+      const service = new ItemsService(prisma as never, new AuditService(prisma as never));
+      (prisma as any).item.findUnique.mockResolvedValue({ id: 4, categoryId: 1, unitId: 2 });
+      (prisma as any).item.findFirst.mockResolvedValue(null);
+      (prisma as any).stockMovement.findFirst.mockResolvedValue(null);
+      (prisma as any).item.update.mockResolvedValue({ id: 4, code: 'ITM1', unitId: 3 });
+
+      await expect(service.update(4, { ...baseDto, unitId: 3 })).resolves.toBeDefined();
+      expect((prisma as any).item.update).toHaveBeenCalled();
+    });
+
+    it('allows saving an unchanged unitId even with stock history', async () => {
+      const prisma = createPrismaMock();
+      const service = new ItemsService(prisma as never, new AuditService(prisma as never));
+      (prisma as any).item.findUnique.mockResolvedValue({ id: 4, categoryId: 1, unitId: 2 });
+      (prisma as any).item.findFirst.mockResolvedValue(null);
+      (prisma as any).stockMovement.findFirst.mockResolvedValue({ id: 99 });
+      (prisma as any).item.update.mockResolvedValue({ id: 4, code: 'ITM1', unitId: 2 });
+
+      await expect(service.update(4, baseDto)).resolves.toBeDefined();
+      expect((prisma as any).item.update).toHaveBeenCalled();
+    });
+
     it('rejects switching to a different, inactive category', async () => {
       const prisma = createPrismaMock();
       const service = new ItemsService(prisma as never, new AuditService(prisma as never));
@@ -277,9 +318,9 @@ describe('ItemsService', () => {
   });
 
   describe('DTO validation', () => {
-    it('defaults status to active on create and treats blank optional text as omitted', () => {
+    it('defaults status and itemKind on create and treats blank optional text as omitted', () => {
       const parsed = createItemSchema.parse({ code: ' ITM1 ', name: 'شیر', categoryId: 1, unitId: 2, description: '  ', note: '' });
-      expect(parsed).toEqual({ code: 'ITM1', name: 'شیر', categoryId: 1, unitId: 2, status: 'active' });
+      expect(parsed).toEqual({ code: 'ITM1', name: 'شیر', categoryId: 1, unitId: 2, status: 'active', itemKind: 'FINISHED_GOOD' });
     });
 
     it('requires category and unit as positive integers', () => {
@@ -289,11 +330,13 @@ describe('ItemsService', () => {
       expect(createItemSchema.safeParse({ ...base, categoryId: 0, unitId: 2 }).success).toBe(false);
     });
 
-    it('requires a valid status on update', () => {
+    it('requires a valid status and itemKind on update', () => {
       const base = { code: 'ITM1', name: 'شیر', categoryId: 1, unitId: 2 };
       expect(updateItemSchema.safeParse(base).success).toBe(false);
-      expect(updateItemSchema.safeParse({ ...base, status: 'blacklisted' }).success).toBe(false);
-      expect(updateItemSchema.safeParse({ ...base, status: 'inactive' }).success).toBe(true);
+      expect(updateItemSchema.safeParse({ ...base, status: 'blacklisted', itemKind: 'FINISHED_GOOD' }).success).toBe(false);
+      expect(updateItemSchema.safeParse({ ...base, status: 'inactive', itemKind: 'FINISHED_GOOD' }).success).toBe(true);
+      expect(updateItemSchema.safeParse({ ...base, status: 'inactive', itemKind: 'RAW_MATERIAL' }).success).toBe(true);
+      expect(updateItemSchema.safeParse({ ...base, status: 'inactive', itemKind: 'NOT_A_KIND' }).success).toBe(false);
     });
   });
 });

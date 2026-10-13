@@ -25,10 +25,15 @@ export const SALESPERSON: SalesActor = { userId: 5, ipAddress: '127.0.0.1', canA
 export const MANAGER: SalesActor = { userId: 2, ipAddress: '127.0.0.1', canApprove: true, canViewCredit: true };
 
 // Item catalog the fake's item.findMany answers from.
-export const CATALOG: Record<number, { id: number; code: string; name: string; status: string; sellingPrice: Prisma.Decimal | null; unitId: number; unit: { nameFa: string } }> = {
-  1: { id: 1, code: 'ITM-1', name: 'شیر', status: 'active', sellingPrice: new Prisma.Decimal(1000), unitId: 1, unit: { nameFa: 'عدد' } },
-  2: { id: 2, code: 'ITM-2', name: 'ماست', status: 'active', sellingPrice: null, unitId: 1, unit: { nameFa: 'عدد' } },
-  3: { id: 3, code: 'ITM-3', name: 'پنیر', status: 'inactive', sellingPrice: new Prisma.Decimal(500), unitId: 1, unit: { nameFa: 'عدد' } },
+export const CATALOG: Record<
+  number,
+  { id: number; code: string; name: string; status: string; itemKind: string; sellingPrice: Prisma.Decimal | null; unitId: number; unit: { nameFa: string } }
+> = {
+  1: { id: 1, code: 'ITM-1', name: 'شیر', status: 'active', itemKind: 'FINISHED_GOOD', sellingPrice: new Prisma.Decimal(1000), unitId: 1, unit: { nameFa: 'عدد' } },
+  2: { id: 2, code: 'ITM-2', name: 'ماست', status: 'active', itemKind: 'FINISHED_GOOD', sellingPrice: null, unitId: 1, unit: { nameFa: 'عدد' } },
+  3: { id: 3, code: 'ITM-3', name: 'پنیر', status: 'inactive', itemKind: 'FINISHED_GOOD', sellingPrice: new Prisma.Decimal(500), unitId: 1, unit: { nameFa: 'عدد' } },
+  // Inventory build plan I1, B2: a raw-material item — never sellable, even if requested directly.
+  4: { id: 4, code: 'RAW-1', name: 'شیر خام', status: 'active', itemKind: 'RAW_MATERIAL', sellingPrice: null, unitId: 1, unit: { nameFa: 'کیلوگرم' } },
 };
 
 export function createSalesDb() {
@@ -44,7 +49,14 @@ export function createSalesDb() {
     return inventoryRaw(strings, ...values);
   });
 
-  db.item.findMany = jest.fn(async ({ where }: any) => (where.id.in as number[]).map((id) => CATALOG[id]).filter(Boolean));
+  // Answers both prepareLines() (where.id.in) and formOptions()'s plain
+  // status/itemKind filter (the FINISHED_GOOD item picker).
+  db.item.findMany = jest.fn(async ({ where }: any) => {
+    if (where?.id?.in) return (where.id.in as number[]).map((id) => CATALOG[id]).filter(Boolean);
+    return Object.values(CATALOG).filter(
+      (item) => (!where?.status || item.status === where.status) && (!where?.itemKind || item.itemKind === where.itemKind),
+    );
+  });
   db.salesOrder = {
     // Also answers sales-credit.ts computeExposure() (no exposure by default).
     findMany: jest.fn().mockResolvedValue([]),
@@ -111,11 +123,11 @@ export function createSalesDb() {
 export type SalesDb = ReturnType<typeof createSalesDb>;
 
 export function buildSalesOrdersService(db: SalesDb) {
-  return new SalesOrdersService(db as never, new InventoryService(db as never), new AuditService(db as never));
+  return new SalesOrdersService(db as never, new InventoryService(db as never, new AuditService(db as never)), new AuditService(db as never));
 }
 
 export function buildDeliveriesService(db: SalesDb) {
-  return new DeliveriesService(db as never, new InventoryService(db as never), new AuditService(db as never));
+  return new DeliveriesService(db as never, new InventoryService(db as never, new AuditService(db as never)), new AuditService(db as never));
 }
 
 export function buildSalesInvoicesService(db: SalesDb) {

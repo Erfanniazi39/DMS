@@ -55,6 +55,22 @@ describe('sales-return DTOs', () => {
     expect(inspectSalesReturnSchema.safeParse({ updatedAt: version, items: [{ salesReturnItemId: 1, restockQty: -1, writeOffQty: 0 }] }).success).toBe(false);
   });
 
+  // I8 (build plan §5.8, B9): damagedQty joins restock/write-off — optional,
+  // defaults to 0 (omitting it behaves exactly as before I8), rejects a
+  // negative value the same way the other two counters do.
+  it('inspect: damagedQty defaults to 0 when omitted, and rejects a negative value', () => {
+    const version = '2026-10-01T10:00:00.000Z';
+    const omitted = inspectSalesReturnSchema.safeParse({ updatedAt: version, items: [{ salesReturnItemId: 1, restockQty: 2, writeOffQty: 0 }] });
+    expect(omitted.success).toBe(true);
+    if (omitted.success) expect(omitted.data.items[0].damagedQty).toBe(0);
+    expect(
+      inspectSalesReturnSchema.safeParse({ updatedAt: version, items: [{ salesReturnItemId: 1, restockQty: 0, writeOffQty: 0, damagedQty: 3 }] }).success,
+    ).toBe(true);
+    expect(
+      inspectSalesReturnSchema.safeParse({ updatedAt: version, items: [{ salesReturnItemId: 1, restockQty: 0, writeOffQty: 0, damagedQty: -1 }] }).success,
+    ).toBe(false);
+  });
+
   it('list query refuses a bad status filter and strips an empty one', () => {
     expect(salesReturnListQuerySchema.safeParse({ status: 'NOT_A_STATUS' }).success).toBe(false);
     expect(salesReturnListQuerySchema.parse({ status: '' }).status).toBeUndefined();

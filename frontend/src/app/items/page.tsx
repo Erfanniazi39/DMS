@@ -18,6 +18,9 @@ import { useAdminUser } from "@/app/admin/layout";
 // — purchase item names stay free text and never reference this list.
 // List/detail need items.view; create/edit/delete need items.manage.
 type ItemStatus = "active" | "inactive";
+// Inventory build plan I1, B2: which stock role the item plays. Sales
+// pickers show FINISHED_GOOD only — raw materials/packaging are stock-only.
+type ItemKind = "FINISHED_GOOD" | "RAW_MATERIAL" | "PACKAGING";
 type RefOption = { id: number; code: string; nameFa: string; isActive?: boolean };
 type Item = {
   id: number;
@@ -29,6 +32,7 @@ type Item = {
   unit: RefOption;
   description: string | null;
   status: ItemStatus;
+  itemKind: ItemKind;
   note: string | null;
   // Default selling price (Rial). Decimal → JSON string; null = none (priced
   // manually on each sales line).
@@ -41,13 +45,29 @@ type FormState = {
   unitId: string;
   description: string;
   status: ItemStatus;
+  itemKind: ItemKind;
   note: string;
   sellingPrice: string;
 };
 type StatusFilter = "all" | ItemStatus;
 
-const emptyForm: FormState = { code: "", name: "", categoryId: "", unitId: "", description: "", status: "active", note: "", sellingPrice: "" };
+const emptyForm: FormState = {
+  code: "",
+  name: "",
+  categoryId: "",
+  unitId: "",
+  description: "",
+  status: "active",
+  itemKind: "FINISHED_GOOD",
+  note: "",
+  sellingPrice: "",
+};
 const statusLabels: Record<ItemStatus, string> = { active: "فعال", inactive: "غیرفعال" };
+const itemKindLabels: Record<ItemKind, string> = {
+  FINISHED_GOOD: "محصول نهایی",
+  RAW_MATERIAL: "مواد اولیه",
+  PACKAGING: "بسته‌بندی",
+};
 const textareaClass = "min-h-16 rounded-md border border-input bg-transparent px-3 py-2 text-sm outline-none placeholder:text-muted-foreground";
 const selectClass = "h-9 rounded-md border border-input bg-transparent px-3 text-sm";
 
@@ -178,6 +198,7 @@ export default function ItemsPage() {
       unitId: String(item.unitId),
       description: item.description ?? "",
       status: item.status,
+      itemKind: item.itemKind,
       note: item.note ?? "",
       sellingPrice: item.sellingPrice ?? "",
     });
@@ -215,6 +236,7 @@ export default function ItemsPage() {
         unitId: Number(form.unitId),
         description: form.description.trim(),
         status: form.status,
+        itemKind: form.itemKind,
         note: form.note.trim(),
         // Blank = no default price (also clears it on edit).
         sellingPrice: sellingPrice === "" ? null : Number(sellingPrice),
@@ -357,6 +379,7 @@ export default function ItemsPage() {
                       <th className="px-4 py-3 font-medium">کالا</th>
                       <th className="px-4 py-3 font-medium">دسته‌بندی</th>
                       <th className="px-4 py-3 font-medium">واحد</th>
+                      <th className="px-4 py-3 font-medium">نوع کالا</th>
                       <th className="px-4 py-3 font-medium">قیمت فروش (ریال)</th>
                       <th className="px-4 py-3 font-medium">وضعیت</th>
                       {canManage ? <th className="px-4 py-3 font-medium">عملیات</th> : null}
@@ -371,6 +394,7 @@ export default function ItemsPage() {
                         </td>
                         <td className="px-4 py-3 text-muted-foreground">{item.category.nameFa}</td>
                         <td className="px-4 py-3 text-muted-foreground">{item.unit.nameFa}</td>
+                        <td className="px-4 py-3 text-muted-foreground">{itemKindLabels[item.itemKind]}</td>
                         <td className="px-4 py-3 tabular-nums text-muted-foreground">{formatMoney(item.sellingPrice)}</td>
                         <td className="px-4 py-3">
                           <span
@@ -470,6 +494,19 @@ export default function ItemsPage() {
                 </select>
               </div>
               <div className="flex flex-col gap-2">
+                <Label htmlFor="item-kind">نوع کالا</Label>
+                <select
+                  id="item-kind"
+                  className={selectClass}
+                  value={form.itemKind}
+                  onChange={(event) => update("itemKind", event.target.value as ItemKind)}
+                >
+                  <option value="FINISHED_GOOD">محصول نهایی</option>
+                  <option value="RAW_MATERIAL">مواد اولیه</option>
+                  <option value="PACKAGING">بسته‌بندی</option>
+                </select>
+              </div>
+              <div className="flex flex-col gap-2">
                 <Label htmlFor="item-selling-price">قیمت فروش (ریال)</Label>
                 <Input
                   id="item-selling-price"
@@ -540,6 +577,10 @@ export default function ItemsPage() {
                   <div>
                     <dt className="text-xs text-muted-foreground">وضعیت</dt>
                     <dd className="mt-1">{statusLabels[detailItem.status]}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-xs text-muted-foreground">نوع کالا</dt>
+                    <dd className="mt-1">{itemKindLabels[detailItem.itemKind]}</dd>
                   </div>
                   <div>
                     <dt className="text-xs text-muted-foreground">قیمت فروش</dt>

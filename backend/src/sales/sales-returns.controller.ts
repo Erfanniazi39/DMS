@@ -77,6 +77,14 @@ export class SalesReturnsController {
     return this.returns.history(id);
   }
 
+  // I4 (§5.4a R7): the receive form's batch picker. Same permission as
+  // receive() itself — a read against the same action.
+  @Get(':id/receive-options')
+  @RequirePermissions('sales.deliver')
+  receiveOptions(@Param('id', ParseIntPipe) id: number) {
+    return this.returns.receiveOptions(id);
+  }
+
   @Post()
   @RequirePermissions('sales.manage')
   request(@Body(new ZodValidationPipe(requestSalesReturnSchema)) dto: RequestSalesReturnDto, @Req() req: Request) {

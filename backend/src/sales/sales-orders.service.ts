@@ -447,8 +447,10 @@ export class SalesOrdersService {
         select: { id: true, customerNumber: true, name: true, financialProfile: { select: { creditHold: true } } },
         orderBy: [{ name: 'asc' }, { id: 'asc' }],
       }),
+      // FINISHED_GOOD only (Inventory build plan I1, B2): raw materials and
+      // packaging are tracked as stock but are never sellable.
       this.prisma.item.findMany({
-        where: { status: 'active' },
+        where: { status: 'active', itemKind: 'FINISHED_GOOD' },
         select: { id: true, code: true, name: true, sellingPrice: true, unit: { select: { id: true, nameFa: true } } },
         orderBy: [{ name: 'asc' }, { id: 'asc' }],
       }),
@@ -756,7 +758,7 @@ export class SalesOrdersService {
     const ids = [...new Set(items.map((line) => line.itemId))];
     const found = await this.prisma.item.findMany({
       where: { id: { in: ids } },
-      select: { id: true, code: true, name: true, status: true, sellingPrice: true, unitId: true, unit: { select: { nameFa: true } } },
+      select: { id: true, code: true, name: true, status: true, itemKind: true, sellingPrice: true, unitId: true, unit: { select: { nameFa: true } } },
     });
     const byId = new Map(found.map((item) => [item.id, item]));
     const kept = new Set(alreadyOnOrder);
@@ -766,6 +768,11 @@ export class SalesOrdersService {
       const item = byId.get(line.itemId);
       if (!item) throw new BadRequestException(`${label}: کالای انتخاب‌شده یافت نشد`);
       if (item.status !== 'active' && !kept.has(item.id)) throw new BadRequestException(`${label}: کالای «${item.name}» غیرفعال است`);
+      // Inventory build plan I1, B2: raw materials/packaging are stock-only,
+      // never sellable — authoritative even if a request bypasses the picker.
+      if (item.itemKind !== 'FINISHED_GOOD' && !kept.has(item.id)) {
+        throw new BadRequestException(`${label}: کالای «${item.name}» محصول نهایی نیست و قابل فروش نمی‌باشد`);
+      }
 
       // B2: any sales.manage holder may change the price; going BELOW the
       // list price needs a reason, above it doesn't.

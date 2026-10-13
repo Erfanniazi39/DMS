@@ -22,6 +22,28 @@ export const AUDIT_ENTITY = {
   // Inventory (Sales batch 1). StockMovement rows are their own audit trail
   // (append-only, with createdByUserId); the source document is what's logged.
   STOCK_ADJUSTMENT: 'StockAdjustment',
+  // Inventory I3: per item+location min/reorder/max thresholds — master-data
+  // config, not a stock movement; logged like Item/CustomerGroup above.
+  ITEM_STOCK_LEVEL: 'ItemStockLevel',
+  // Inventory I4: per-item batch/expiry config (InventoryItemSetting) — both
+  // the direct settings PUT and a posted BATCH_CUTOVER write this (the
+  // latter alongside its own STOCK_ADJUSTMENT entry, build plan §5.4a).
+  INVENTORY_ITEM_SETTING: 'InventoryItemSetting',
+  // Inventory I5: inbound documents — raw-material/packaging goods receipts
+  // (incl. their QC releases) and production output. Line costs are never
+  // written into `details`.
+  GOODS_RECEIPT: 'GoodsReceipt',
+  PRODUCTION_OUTPUT: 'ProductionOutput',
+  // Inventory I6: stock counts (physical inventory). Line reasonCodes are
+  // part of the document, not written separately.
+  STOCK_COUNT: 'StockCount',
+  // Inventory I8: goods returns to suppliers (damaged bucket + supplier
+  // returns, B9). No PurchaseReturn sync — this logs only the physical
+  // GoodsReturn document.
+  GOODS_RETURN: 'GoodsReturn',
+  // Inventory — location (warehouse) admin: master-data config, not a stock
+  // movement, logged like ItemStockLevel above.
+  INVENTORY_LOCATION: 'InventoryLocation',
   // Sales (batch 2).
   SALES_ORDER: 'SalesOrder',
   // Sales (batch 3).

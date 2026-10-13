@@ -1,15 +1,17 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowDown, ArrowUp, ArrowUpDown, ClipboardPen, Search, X } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, ChevronDown, ChevronLeft, ClipboardPen, Layers, ScrollText, Search, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { LIST_PAGE_SIZE, ListPagination, totalPages, type Paginated } from "@/components/ui/list-pagination";
+import { StatusBadge } from "@/components/ui/status-badge";
 import { useToasts, ToastViewport } from "@/components/ui/toast";
 import { apiFetch, type ApiError } from "@/lib/api";
 import { useAdminUser } from "@/app/admin/layout";
-import { NoAccess, availableQuantity, formatQuantity, type InventoryLocation, type StockBalanceRow } from "./shared";
+import { NoAccess, availableQuantity, batchHasStock, formatQuantity, type InventoryLocation, type ItemBatchRow, type ItemBatches, type StockBalanceRow } from "./shared";
+import { BatchBreakdownTable } from "./_batches/BatchBreakdownTable";
 
 const toolbarFieldLabel = "text-[11px] font-medium uppercase tracking-wide text-muted-foreground";
 const toolbarSelectClass = "h-8 rounded-md border border-input bg-background px-2 text-xs outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50";
@@ -30,6 +32,9 @@ export default function InventoryPage() {
   const [error, setError] = useState<string | null>(null);
   const [q, setQ] = useState("");
   const [locationId, setLocationId] = useState("");
+  // I3 (B14): only rows below their own configured threshold (set on
+  // /inventory/stock-levels) — never a system-invented default.
+  const [lowStockOnly, setLowStockOnly] = useState(false);
   const [locations, setLocations] = useState<InventoryLocation[]>([]);
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
@@ -41,6 +46,26 @@ export default function InventoryPage() {
   const [sortBy, setSortBy] = useState<"name" | "available">("name");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const lastQueryRef = useRef(q);
+  // I4: per-row batch drill-down (keyed by balance row id), loaded on first expand.
+  const [expanded, setExpanded] = useState<Record<number, ItemBatchRow[] | "loading" | "error">>({});
+
+  function toggleBatches(row: StockBalanceRow) {
+    if (expanded[row.id] !== undefined) {
+      setExpanded((current) => {
+        const next = { ...current };
+        delete next[row.id];
+        return next;
+      });
+      return;
+    }
+    setExpanded((current) => ({ ...current, [row.id]: "loading" }));
+    apiFetch<ItemBatches>(`/inventory/items/${row.itemId}/batches?locationId=${row.locationId}`)
+      .then((data) => setExpanded((current) => (current[row.id] === undefined ? current : { ...current, [row.id]: data.batches })))
+      .catch((reason: unknown) => {
+        setExpanded((current) => (current[row.id] === undefined ? current : { ...current, [row.id]: "error" }));
+        pushError((reason as ApiError).message ?? "دریافت بچ‌های کالا ناموفق بود.");
+      });
+  }
 
   useEffect(() => {
     if (!canView) return;
@@ -58,6 +83,7 @@ export default function InventoryPage() {
         const params = new URLSearchParams();
         if (q.trim()) params.set("q", q.trim());
         if (locationId) params.set("locationId", locationId);
+        if (lowStockOnly) params.set("lowStockOnly", "true");
         if (sortBy === "available") {
           params.set("sortBy", "available");
           params.set("sortDir", sortDir);
@@ -86,7 +112,7 @@ export default function InventoryPage() {
       cancelled = true;
       clearTimeout(timeout);
     };
-  }, [q, locationId, page, sortBy, sortDir, reloadKey, canView]);
+  }, [q, locationId, lowStockOnly, page, sortBy, sortDir, reloadKey, canView]);
 
   function toggleAvailableSort() {
     setPage(1);
@@ -100,7 +126,7 @@ export default function InventoryPage() {
 
   if (!canView) return <NoAccess message="اجازه مشاهده موجودی را ندارید." />;
 
-  const hasFilters = q !== "" || locationId !== "";
+  const hasFilters = q !== "" || locationId !== "" || lowStockOnly;
 
   return (
     <div className="p-4 sm:p-6 lg:p-8">
@@ -157,6 +183,21 @@ export default function InventoryPage() {
                 </select>
               </div>
             ) : null}
+            <div className="flex flex-col gap-1">
+              <span className={toolbarFieldLabel}>&nbsp;</span>
+              <label className="flex h-8 items-center gap-1.5 text-xs">
+                <input
+                  type="checkbox"
+                  className="size-3.5 rounded border-input"
+                  checked={lowStockOnly}
+                  onChange={(event) => {
+                    setLowStockOnly(event.target.checked);
+                    setPage(1);
+                  }}
+                />
+                فقط کالاهای زیر آستانه (کمبود موجودی)
+              </label>
+            </div>
             {hasFilters ? (
               <Button
                 type="button"
@@ -166,6 +207,7 @@ export default function InventoryPage() {
                 onClick={() => {
                   setQ("");
                   setLocationId("");
+                  setLowStockOnly(false);
                   setPage(1);
                 }}
               >
@@ -186,7 +228,11 @@ export default function InventoryPage() {
             <p className="py-14 text-center text-sm text-muted-foreground">در حال بارگذاری موجودی...</p>
           ) : rows.length === 0 ? (
             <p className="py-14 text-center text-sm text-muted-foreground">
-              {hasFilters ? "کالایی با این مشخصات در موجودی یافت نشد." : "هنوز موجودی‌ای ثبت نشده است. موجودی با ثبت نهایی «سند موجودی» وارد سیستم می‌شود."}
+              {lowStockOnly
+                ? "کالایی زیر آستانه تعیین‌شده یافت نشد — یا هنوز آستانه‌ای در «آستانه‌های موجودی» تعیین نشده است."
+                : hasFilters
+                  ? "کالایی با این مشخصات در موجودی یافت نشد."
+                  : "هنوز موجودی‌ای ثبت نشده است. موجودی با ثبت نهایی «سند موجودی» وارد سیستم می‌شود."}
             </p>
           ) : (
             <div className={`overflow-x-auto transition-opacity ${loading ? "pointer-events-none opacity-60" : ""}`} aria-busy={loading}>
@@ -216,13 +262,16 @@ export default function InventoryPage() {
                         )}
                       </button>
                     </th>
+                    <th className="px-3 py-2.5 font-medium" />
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
                   {rows.map((row) => {
                     const available = availableQuantity(row);
+                    const batchState = expanded[row.id];
                     return (
-                      <tr key={row.id} className="hover:bg-muted/40">
+                      <Fragment key={row.id}>
+                      <tr className="hover:bg-muted/40">
                         <td className="px-3 py-2 font-mono text-xs">{row.item.code}</td>
                         <td className="px-3 py-2">
                           {row.item.name}
@@ -233,8 +282,49 @@ export default function InventoryPage() {
                         <td className="px-3 py-2 font-medium tabular-nums">{formatQuantity(row.onHand)}</td>
                         <td className="px-3 py-2 tabular-nums text-muted-foreground">{formatQuantity(row.reserved)}</td>
                         <td className="px-3 py-2 tabular-nums text-muted-foreground">{formatQuantity(row.qc)}</td>
-                        <td className={`px-3 py-2 font-medium tabular-nums ${available <= 0 ? "text-destructive" : ""}`}>{formatQuantity(available)}</td>
+                        <td className={`px-3 py-2 font-medium tabular-nums ${available <= 0 ? "text-destructive" : ""}`}>
+                          <span className="inline-flex items-center gap-1.5">
+                            {formatQuantity(available)}
+                            {row.overCommitted ? (
+                              <span title="بیش‌تخصیص: موجودی رزروشده بیشتر از موجودی انبار است">
+                                <StatusBadge label="بیش‌تخصیص" tone="destructive" />
+                              </span>
+                            ) : null}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2">
+                          <div className="flex items-center gap-1">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="gap-1 text-muted-foreground"
+                              aria-expanded={batchState !== undefined}
+                              onClick={() => toggleBatches(row)}
+                            >
+                              <Layers className="size-3.5" aria-hidden="true" />
+                              بچ‌ها
+                              {batchState !== undefined ? <ChevronDown className="size-3.5" aria-hidden="true" /> : <ChevronLeft className="size-3.5" aria-hidden="true" />}
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="gap-1 text-muted-foreground"
+                              onClick={() => router.push(`/inventory/items/${row.itemId}`)}
+                            >
+                              <ScrollText className="size-3.5" aria-hidden="true" />
+                              کاردکس
+                            </Button>
+                          </div>
+                        </td>
                       </tr>
+                      {batchState !== undefined ? (
+                        <tr className="bg-muted/20">
+                          <td colSpan={9} className="px-3 py-2">
+                            <BatchDrillDown state={batchState} />
+                          </td>
+                        </tr>
+                      ) : null}
+                      </Fragment>
                     );
                   })}
                 </tbody>
@@ -246,6 +336,29 @@ export default function InventoryPage() {
           ) : null}
         </div>
       </div>
+    </div>
+  );
+}
+
+// The expanded sub-row: only batches that still hold stock at this row's
+// warehouse; depleted ones are summarised in one line (the stock card lists
+// them all).
+function BatchDrillDown({ state }: { state: ItemBatchRow[] | "loading" | "error" }) {
+  if (state === "loading") return <p className="py-2 text-xs text-muted-foreground">در حال بارگذاری بچ‌ها...</p>;
+  if (state === "error") return <p className="py-2 text-xs text-destructive">دریافت بچ‌های این کالا ناموفق بود.</p>;
+  const withStock = state.filter(batchHasStock);
+  const depleted = state.length - withStock.length;
+  if (withStock.length === 0) {
+    return (
+      <p className="py-2 text-xs text-muted-foreground">
+        {state.length === 0 ? "این کالا در این انبار بچی ندارد (ردیابی بچ برای آن فعال نیست یا هنوز بچی ثبت نشده است)." : "هیچ بچی از این کالا در این انبار موجودی ندارد."}
+      </p>
+    );
+  }
+  return (
+    <div className="overflow-hidden rounded-md border border-border bg-card">
+      <BatchBreakdownTable batches={withStock} compact />
+      {depleted > 0 ? <p className="border-t border-border px-3 py-1.5 text-xs text-muted-foreground">{depleted.toLocaleString("fa-IR")} بچ تمام‌شده نمایش داده نشده است — فهرست کامل در کاردکس کالا.</p> : null}
     </div>
   );
 }

@@ -1,6 +1,8 @@
 import { ConflictException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import {
   applyMovements,
+  EXPIRED_STOCK_ONLY,
   inspectReturn,
   issueForDelivery,
   receiveReturn,
@@ -10,7 +12,7 @@ import {
   type MovementInput,
   type StockEventContext,
 } from './stock-ledger';
-import { balanceOf, createInventoryDb, seedStock, setBucket } from './inventory.spec-helpers';
+import { balanceOf, createInventoryDb, damagedOf, seedBatch, seedStock, setBucket, trackItem } from './inventory.spec-helpers';
 
 // stock-ledger.ts applyMovements() — the only writer of StockMovement /
 // StockBalance (CLAUDE.md rule 10). Runs against the in-memory fake in
@@ -201,6 +203,83 @@ describe('applyMovements', () => {
   });
 });
 
+// I4 (build plan §5.4/§5.4a, §16 resume step 3): batch-aware behavior of
+// applyMovements() itself — a tracked item's ON_HAND/QC rows require a
+// batchId, an untracked item's must not carry one, RESERVED never carries
+// one, a batch going negative is blocked just like an item balance, and the
+// lock order is item rows → advisory lock → batch rows.
+describe('applyMovements — batch-tracked items (I4)', () => {
+  it('rejects a tracked item’s ON_HAND/QC row with no batchId (409 BATCH_REQUIRED)', async () => {
+    const db = createInventoryDb();
+    trackItem(db, 1);
+    await expect(
+      db.$transaction((tx: never) => applyMovements(tx, [row({ movementType: 'ADJUSTMENT_IN', quantity: 5 })])),
+    ).rejects.toMatchObject({ response: expect.objectContaining({ code: 'BATCH_REQUIRED' }) });
+    expect(db.state.movements).toHaveLength(0);
+  });
+
+  it('rejects an untracked item’s ON_HAND/QC row that carries a batchId (409 UNEXPECTED_BATCH)', async () => {
+    const db = createInventoryDb();
+    seedStock(db, 1, 10);
+    const batch = seedBatch(db, { itemId: 1, batchNumber: 'B1', onHand: 10 });
+    await expect(
+      db.$transaction((tx: never) => applyMovements(tx, [row({ movementType: 'ADJUSTMENT_IN', quantity: 5, batchId: batch.id })])),
+    ).rejects.toMatchObject({ response: expect.objectContaining({ code: 'UNEXPECTED_BATCH' }) });
+  });
+
+  it('rejects a RESERVED row that carries a batchId as a programming error, regardless of tracked state', async () => {
+    const db = createInventoryDb();
+    trackItem(db, 1);
+    await expect(
+      db.$transaction((tx: never) => applyMovements(tx, [row({ bucket: 'RESERVED', movementType: 'RESERVE', quantity: 5, batchId: 1 })])),
+    ).rejects.toThrow('RESERVED rows may not carry a batchId');
+  });
+
+  it('blocks a batch bucket going negative (409 NEGATIVE_STOCK) even when the item total has enough stock, atomically with the rest of the call', async () => {
+    const db = createInventoryDb();
+    trackItem(db, 1);
+    seedStock(db, 1, 10);
+    const batchA = seedBatch(db, { itemId: 1, batchNumber: 'A', onHand: 5 });
+    seedBatch(db, { itemId: 1, batchNumber: 'B', onHand: 5 });
+    seedStock(db, 2, 100);
+
+    await expect(
+      db.$transaction((tx: never) =>
+        applyMovements(tx, [
+          row({ itemId: 1, movementType: 'ADJUSTMENT_OUT', quantity: -6, batchId: batchA.id }),
+          row({ itemId: 2, movementType: 'ADJUSTMENT_IN', quantity: 50 }),
+        ]),
+      ),
+    ).rejects.toMatchObject({ response: expect.objectContaining({ code: 'NEGATIVE_STOCK', details: expect.objectContaining({ batchId: batchA.id }) }) });
+
+    expect(balanceOf(db, 1)?.onHand).toBe('10'); // batch A's attempted −6 was not applied
+    expect(balanceOf(db, 2)?.onHand).toBe('100'); // item 2's +50 was not applied either (atomic)
+  });
+
+  it('locks in order: item balance rows → per-item advisory lock → batch balance rows', async () => {
+    const db = createInventoryDb();
+    trackItem(db, 1);
+    seedStock(db, 1, 10);
+    const batch = seedBatch(db, { itemId: 1, batchNumber: 'A', onHand: 10 });
+
+    await db.$transaction((tx: never) => applyMovements(tx, [row({ itemId: 1, movementType: 'ADJUSTMENT_IN', quantity: 5, batchId: batch.id })]));
+
+    const orderOf = (mockFn: jest.Mock, predicate: (sql: string) => boolean) => {
+      const index = mockFn.mock.calls.findIndex((call: unknown[]) => predicate((call[0] as string[]).join('?')));
+      return index === -1 ? undefined : mockFn.mock.invocationCallOrder[index];
+    };
+    const itemLockOrder = orderOf(db.$queryRaw, (sql) => sql.includes('FROM stock_balances'));
+    const advisoryLockOrder = orderOf(db.$executeRaw, (sql) => sql.includes('pg_advisory_xact_lock'));
+    const batchLockOrderValue = orderOf(db.$queryRaw, (sql) => sql.includes('FROM stock_batch_balances') && sql.includes('WHERE batch_id'));
+
+    expect(itemLockOrder).toBeDefined();
+    expect(advisoryLockOrder).toBeDefined();
+    expect(batchLockOrderValue).toBeDefined();
+    expect(itemLockOrder!).toBeLessThan(advisoryLockOrder!);
+    expect(advisoryLockOrder!).toBeLessThan(batchLockOrderValue!);
+  });
+});
+
 // Sales batch 2: the reserve/release stock events.
 describe('reserveAvailable / releaseReserved', () => {
   const context: StockEventContext = { locationId: 1, movementDate: DATE, referenceType: 'SALES_ORDER', referenceId: 11, referenceNumber: 'SO-1405-000001', createdByUserId: 3 };
@@ -383,6 +462,90 @@ describe('issueForDelivery (DELIVERY_ISSUE, Sales batch 3)', () => {
   });
 });
 
+// I4 (build plan §5.4a R7/§6, §16 resume step 3): FEFO batch allocation
+// inside issueForDelivery(), and the full NEGATIVE_STOCK →
+// STOCK_RESERVED_FOR_OTHERS → EXPIRED_STOCK_ONLY error order for a
+// batch-tracked item.
+describe('issueForDelivery — FEFO batch allocation (I4)', () => {
+  const context: StockEventContext = {
+    locationId: 1,
+    movementDate: DATE, // 2026-10-06
+    referenceType: 'DELIVERY',
+    referenceId: 31,
+    referenceNumber: 'DN-1405-000001',
+    createdByUserId: 4,
+  };
+
+  it('splits one line across batches by expiry ascending, and reports the split in IssueResult.batches', async () => {
+    const db = createInventoryDb();
+    trackItem(db, 1);
+    seedStock(db, 1, 10);
+    const early = seedBatch(db, { itemId: 1, batchNumber: 'EARLY', expiryDate: new Date('2026-11-01T00:00:00.000Z'), onHand: 3 });
+    const late = seedBatch(db, { itemId: 1, batchNumber: 'LATE', expiryDate: new Date('2026-12-01T00:00:00.000Z'), onHand: 7 });
+
+    const results = await db.$transaction((tx: never) => issueForDelivery(tx, context, [{ referenceLineId: 301, itemId: 1, quantity: 5, reservedQty: 0 }]));
+
+    expect(results[0].batches).toEqual([
+      { batchId: early.id, batchNumber: 'EARLY', expiryDate: early.expiryDate, quantity: new Prisma.Decimal(3) },
+      { batchId: late.id, batchNumber: 'LATE', expiryDate: late.expiryDate, quantity: new Prisma.Decimal(2) },
+    ]);
+    expect(balanceOf(db, 1)?.onHand).toBe('5');
+    const issued = db.state.movements.filter((m: any) => m.movementType === 'DELIVERY_ISSUE' && m.bucket === 'ON_HAND');
+    expect(issued.map((m: any) => [m.batchId, m.quantity.toString()])).toEqual([
+      [early.id, '-3'],
+      [late.id, '-2'],
+    ]);
+  });
+
+  it('NEGATIVE_STOCK takes priority: insufficient physical on-hand is refused before any batch/expiry check runs', async () => {
+    const db = createInventoryDb();
+    trackItem(db, 1);
+    seedStock(db, 1, 5);
+    seedBatch(db, { itemId: 1, batchNumber: 'EXPIRED', expiryDate: new Date('2026-01-01T00:00:00.000Z'), onHand: 5 });
+
+    await expect(
+      db.$transaction((tx: never) => issueForDelivery(tx, context, [{ referenceLineId: 301, itemId: 1, quantity: 6, reservedQty: 0 }])),
+    ).rejects.toMatchObject({ response: expect.objectContaining({ code: 'NEGATIVE_STOCK' }) });
+    expect(balanceOf(db, 1)?.onHand).toBe('5');
+  });
+
+  it('STOCK_RESERVED_FOR_OTHERS takes priority over EXPIRED_STOCK_ONLY: enough physical stock, but not enough FREE stock', async () => {
+    const db = createInventoryDb();
+    trackItem(db, 1);
+    seedStock(db, 1, 10);
+    setBucket(db, 1, 'RESERVED', 8); // only 2 free
+    seedBatch(db, { itemId: 1, batchNumber: 'FRESH', expiryDate: new Date('2027-01-01T00:00:00.000Z'), onHand: 10 });
+
+    await expect(
+      db.$transaction((tx: never) => issueForDelivery(tx, context, [{ referenceLineId: 301, itemId: 1, quantity: 5, reservedQty: 0 }])),
+    ).rejects.toMatchObject({ response: expect.objectContaining({ code: STOCK_RESERVED_FOR_OTHERS }) });
+    expect(balanceOf(db, 1)).toEqual({ onHand: '10', reserved: '8', qc: '0' });
+  });
+
+  it('EXPIRED_STOCK_ONLY: on-hand and free stock both suffice, but what remains non-expired does not', async () => {
+    const db = createInventoryDb();
+    trackItem(db, 1);
+    seedStock(db, 1, 10); // all free
+    seedBatch(db, { itemId: 1, batchNumber: 'EXPIRED', expiryDate: new Date('2026-01-01T00:00:00.000Z'), onHand: 8 });
+    seedBatch(db, { itemId: 1, batchNumber: 'FRESH', expiryDate: new Date('2027-01-01T00:00:00.000Z'), onHand: 2 });
+
+    await expect(
+      db.$transaction((tx: never) => issueForDelivery(tx, context, [{ referenceLineId: 301, itemId: 1, quantity: 5, reservedQty: 0 }])),
+    ).rejects.toMatchObject({ response: expect.objectContaining({ code: EXPIRED_STOCK_ONLY }) });
+    expect(balanceOf(db, 1)).toEqual({ onHand: '10', reserved: '0', qc: '0' }); // nothing written
+  });
+
+  it('a batch expiring exactly on the delivery day is still usable (B8)', async () => {
+    const db = createInventoryDb();
+    trackItem(db, 1);
+    seedStock(db, 1, 10);
+    const batch = seedBatch(db, { itemId: 1, batchNumber: 'ON_DAY', expiryDate: DATE, onHand: 10 });
+
+    const results = await db.$transaction((tx: never) => issueForDelivery(tx, context, [{ referenceLineId: 301, itemId: 1, quantity: 4, reservedQty: 0 }]));
+    expect(results[0].batches).toEqual([{ batchId: batch.id, batchNumber: 'ON_DAY', expiryDate: DATE, quantity: new Prisma.Decimal(4) }]);
+  });
+});
+
 describe('receiveReturn / inspectReturn (RETURN_RECEIPT / RETURN_RESTOCK / RETURN_WRITE_OFF, Sales batch 6)', () => {
   const context: StockEventContext = {
     locationId: 1,
@@ -451,5 +614,223 @@ describe('receiveReturn / inspectReturn (RETURN_RECEIPT / RETURN_RESTOCK / RETUR
     expect(balanceOf(db, 1)).toEqual({ onHand: '12', reserved: '0', qc: '0' });
     expect(db.state.movements.filter((m: any) => m.movementType === 'RETURN_RESTOCK')).toHaveLength(2);
     expect(db.state.movements.filter((m: any) => m.movementType === 'RETURN_WRITE_OFF')).toHaveLength(1);
+  });
+
+  // I8 (build plan §5.8, B9): the third disposition — "to damaged" (QC −d,
+  // DAMAGED +d) — alongside restock and write-off.
+  it('inspectReturn: a three-way split — RETURN_RESTOCK, RETURN_WRITE_OFF and RETURN_TO_DAMAGED (QC −d, DAMAGED +d)', async () => {
+    const db = createInventoryDb();
+    seedStock(db, 1, 10);
+    setBucket(db, 1, 'QC', 6);
+
+    await db.$transaction((tx: never) =>
+      inspectReturn(tx, context, [{ referenceLineId: 801, itemId: 1, restockQty: 2, writeOffQty: 1, damagedQty: 3 }]),
+    );
+
+    expect(balanceOf(db, 1)).toEqual({ onHand: '12', reserved: '0', qc: '0' });
+    expect(damagedOf(db, 1)).toBe('3');
+    const toDamaged = db.state.movements.filter((m: any) => m.movementType === 'RETURN_TO_DAMAGED');
+    expect(toDamaged.map((m: any) => [m.bucket, m.quantity.toString()]).sort()).toEqual([
+      ['DAMAGED', '3'],
+      ['QC', '-3'],
+    ]);
+  });
+
+  // Settled-foundations rule (docs/inventory-module-build-plan.md §2.1):
+  // existing callers keep their signature — damagedQty is optional, omitting
+  // it entirely must behave exactly as before I8.
+  it('inspectReturn: omitting damagedQty entirely behaves exactly as before I8', async () => {
+    const db = createInventoryDb();
+    seedStock(db, 1, 10);
+    setBucket(db, 1, 'QC', 5);
+
+    await db.$transaction((tx: never) => inspectReturn(tx, context, [{ referenceLineId: 801, itemId: 1, restockQty: 3, writeOffQty: 2 }]));
+
+    expect(balanceOf(db, 1)).toEqual({ onHand: '13', reserved: '0', qc: '0' });
+    expect(damagedOf(db, 1)).toBe('0');
+    expect(db.state.movements.some((m: any) => m.movementType === 'RETURN_TO_DAMAGED')).toBe(false);
+  });
+
+  it('inspectReturn is blocked if the three-way split exceeds what was received (409 NEGATIVE_STOCK), nothing written', async () => {
+    const db = createInventoryDb();
+    seedStock(db, 1, 10);
+    setBucket(db, 1, 'QC', 3);
+
+    await expect(
+      db.$transaction((tx: never) => inspectReturn(tx, context, [{ referenceLineId: 801, itemId: 1, restockQty: 0, writeOffQty: 0, damagedQty: 4 }])),
+    ).rejects.toMatchObject({ response: expect.objectContaining({ code: 'NEGATIVE_STOCK' }) });
+    expect(balanceOf(db, 1)).toEqual({ onHand: '10', reserved: '0', qc: '3' });
+    expect(damagedOf(db, 1)).toBe('0');
+  });
+
+  // I4 (§5.4a R7): a batch-tracked item's return receipt/disposition must
+  // land in (and leave from) the specific batch SalesReturnsService resolved
+  // — receiveReturn()/inspectReturn() just pass batchId through to applyMovements().
+  it('receiveReturn passes batchId through to the RETURN_RECEIPT (QC) row, for a tracked item', async () => {
+    const db = createInventoryDb();
+    trackItem(db, 1);
+    seedStock(db, 1, 10);
+    const batch = seedBatch(db, { itemId: 1, batchNumber: 'B1', onHand: 10 });
+
+    await db.$transaction((tx: never) => receiveReturn(tx, context, [{ referenceLineId: 801, itemId: 1, quantity: 3, batchId: batch.id }]));
+
+    const receipt = db.state.movements.find((m: any) => m.movementType === 'RETURN_RECEIPT');
+    expect(receipt).toEqual(expect.objectContaining({ bucket: 'QC', batchId: batch.id }));
+  });
+
+  it('inspectReturn passes batchId through to both the RETURN_RESTOCK legs and RETURN_WRITE_OFF', async () => {
+    const db = createInventoryDb();
+    trackItem(db, 1);
+    seedStock(db, 1, 10);
+    setBucket(db, 1, 'QC', 5);
+    const batch = seedBatch(db, { itemId: 1, batchNumber: 'B1', onHand: 10, qc: 5 });
+
+    await db.$transaction((tx: never) => inspectReturn(tx, context, [{ referenceLineId: 801, itemId: 1, restockQty: 3, writeOffQty: 2, batchId: batch.id }]));
+
+    const forBatch = db.state.movements.filter((m: any) => m.batchId === batch.id);
+    expect(forBatch.map((m: any) => [m.movementType, m.bucket, m.quantity.toString()])).toEqual([
+      ['RETURN_RESTOCK', 'QC', '-3'],
+      ['RETURN_RESTOCK', 'ON_HAND', '3'],
+      ['RETURN_WRITE_OFF', 'QC', '-2'],
+    ]);
+  });
+
+  // I8: RETURN_TO_DAMAGED is batch-aware too — the line's own batch leaves
+  // QC and lands in DAMAGED at the batch level.
+  it('inspectReturn passes batchId through to RETURN_TO_DAMAGED (QC and DAMAGED legs, same batch)', async () => {
+    const db = createInventoryDb();
+    trackItem(db, 1);
+    seedStock(db, 1, 10);
+    setBucket(db, 1, 'QC', 5);
+    const batch = seedBatch(db, { itemId: 1, batchNumber: 'B1', onHand: 10, qc: 5 });
+
+    await db.$transaction((tx: never) => inspectReturn(tx, context, [{ referenceLineId: 801, itemId: 1, restockQty: 2, writeOffQty: 0, damagedQty: 3, batchId: batch.id }]));
+
+    const forBatch = db.state.movements.filter((m: any) => m.batchId === batch.id && m.movementType === 'RETURN_TO_DAMAGED');
+    expect(forBatch.map((m: any) => [m.bucket, m.quantity.toString()]).sort()).toEqual([
+      ['DAMAGED', '3'],
+      ['QC', '-3'],
+    ]);
+    const batchBalance = db.state.batchBalances.find((b: any) => b.batchId === batch.id);
+    expect(batchBalance.damaged.toString()).toBe('3');
+  });
+});
+
+// I5 (build plan §5.5/§5.10/§5.11): the three new inbound movement types and
+// the optional per-unit cost stamp.
+describe('applyMovements — I5 movement types and unitCost', () => {
+  it('GOODS_RECEIPT may land in ON_HAND or QC (inbound only); PRODUCTION_OUTPUT only in ON_HAND', async () => {
+    const db = createInventoryDb();
+    await db.$transaction((tx: never) =>
+      applyMovements(tx, [
+        row({ movementType: 'GOODS_RECEIPT', referenceType: 'GOODS_RECEIPT', quantity: 5 }),
+        row({ itemId: 2, bucket: 'QC', movementType: 'GOODS_RECEIPT', referenceType: 'GOODS_RECEIPT', quantity: 3 }),
+        row({ itemId: 3, movementType: 'PRODUCTION_OUTPUT', referenceType: 'PRODUCTION_OUTPUT', quantity: 7 }),
+      ]),
+    );
+    expect(balanceOf(db, 1)?.onHand).toBe('5');
+    expect(balanceOf(db, 2)?.qc).toBe('3');
+    expect(balanceOf(db, 3)?.onHand).toBe('7');
+
+    await expect(db.$transaction((tx: never) => applyMovements(tx, [row({ movementType: 'GOODS_RECEIPT', quantity: -1 })]))).rejects.toThrow(/must be positive/);
+    await expect(db.$transaction((tx: never) => applyMovements(tx, [row({ bucket: 'QC', movementType: 'PRODUCTION_OUTPUT', quantity: 1 })]))).rejects.toThrow(/may not touch bucket QC/);
+  });
+
+  it('QC_RELEASE is QC out / ON_HAND in, and still cannot take QC negative', async () => {
+    const db = createInventoryDb();
+    seedStock(db, 1, 0);
+    setBucket(db, 1, 'QC', 4);
+    await db.$transaction((tx: never) =>
+      applyMovements(tx, [row({ bucket: 'QC', movementType: 'QC_RELEASE', quantity: -3 }), row({ movementType: 'QC_RELEASE', quantity: 3 })]),
+    );
+    expect(balanceOf(db, 1)).toEqual({ onHand: '3', reserved: '0', qc: '1' });
+
+    await expect(
+      db.$transaction((tx: never) => applyMovements(tx, [row({ bucket: 'QC', movementType: 'QC_RELEASE', quantity: -2 }), row({ movementType: 'QC_RELEASE', quantity: 2 })])),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(balanceOf(db, 1)).toEqual({ onHand: '3', reserved: '0', qc: '1' });
+  });
+
+  it('stores unitCost when given (null otherwise) and rejects a negative or fractional cost as a programming error', async () => {
+    const db = createInventoryDb();
+    await db.$transaction((tx: never) =>
+      applyMovements(tx, [row({ movementType: 'GOODS_RECEIPT', referenceType: 'GOODS_RECEIPT', unitCost: new Prisma.Decimal(25000) }), row({ itemId: 2 })]),
+    );
+    expect(db.state.movements[0].unitCost.toString()).toBe('25000');
+    expect(db.state.movements[1].unitCost).toBeNull();
+
+    await expect(db.$transaction((tx: never) => applyMovements(tx, [row({ unitCost: -1 })]))).rejects.toThrow(/unitCost/);
+    await expect(db.$transaction((tx: never) => applyMovements(tx, [row({ unitCost: '10.5' })]))).rejects.toThrow(/unitCost/);
+    expect(db.state.movements).toHaveLength(2);
+  });
+});
+
+// I8 (build plan §5.8/§5.10, B9): the DAMAGED bucket and its three new
+// movement types. MARK_DAMAGED/SUPPLIER_RETURN have no dedicated
+// stock-ledger.ts helper (StockAdjustmentsService/GoodsReturnsService build
+// their own MovementInput rows directly) — exercised here at the
+// applyMovements() level, the same way GOODS_RECEIPT/QC_RELEASE are above.
+describe('applyMovements — I8 DAMAGED bucket and movement types', () => {
+  it('MARK_DAMAGED is ON_HAND out / DAMAGED in, and still cannot take ON_HAND negative', async () => {
+    const db = createInventoryDb();
+    seedStock(db, 1, 10);
+    await db.$transaction((tx: never) =>
+      applyMovements(tx, [row({ movementType: 'MARK_DAMAGED', quantity: -4 }), row({ bucket: 'DAMAGED', movementType: 'MARK_DAMAGED', quantity: 4 })]),
+    );
+    expect(balanceOf(db, 1)).toEqual({ onHand: '6', reserved: '0', qc: '0' });
+    expect(damagedOf(db, 1)).toBe('4');
+
+    await expect(
+      db.$transaction((tx: never) =>
+        applyMovements(tx, [row({ movementType: 'MARK_DAMAGED', quantity: -100 }), row({ bucket: 'DAMAGED', movementType: 'MARK_DAMAGED', quantity: 100 })]),
+      ),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(balanceOf(db, 1)).toEqual({ onHand: '6', reserved: '0', qc: '0' });
+    expect(damagedOf(db, 1)).toBe('4');
+  });
+
+  it('SUPPLIER_RETURN takes stock out of ON_HAND, QC or DAMAGED — never more than one bucket per row — and cannot take any of them negative', async () => {
+    const db = createInventoryDb();
+    seedStock(db, 1, 10);
+    setBucket(db, 1, 'QC', 5);
+    setBucket(db, 1, 'DAMAGED', 2);
+
+    await db.$transaction((tx: never) =>
+      applyMovements(tx, [
+        row({ movementType: 'SUPPLIER_RETURN', referenceType: 'GOODS_RETURN', quantity: -3 }),
+        row({ bucket: 'QC', movementType: 'SUPPLIER_RETURN', referenceType: 'GOODS_RETURN', quantity: -2 }),
+        row({ bucket: 'DAMAGED', movementType: 'SUPPLIER_RETURN', referenceType: 'GOODS_RETURN', quantity: -1 }),
+      ]),
+    );
+    expect(balanceOf(db, 1)).toEqual({ onHand: '7', reserved: '0', qc: '3' });
+    expect(damagedOf(db, 1)).toBe('1');
+
+    await expect(
+      db.$transaction((tx: never) => applyMovements(tx, [row({ bucket: 'DAMAGED', movementType: 'SUPPLIER_RETURN', referenceType: 'GOODS_RETURN', quantity: -5 })])),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(damagedOf(db, 1)).toBe('1');
+  });
+
+  it('a batch-tracked item requires a batch on a DAMAGED row too (BATCH_REQUIRED/UNEXPECTED_BATCH, mirroring ON_HAND/QC)', async () => {
+    const db = createInventoryDb();
+    trackItem(db, 1);
+    seedStock(db, 1, 10);
+    const batch = seedBatch(db, { itemId: 1, batchNumber: 'B1', onHand: 10 });
+
+    await expect(
+      db.$transaction((tx: never) =>
+        applyMovements(tx, [row({ movementType: 'MARK_DAMAGED', quantity: -4 }), row({ bucket: 'DAMAGED', movementType: 'MARK_DAMAGED', quantity: 4 })]),
+      ),
+    ).rejects.toMatchObject({ response: expect.objectContaining({ code: 'BATCH_REQUIRED' }) });
+
+    await db.$transaction((tx: never) =>
+      applyMovements(tx, [
+        row({ movementType: 'MARK_DAMAGED', quantity: -4, batchId: batch.id }),
+        row({ bucket: 'DAMAGED', movementType: 'MARK_DAMAGED', quantity: 4, batchId: batch.id }),
+      ]),
+    );
+    const batchBalance = db.state.batchBalances.find((b: any) => b.batchId === batch.id);
+    expect(batchBalance.onHand.toString()).toBe('6');
+    expect(batchBalance.damaged.toString()).toBe('4');
   });
 });

@@ -2,6 +2,8 @@ import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AUDIT_ENTITY, AuditService } from '../audit/audit.service';
+import { tehranToday } from '../common/business-date';
+import { InventoryReportsService } from '../inventory/inventory-reports.service';
 import { OPEN_PURCHASE_REQUEST_WHERE } from '../purchase-requests/purchase-request-rules';
 import { COUNTABLE_PURCHASE_WHERE, OPEN_PURCHASE_WHERE, OUTSTANDING_PURCHASE_WHERE } from '../purchases/purchase-rules';
 import { OPEN_SALES_INVOICE_WHERE, SALES_STATISTICS_INVOICE_WHERE } from '../sales/sales-rules';
@@ -71,12 +73,6 @@ function partsOf(formatter: Intl.DateTimeFormat, date: Date) {
   return { year: Number(parts.year), month: Number(parts.month), day: Number(parts.day) };
 }
 
-const gregorianInTehran = new Intl.DateTimeFormat('en-US-u-nu-latn', {
-  timeZone: BUSINESS_TIMEZONE,
-  year: 'numeric',
-  month: 'numeric',
-  day: 'numeric',
-});
 // Node ships full ICU, so the Persian (Jalali) calendar is available
 // without porting frontend/src/lib/jalali.ts — only the day-of-month is
 // needed here (to find the first day of the current Jalali month).
@@ -87,12 +83,11 @@ const jalaliInTehran = new Intl.DateTimeFormat('en-US-u-ca-persian-nu-latn', {
   day: 'numeric',
 });
 
-// Today's Tehran calendar date, as UTC midnight (the same space dates are
-// stored in — see resolvePeriodRange).
-export function tehranToday(now: Date = new Date()): Date {
-  const { year, month, day } = partsOf(gregorianInTehran, now);
-  return new Date(Date.UTC(year, month - 1, day));
-}
+// Re-exported so this module's own behavior/public API is unchanged — the
+// real implementation now lives in common/business-date.ts (Inventory build
+// plan I4, §5.4a R10), since the expiry report needs it too and Inventory
+// must not import from Dashboard.
+export { tehranToday };
 
 // Whole calendar days between a stored date (UTC midnight) and today.
 // A future-dated record (e.g. a purchase entered ahead of time) is age 0.
@@ -138,7 +133,17 @@ export class DashboardService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    private readonly inventoryReports: InventoryReportsService,
   ) {}
+
+  // I3 (B14): the /main low-stock KPI card. A thin pass-through — the actual
+  // "what counts as low" rule (available < minQty) lives in
+  // InventoryReportsService/inventory-rules.ts, never re-derived here
+  // (CLAUDE.md rule 11). No locationId filter yet: the KPI is system-wide,
+  // matching the single-warehouse reality today.
+  getLowStockSummary() {
+    return this.inventoryReports.lowStockSummary();
+  }
 
   async getPurchasesSummary(query: PurchasesSummaryQueryDto, now: Date = new Date()) {
     const range = resolvePeriodRange(query, now);

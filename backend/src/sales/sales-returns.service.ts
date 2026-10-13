@@ -4,6 +4,8 @@ import { nextDocumentNumber } from '../common/document-sequence';
 import { isSameVersion, recordModifiedConflict } from '../common/optimistic-lock';
 import { toSkipTake, type PaginationParams } from '../common/pagination';
 import { AUDIT_ENTITY, AuditService } from '../audit/audit.service';
+import { getItemBatchSettings, listIssuedBatches, type IssuedBatch, type ItemBatchSettings } from '../inventory/inventory-queries';
+import { resolveBatches } from '../inventory/stock-batches';
 import { inspectReturn, receiveReturn } from '../inventory/stock-ledger';
 import { PrismaService } from '../prisma/prisma.service';
 import { applyReturnedQuantities } from './sales-progress';
@@ -19,6 +21,7 @@ import type {
   CompleteReturnWithoutCreditDto,
   InspectSalesReturnDto,
   ReceiveSalesReturnDto,
+  ReceiveSalesReturnItemDto,
   RejectSalesReturnDto,
   RequestSalesReturnDto,
 } from './dto/sales-return.dto';
@@ -182,6 +185,40 @@ export class SalesReturnsService {
 
   history(id: number) {
     return this.audit.listForEntity(AUDIT_ENTITY.SALES_RETURN, id);
+  }
+
+  // I4 (§5.4a R7): the receive form's batch picker — for each line of a
+  // batch-tracked item, which batch(es) that delivery line actually issued
+  // from (via Inventory's listIssuedBatches(), never reading stock_movements
+  // directly). A line with zero issued batches is the B22 case (the
+  // delivery predates this item's cutover) — the form falls back to typing a
+  // lot number instead of picking one.
+  async receiveOptions(id: number) {
+    const salesReturn = await this.prisma.salesReturn.findUnique({
+      where: { id },
+      select: { id: true, deliveryId: true, items: { select: { id: true, itemId: true, itemName: true, deliveryItemId: true, requestedQty: true, receivedQty: true } } },
+    });
+    if (!salesReturn) throw new NotFoundException('مرجوعی پیدا نشد');
+
+    const settingsByItem = await getItemBatchSettings(this.prisma, salesReturn.items.map((line) => line.itemId));
+    const lines = await Promise.all(
+      salesReturn.items.map(async (line) => {
+        const batchTracked = settingsByItem.get(line.itemId)?.batchTracked ?? false;
+        const batches =
+          batchTracked && line.deliveryItemId !== null && salesReturn.deliveryId !== null
+            ? await listIssuedBatches(this.prisma, salesReturn.deliveryId, line.deliveryItemId)
+            : [];
+        return {
+          salesReturnItemId: line.id,
+          itemId: line.itemId,
+          itemName: line.itemName,
+          batchTracked,
+          requestedQty: line.requestedQty.toString(),
+          batches,
+        };
+      }),
+    );
+    return { salesReturnId: id, lines };
   }
 
   // The request form's source: the delivery header plus every line's
@@ -355,23 +392,44 @@ export class SalesReturnsService {
       });
       const salesOrderItemById = new Map(salesOrderItems.map((row) => [row.id, row]));
 
-      const prepared = salesReturn.items.map((line) => {
-        const requested = dec(line.requestedQty);
-        const entry = byItemId.get(line.id);
-        const receivedQty = entry?.receivedQty !== undefined ? dec(entry.receivedQty) : requested;
-        if (receivedQty.greaterThan(requested)) {
-          throw new BadRequestException(`ردیف «${line.itemName}»: مقدار دریافت‌شده (${receivedQty.toString()}) از مقدار درخواستی (${requested.toString()}) بیشتر است`);
-        }
-        const deliveryItem = line.deliveryItemId === null ? undefined : deliveryItemById.get(line.deliveryItemId);
-        if (!deliveryItem) throw new ConflictException(`ردیف «${line.itemName}»: ردیف حواله مربوط پیدا نشد`);
-        const capacity = dec(deliveryItem.quantity).minus(dec(deliveryItem.returnedQty));
-        if (receivedQty.greaterThan(capacity)) {
-          throw new ConflictException(
-            `ردیف «${line.itemName}»: مقدار دریافت (${receivedQty.toString()}) از مقدار قابل مرجوع فعلی این ردیف حواله (${capacity.toString()}) بیشتر است — احتمالاً مرجوعی دیگری برای همین ردیف دریافت شده است.`,
-          );
-        }
-        return { line, deliveryItem, receivedQty };
-      });
+      // I4 (§5.4a R7/B22/B24): a batch-tracked item's return must land in a
+      // specific batch's QC bucket. Never read Inventory's tables directly
+      // (CLAUDE.md rule 11) — only through its exported query helpers
+      // (getItemBatchSettings()/listIssuedBatches()) and stock-batches.ts
+      // resolveBatches() for the B22 (pre-cutover delivery) case.
+      const settingsByItem = await getItemBatchSettings(tx, salesReturn.items.map((line) => line.itemId));
+
+      const prepared = await Promise.all(
+        salesReturn.items.map(async (line) => {
+          const requested = dec(line.requestedQty);
+          const entry = byItemId.get(line.id);
+          const receivedQty = entry?.receivedQty !== undefined ? dec(entry.receivedQty) : requested;
+          if (receivedQty.greaterThan(requested)) {
+            throw new BadRequestException(`ردیف «${line.itemName}»: مقدار دریافت‌شده (${receivedQty.toString()}) از مقدار درخواستی (${requested.toString()}) بیشتر است`);
+          }
+          const deliveryItem = line.deliveryItemId === null ? undefined : deliveryItemById.get(line.deliveryItemId);
+          if (!deliveryItem) throw new ConflictException(`ردیف «${line.itemName}»: ردیف حواله مربوط پیدا نشد`);
+          const capacity = dec(deliveryItem.quantity).minus(dec(deliveryItem.returnedQty));
+          if (receivedQty.greaterThan(capacity)) {
+            throw new ConflictException(
+              `ردیف «${line.itemName}»: مقدار دریافت (${receivedQty.toString()}) از مقدار قابل مرجوع فعلی این ردیف حواله (${capacity.toString()}) بیشتر است — احتمالاً مرجوعی دیگری برای همین ردیف دریافت شده است.`,
+            );
+          }
+
+          let batchId: number | null = null;
+          if (receivedQty.greaterThan(0) && settingsByItem.get(line.itemId)?.batchTracked) {
+            // Every return reaching receive() today references a delivery
+            // (B8's unreferenced returns don't exist yet) — deliveryId stays
+            // nullable in the schema only for that future case.
+            if (salesReturn.deliveryId === null) {
+              throw new ConflictException(`ردیف «${line.itemName}»: این مرجوعی به هیچ حواله‌ای مرتبط نیست؛ امکان تعیین بچ وجود ندارد`);
+            }
+            batchId = await this.resolveReceiveBatch(tx, line, salesReturn.deliveryId, deliveryItem.id, entry, receivedQty, settingsByItem, actor.userId);
+          }
+
+          return { line, deliveryItem, receivedQty, batchId };
+        }),
+      );
 
       await receiveReturn(
         tx,
@@ -383,11 +441,13 @@ export class SalesReturnsService {
           referenceNumber: salesReturn.returnNumber,
           createdByUserId: actor.userId,
         },
-        prepared.filter((entry) => entry.receivedQty.greaterThan(0)).map((entry) => ({ referenceLineId: entry.line.id, itemId: entry.line.itemId, quantity: entry.receivedQty })),
+        prepared
+          .filter((entry) => entry.receivedQty.greaterThan(0))
+          .map((entry) => ({ referenceLineId: entry.line.id, itemId: entry.line.itemId, quantity: entry.receivedQty, batchId: entry.batchId })),
       );
 
       for (const entry of prepared) {
-        await tx.salesReturnItem.update({ where: { id: entry.line.id }, data: { receivedQty: entry.receivedQty } });
+        await tx.salesReturnItem.update({ where: { id: entry.line.id }, data: { receivedQty: entry.receivedQty, batchId: entry.batchId } });
       }
       await applyReturnedQuantities(
         tx,
@@ -419,7 +479,9 @@ export class SalesReturnsService {
   }
 
   // RECEIVED → INSPECTED. Every line with receivedQty > 0 must be listed,
-  // restockQty + writeOffQty must equal that line's receivedQty exactly.
+  // restockQty + writeOffQty + damagedQty must equal that line's receivedQty
+  // exactly (I8, B9: "to damaged" joins restock/write-off as a third
+  // disposition).
   async inspect(id: number, dto: InspectSalesReturnDto, actor: SalesReturnActor) {
     await this.prisma.$transaction(async (tx) => {
       const salesReturn = await this.loadLocked(tx, id);
@@ -435,13 +497,14 @@ export class SalesReturnsService {
         const entry = byItemId.get(line.id)!;
         const restockQty = dec(entry.restockQty);
         const writeOffQty = dec(entry.writeOffQty);
+        const damagedQty = dec(entry.damagedQty ?? 0);
         const received = dec(line.receivedQty);
-        if (!restockQty.plus(writeOffQty).equals(received)) {
+        if (!restockQty.plus(writeOffQty).plus(damagedQty).equals(received)) {
           throw new BadRequestException(
-            `ردیف «${line.itemName}»: جمع بازگشت به انبار (${restockQty.toString()}) و ضایعات (${writeOffQty.toString()}) باید برابر مقدار دریافت‌شده (${received.toString()}) باشد`,
+            `ردیف «${line.itemName}»: جمع بازگشت به انبار (${restockQty.toString()})، ضایعات (${writeOffQty.toString()}) و آسیب‌دیده (${damagedQty.toString()}) باید برابر مقدار دریافت‌شده (${received.toString()}) باشد`,
           );
         }
-        return { line, restockQty, writeOffQty };
+        return { line, restockQty, writeOffQty, damagedQty };
       });
 
       await inspectReturn(
@@ -454,11 +517,25 @@ export class SalesReturnsService {
           referenceNumber: salesReturn.returnNumber,
           createdByUserId: actor.userId,
         },
-        prepared.map((entry) => ({ referenceLineId: entry.line.id, itemId: entry.line.itemId, restockQty: entry.restockQty, writeOffQty: entry.writeOffQty })),
+        // I4 (§5.4a R7): the same batch the line's QC stock was received
+        // into (receive() resolved and stored it on the line) — restock
+        // re-enters ON_HAND, write-off and "to damaged" (I8) both leave QC,
+        // from that same batch.
+        prepared.map((entry) => ({
+          referenceLineId: entry.line.id,
+          itemId: entry.line.itemId,
+          restockQty: entry.restockQty,
+          writeOffQty: entry.writeOffQty,
+          damagedQty: entry.damagedQty,
+          batchId: entry.line.batchId,
+        })),
       );
 
       for (const entry of prepared) {
-        await tx.salesReturnItem.update({ where: { id: entry.line.id }, data: { restockQty: entry.restockQty, writeOffQty: entry.writeOffQty } });
+        await tx.salesReturnItem.update({
+          where: { id: entry.line.id },
+          data: { restockQty: entry.restockQty, writeOffQty: entry.writeOffQty, damagedQty: entry.damagedQty },
+        });
       }
 
       await tx.salesReturn.update({ where: { id }, data: { status: 'INSPECTED', inspectedByUserId: actor.userId, inspectedAt: new Date() } });
@@ -532,6 +609,74 @@ export class SalesReturnsService {
   }
 
   // --- internals ----------------------------------------------------------------
+
+  // I4 (§5.4a R7/B22/B24): resolves which StockBatch a tracked item's
+  // received line goes into. Never reads stock_movements/stock_batches
+  // directly (CLAUDE.md rule 11) — only via Inventory's exported
+  // listIssuedBatches()/resolveBatches().
+  private async resolveReceiveBatch(
+    tx: Prisma.TransactionClient,
+    line: { id: number; itemId: number; itemName: string },
+    deliveryId: number,
+    deliveryItemId: number,
+    entry: ReceiveSalesReturnItemDto | undefined,
+    receivedQty: Prisma.Decimal,
+    settingsByItem: Map<number, ItemBatchSettings>,
+    userId: number | null,
+  ): Promise<number> {
+    const issued = await listIssuedBatches(tx, deliveryId, deliveryItemId);
+
+    if (issued.length === 0) {
+      // B22: this delivery predates the item's cutover to batch tracking —
+      // nothing was issued from a batch to return into. The caller types the
+      // lot number; the system finds or creates that batch.
+      if (!entry?.batchNumber) {
+        throw new BadRequestException(
+          `ردیف «${line.itemName}»: این حواله پیش از فعال‌سازی ردیابی بچ برای این کالا صادر شده است؛ شمارهٔ بچ مرجوعی را وارد کنید`,
+        );
+      }
+      const [resolved] = await resolveBatches(
+        tx,
+        [{ itemId: line.itemId, batchNumber: entry.batchNumber, expiryDate: entry.expiryDate ?? null }],
+        settingsByItem,
+        userId,
+      );
+      return resolved.batchId;
+    }
+
+    let chosen: IssuedBatch;
+    if (issued.length === 1) {
+      chosen = issued[0];
+      if (entry?.batchId && entry.batchId !== chosen.batchId) {
+        throw new BadRequestException(`ردیف «${line.itemName}»: بچ انتخاب‌شده با بچ صادرشدهٔ این ردیف مطابقت ندارد`);
+      }
+    } else {
+      if (!entry?.batchId) {
+        throw new BadRequestException(`ردیف «${line.itemName}»: این ردیف از چند بچ صادر شده است؛ بچ مرجوعی را مشخص کنید`);
+      }
+      const match = issued.find((batch) => batch.batchId === entry.batchId);
+      if (!match) {
+        throw new BadRequestException(`ردیف «${line.itemName}»: بچ انتخاب‌شده جزو بچ‌های صادرشدهٔ این ردیف نیست`);
+      }
+      chosen = match;
+    }
+
+    // Per-batch cap (B24): this batch's issued quantity, minus what other
+    // return lines of the SAME delivery line have already received from it
+    // — queried from Sales' own table (SalesReturnItem), never Inventory's.
+    const others = await tx.salesReturnItem.findMany({
+      where: { deliveryItemId, batchId: chosen.batchId, id: { not: line.id } },
+      select: { receivedQty: true },
+    });
+    const alreadyReceived = others.reduce((sum, row) => sum.plus(dec(row.receivedQty)), new Prisma.Decimal(0));
+    const remaining = dec(chosen.quantity).minus(alreadyReceived);
+    if (receivedQty.greaterThan(remaining)) {
+      throw new ConflictException(
+        `ردیف «${line.itemName}»: مقدار دریافت (${receivedQty.toString()}) از مقدار باقی‌ماندهٔ صادرشده از همین بچ (${remaining.toString()}) بیشتر است — احتمالاً مرجوعی دیگری از همین بچ دریافت شده است.`,
+      );
+    }
+    return chosen.batchId;
+  }
 
   private async loadDelivery(client: Prisma.TransactionClient | PrismaService, deliveryId: number): Promise<DeliveryForReturn> {
     const delivery = await client.delivery.findUnique({ where: { id: deliveryId }, select: deliveryForReturnSelect });

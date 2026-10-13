@@ -8,22 +8,40 @@ import { SessionAuthGuard } from '../auth/guards/session-auth.guard';
 import { InventoryService } from './inventory.service';
 import { StockAdjustmentsService } from './stock-adjustments.service';
 import {
+  approveStockAdjustmentSchema,
   availabilityQuerySchema,
+  createLocationSchema,
   createStockAdjustmentSchema,
+  itemBatchesQuerySchema,
   postStockAdjustmentSchema,
+  rejectStockAdjustmentSchema,
   stockAdjustmentListQuerySchema,
   stockBalanceListQuerySchema,
+  stockCardQuerySchema,
+  stockMovementListQuerySchema,
+  submitStockAdjustmentSchema,
+  updateLocationSchema,
   updateStockAdjustmentSchema,
+  type ApproveStockAdjustmentDto,
   type AvailabilityQuery,
+  type CreateLocationDto,
   type CreateStockAdjustmentDto,
+  type ItemBatchesQuery,
   type PostStockAdjustmentDto,
+  type RejectStockAdjustmentDto,
   type StockAdjustmentListQuery,
   type StockBalanceListQuery,
+  type StockCardQuery,
+  type StockMovementListQuery,
+  type UpdateLocationDto,
+  type SubmitStockAdjustmentDto,
   type UpdateStockAdjustmentDto,
 } from './dto/inventory.dto';
 
 // Reading anything here needs inventory.view; creating/editing/posting/
-// deleting a stock adjustment needs inventory.adjust.
+// submitting/deleting a stock adjustment needs inventory.adjust.
+// Approving/rejecting a PENDING_APPROVAL document (I2, B10/B20) needs
+// inventory.approve instead — WAREHOUSE never gets this permission.
 @Controller('inventory')
 @UseGuards(SessionAuthGuard, PermissionsGuard)
 export class InventoryController {
@@ -32,11 +50,28 @@ export class InventoryController {
     private readonly adjustmentsService: StockAdjustmentsService,
   ) {}
 
-  // Read-only for now (single seeded warehouse, no management UI).
+  // Listing needs only inventory.view (it backs every location picker);
+  // create/update are admin-level, gated by inventory.manage like
+  // stock-levels/item-settings/integrity.
   @Get('locations')
   @RequirePermissions('inventory.view')
   listLocations() {
     return this.inventoryService.listLocations();
+  }
+
+  @Post('locations')
+  @RequirePermissions('inventory.manage')
+  createLocation(@Body(new ZodValidationPipe(createLocationSchema)) dto: CreateLocationDto, @Req() req: Request) {
+    return this.inventoryService.createLocation(dto, req.session.userId ?? null, req.ip);
+  }
+
+  // Declared after the plain GET/POST above but before any ':id'-shaped
+  // sibling route in this controller — none currently collides, but kept
+  // explicit since ParseIntPipe would otherwise swallow a literal segment.
+  @Patch('locations/:id')
+  @RequirePermissions('inventory.manage')
+  updateLocation(@Param('id', ParseIntPipe) id: number, @Body(new ZodValidationPipe(updateLocationSchema)) dto: UpdateLocationDto, @Req() req: Request) {
+    return this.inventoryService.updateLocation(id, dto, req.session.userId ?? null, req.ip);
   }
 
   // Stock list. page/pageSize opt-in (parsePagination) — omitted = full array.
@@ -44,7 +79,13 @@ export class InventoryController {
   @RequirePermissions('inventory.view')
   listBalances(@Query(new ZodValidationPipe(stockBalanceListQuerySchema)) query: StockBalanceListQuery) {
     return this.inventoryService.listBalances(
-      { q: query.q?.trim() || undefined, locationId: query.locationId, sortBy: query.sortBy, sortDir: query.sortDir },
+      {
+        q: query.q?.trim() || undefined,
+        locationId: query.locationId,
+        sortBy: query.sortBy,
+        sortDir: query.sortDir,
+        lowStockOnly: query.lowStockOnly === 'true',
+      },
       parsePagination(query.page, query.pageSize),
     );
   }
@@ -68,6 +109,46 @@ export class InventoryController {
     const locationId = query.locationId ?? (await this.inventoryService.getDefaultLocation()).id;
     return this.inventoryService.getAvailability(itemId, locationId);
   }
+
+  // I4 (build plan §5.4/§16 resume step 7): every batch of one item that
+  // still carries stock, with its expiry status — the batch picker/expiry
+  // view for an item's detail page.
+  @Get('items/:itemId/batches')
+  @RequirePermissions('inventory.view')
+  listItemBatches(@Param('itemId', ParseIntPipe) itemId: number, @Query(new ZodValidationPipe(itemBatchesQuerySchema)) query: ItemBatchesQuery) {
+    return this.inventoryService.listItemBatches(itemId, query.locationId);
+  }
+
+  // Stock card (کاردکس): every movement for one item, across locations,
+  // with a running balance per bucket (I1, build plan §9).
+  @Get('items/:itemId/stock-card')
+  @RequirePermissions('inventory.view')
+  getStockCard(@Param('itemId', ParseIntPipe) itemId: number, @Query(new ZodValidationPipe(stockCardQuerySchema)) query: StockCardQuery) {
+    return this.inventoryService.getStockCard(itemId, { locationId: query.locationId });
+  }
+
+  // Movement browser (/inventory/movements): a filterable, paginated view
+  // over the ledger (I1, build plan §9).
+  @Get('movements')
+  @RequirePermissions('inventory.view')
+  listMovements(@Query(new ZodValidationPipe(stockMovementListQuerySchema)) query: StockMovementListQuery) {
+    return this.inventoryService.listMovements(
+      {
+        itemId: query.itemId,
+        locationId: query.locationId,
+        bucket: query.bucket,
+        movementType: query.movementType,
+        referenceType: query.referenceType,
+        dateFrom: query.dateFrom,
+        dateTo: query.dateTo,
+      },
+      parsePagination(query.page, query.pageSize),
+    );
+  }
+
+  // Moved to InventoryAdminController (I3): inventory.manage now exists as
+  // "admin-level inventory configuration" and is the correct gate — see
+  // inventory-admin.controller.ts's checkIntegrity().
 
   @Get('stock-adjustments')
   @RequirePermissions('inventory.view')
@@ -116,5 +197,40 @@ export class InventoryController {
   @RequirePermissions('inventory.adjust')
   removeAdjustment(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
     return this.adjustmentsService.remove(id, req.session.userId ?? null, req.ip);
+  }
+
+  // DRAFT → PENDING_APPROVAL: only for a kind/net-quantity that needs
+  // inventory.approve (B10). post() refuses these; this is the only route in.
+  @Post('stock-adjustments/:id/submit')
+  @RequirePermissions('inventory.adjust')
+  submitAdjustment(
+    @Param('id', ParseIntPipe) id: number,
+    @Body(new ZodValidationPipe(submitStockAdjustmentSchema)) dto: SubmitStockAdjustmentDto,
+    @Req() req: Request,
+  ) {
+    return this.adjustmentsService.submit(id, dto.updatedAt, req.session.userId ?? null, req.ip);
+  }
+
+  // PENDING_APPROVAL → POSTED. No self-approval: the approver must not be
+  // the user who submitted (service enforces this; see StockAdjustmentsService).
+  @Post('stock-adjustments/:id/approve')
+  @RequirePermissions('inventory.approve')
+  approveAdjustment(
+    @Param('id', ParseIntPipe) id: number,
+    @Body(new ZodValidationPipe(approveStockAdjustmentSchema)) dto: ApproveStockAdjustmentDto,
+    @Req() req: Request,
+  ) {
+    return this.adjustmentsService.approve(id, dto.updatedAt, req.session.userId ?? null, req.ip);
+  }
+
+  // PENDING_APPROVAL → DRAFT, with a required reason.
+  @Post('stock-adjustments/:id/reject')
+  @RequirePermissions('inventory.approve')
+  rejectAdjustment(
+    @Param('id', ParseIntPipe) id: number,
+    @Body(new ZodValidationPipe(rejectStockAdjustmentSchema)) dto: RejectStockAdjustmentDto,
+    @Req() req: Request,
+  ) {
+    return this.adjustmentsService.reject(id, dto.updatedAt, dto.rejectReason, req.session.userId ?? null, req.ip);
   }
 }

@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { InventoryModule } from '../inventory/inventory.module';
 import { DashboardController } from './dashboard.controller';
 import { DashboardService } from './dashboard.service';
 
@@ -10,7 +11,14 @@ import { DashboardService } from './dashboard.service';
 // (purchase-rules.ts, purchase-request-rules.ts, sales/sales-rules.ts),
 // never redefined here (CLAUDE.md rule 11). Audit-log reads (recent
 // activity) go through the global AuditService.
+//
+// I3 is the one exception to "no module imports": the low-stock KPI is a
+// real business rule (what counts as "low" — B14), not just a raw-table
+// aggregate, so it is deliberately NOT re-derived here — InventoryModule is
+// imported so DashboardService can call InventoryReportsService.lowStockSummary()
+// directly, the same discipline CLAUDE.md rule 11 asks for.
 @Module({
+  imports: [InventoryModule],
   controllers: [DashboardController],
   providers: [DashboardService],
 })

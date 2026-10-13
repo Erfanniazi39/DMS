@@ -46,4 +46,13 @@ export class DashboardController {
   openItems() {
     return this.dashboardService.getOpenItems();
   }
+
+  // I3 (B14): the low-stock KPI card. Gated on inventory.view, not a
+  // purchases permission — anyone who can see inventory can see this, no
+  // special permission needed (viewing an alert is not editing a threshold).
+  @Get('low-stock-summary')
+  @RequirePermissions('inventory.view')
+  lowStockSummary() {
+    return this.dashboardService.getLowStockSummary();
+  }
 }

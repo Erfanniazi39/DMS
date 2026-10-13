@@ -22,8 +22,8 @@ import {
 // unitName / unitPrice (snapshotted from the delivery's order line),
 // requestedByUserId/approvedByUserId/receivedByUserId/inspectedByUserId and
 // their *At timestamps (set by the server), every progress counter
-// (receivedQty/restockQty/writeOffQty/creditedQty — written only by
-// receive()/inspect()/CreditNotesService.post() via markCredited()).
+// (receivedQty/restockQty/writeOffQty/damagedQty/creditedQty — written only
+// by receive()/inspect()/CreditNotesService.post() via markCredited()).
 
 export const SALES_RETURN_STATUSES = ['REQUESTED', 'APPROVED', 'REJECTED', 'RECEIVED', 'INSPECTED', 'COMPLETED', 'CANCELLED'] as const;
 export const RETURN_REASONS = ['DAMAGED', 'EXPIRED', 'WRONG_ITEM', 'QUALITY', 'CUSTOMER_REFUSED', 'OTHER'] as const;
@@ -101,6 +101,16 @@ const receiveItemSchema = z.object(
     // Defaults to the line's requestedQty on the server when omitted — see
     // sales-returns.service.ts receive().
     receivedQty: nonNegativeQuantity('مقدار دریافت‌شده').optional(),
+    // I4 (§5.4a R7/B22/B24): only meaningful for a batch-tracked item.
+    // batchId picks among the batch(es) the delivery actually issued from
+    // (required when there is more than one; ignored/validated against the
+    // single choice otherwise). batchNumber/expiryDate are for B22 only — a
+    // delivery that predates this item's cutover, with no batch to return
+    // into; the system finds or creates that lot. Never required for an
+    // untracked item.
+    batchId: optionalId('بچ انتخابی نامعتبر است'),
+    batchNumber: optionalTrimmedString(100),
+    expiryDate: optionalDate('تاریخ انقضا نامعتبر است'),
   },
   { error: 'ردیف دریافت نامعتبر است' },
 );
@@ -116,13 +126,17 @@ const inspectItemSchema = z.object(
     salesReturnItemId: requiredId('ردیف مرجوعی را انتخاب کنید'),
     restockQty: nonNegativeQuantity('مقدار بازگشت به انبار'),
     writeOffQty: nonNegativeQuantity('مقدار ضایعات'),
+    // I8 (build plan §5.8, B9): "to damaged" disposition — held, not
+    // sellable, potentially returned to the supplier (I8's GoodsReturn).
+    damagedQty: nonNegativeQuantity('مقدار آسیب‌دیده').optional().default(0),
   },
   { error: 'ردیف بازرسی نامعتبر است' },
 );
 
-// RECEIVED → INSPECTED. Per line: restockQty + writeOffQty must equal the
-// line's receivedQty (checked server-side — see sales-returns.service.ts
-// inspect()). Stock effects RETURN_RESTOCK / RETURN_WRITE_OFF.
+// RECEIVED → INSPECTED. Per line: restockQty + writeOffQty + damagedQty must
+// equal the line's receivedQty (checked server-side — see
+// sales-returns.service.ts inspect()). Stock effects RETURN_RESTOCK /
+// RETURN_WRITE_OFF / RETURN_TO_DAMAGED.
 export const inspectSalesReturnSchema = z.object({
   ...versionField,
   items: z
@@ -153,6 +167,7 @@ export type ApproveSalesReturnDto = z.infer<typeof approveSalesReturnSchema>;
 export type RejectSalesReturnDto = z.infer<typeof rejectSalesReturnSchema>;
 export type CancelSalesReturnDto = z.infer<typeof cancelSalesReturnSchema>;
 export type ReceiveSalesReturnDto = z.infer<typeof receiveSalesReturnSchema>;
+export type ReceiveSalesReturnItemDto = NonNullable<ReceiveSalesReturnDto['items']>[number];
 export type InspectSalesReturnDto = z.infer<typeof inspectSalesReturnSchema>;
 export type CompleteReturnWithoutCreditDto = z.infer<typeof completeReturnWithoutCreditSchema>;
 export type SalesReturnListQuery = z.infer<typeof salesReturnListQuerySchema>;

@@ -31,6 +31,8 @@ export const createUserSchema = z.object({
     'SALESPERSON',
     'WAREHOUSE',
     'ACCOUNTANT',
+    // Inventory batch I2 (2026-10-10, B20) — seeded in prisma/seed.ts.
+    'INVENTORY_MANAGER',
   ]),
   status: z.enum(['ACTIVE', 'DISABLED', 'LOCKED']).default('ACTIVE'),
 });

@@ -71,6 +71,18 @@ describe('SalesOrdersService', () => {
       expect(db.salesOrder.create).not.toHaveBeenCalled();
     });
 
+    // Inventory build plan I1, B2: raw materials/packaging are stock-only —
+    // the server rejects them even if a request bypasses the FINISHED_GOOD
+    // item picker (formOptions()).
+    it('refuses a raw-material item even though it is active', async () => {
+      const db = createSalesDb();
+      const service = buildSalesOrdersService(db);
+      await expect(
+        service.create({ ...validCreateDto, items: [{ itemId: 4, quantity: 1, unitPrice: 100 }] } as never, SALESPERSON),
+      ).rejects.toThrow('محصول نهایی نیست');
+      expect(db.salesOrder.create).not.toHaveBeenCalled();
+    });
+
     describe('B2 — price override', () => {
       it('below the list price requires a reason', async () => {
         const db = createSalesDb();
@@ -117,6 +129,20 @@ describe('SalesOrdersService', () => {
         const data = db.salesOrder.create.mock.calls[0][0].data;
         expect([data.items.create[0].discountAmount.toString(), data.discountTotal.toString(), data.totalAmount.toString()]).toEqual(['500', '500', '4500']);
       });
+    });
+  });
+
+  describe('formOptions (item picker)', () => {
+    // Inventory build plan I1, B2: the order form's item picker shows only
+    // FINISHED_GOOD items — raw materials/packaging are never sellable.
+    it('lists only FINISHED_GOOD items', async () => {
+      const db = createSalesDb();
+      db.customer.findMany.mockResolvedValue([]);
+      db.employee.findMany.mockResolvedValue([]);
+      const result = await buildSalesOrdersService(db).formOptions();
+      expect(result.items.map((item: { id: number }) => item.id).sort()).toEqual([1, 2]);
+      const args = db.item.findMany.mock.calls.at(-1)[0];
+      expect(args.where).toEqual({ status: 'active', itemKind: 'FINISHED_GOOD' });
     });
   });
 

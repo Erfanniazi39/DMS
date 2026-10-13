@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
@@ -14,32 +14,54 @@ import { parseNumberInput } from "@/lib/number-input";
 import { todayIso } from "@/lib/format";
 import {
   INBOUND_ONLY_KINDS,
+  OUTBOUND_ONLY_KINDS,
   STOCK_ADJUSTMENT_KINDS,
+  STOCK_ADJUSTMENT_REASONS,
   adjustmentTitle,
   stockAdjustmentKindHints,
   stockAdjustmentKindLabels,
+  stockAdjustmentNeedsApproval,
+  stockAdjustmentReasonLabels,
+  stockAdjustmentRequiresReasonCode,
   type InventoryLocation,
+  type ItemBatches,
   type ItemOption,
   type StockAdjustmentDetail,
   type StockAdjustmentKind,
+  type StockAdjustmentReason,
   type StockBalanceRow,
 } from "../shared";
 import { FormSection } from "./_form/FormSection";
-import { AdjustmentLinesGrid, emptyLineRow, type AdjustmentLineRow } from "./_form/AdjustmentLinesGrid";
+import { AdjustmentLinesGrid, emptyLineRow, type AdjustmentLineRow, type BatchesState } from "./_form/AdjustmentLinesGrid";
 
 type FormState = {
   kind: StockAdjustmentKind;
   adjustmentDate: string;
   reason: string;
+  reasonCode: "" | StockAdjustmentReason;
   note: string;
   lines: AdjustmentLineRow[];
 };
 
 function emptyForm(): FormState {
-  return { kind: "RECEIPT", adjustmentDate: todayIso(), reason: "", note: "", lines: [emptyLineRow()] };
+  return { kind: "RECEIPT", adjustmentDate: todayIso(), reason: "", reasonCode: "", note: "", lines: [emptyLineRow()] };
 }
 
 type Props = { mode: "create" } | { mode: "edit"; adjustmentId: number };
+
+// Create-mode prefill (?kind=BATCH_CUTOVER&itemId=…, linked from
+// /inventory/item-settings when a direct toggle is refused for an item with
+// stock). Read once, client-only, without useSearchParams()'s Suspense
+// requirement — same approach as sales-returns/SalesReturnRequestForm.tsx.
+function subscribeToNothing() {
+  return () => {};
+}
+function readLocationSearch() {
+  return window.location.search;
+}
+function readServerLocationSearch() {
+  return null;
+}
 
 // Create/edit form for a DRAFT stock adjustment. Saving never touches stock
 // — the document only affects inventory once it's posted ("ثبت نهایی") on the
@@ -51,8 +73,26 @@ export function StockAdjustmentForm(props: Props) {
   const adjustmentId = props.mode === "edit" ? props.adjustmentId : null;
 
   const [form, setForm] = useState<FormState>(emptyForm);
+  const locationSearch = useSyncExternalStore(subscribeToNothing, readLocationSearch, readServerLocationSearch);
+  const [prefillApplied, setPrefillApplied] = useState(false);
+  if (!prefillApplied && locationSearch !== null && props.mode === "create") {
+    setPrefillApplied(true);
+    const params = new URLSearchParams(locationSearch);
+    const kind = params.get("kind");
+    const itemId = params.get("itemId");
+    if (kind && (STOCK_ADJUSTMENT_KINDS as string[]).includes(kind)) {
+      setForm((current) => ({ ...current, kind: kind as StockAdjustmentKind, lines: [emptyLineRow(itemId && /^\d+$/.test(itemId) ? itemId : "")] }));
+    }
+  }
   const [itemOptions, setItemOptions] = useState<ItemOption[]>([]);
   const [onHandByItem, setOnHandByItem] = useState<Map<number, string> | null>(null);
+  // I4: the document's own location (edit) or the default warehouse — batch
+  // pickers only offer batches held there.
+  const [locationId, setLocationId] = useState<number | null>(null);
+  const [batchesByItem, setBatchesByItem] = useState<Map<number, BatchesState>>(new Map());
+  const requestedBatchItems = useRef(new Set<number>());
+  // True once the location/current-stock lookup settled (either way).
+  const [stockContextReady, setStockContextReady] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -63,11 +103,13 @@ export function StockAdjustmentForm(props: Props) {
   useEffect(() => {
     let cancelled = false;
     async function load() {
+      let detail: StockAdjustmentDetail | null = null;
       try {
-        const [options, detail] = await Promise.all([
+        const [options, fetchedDetail] = await Promise.all([
           apiFetch<ItemOption[]>("/inventory/item-options"),
           adjustmentId !== null ? apiFetch<StockAdjustmentDetail>(`/inventory/stock-adjustments/${adjustmentId}`) : Promise.resolve(null),
         ]);
+        detail = fetchedDetail;
         if (cancelled) return;
         // An item already on a draft may have been deactivated since — keep
         // it selectable so opening and saving doesn't silently drop it.
@@ -82,8 +124,19 @@ export function StockAdjustmentForm(props: Props) {
             kind: detail.kind,
             adjustmentDate: detail.adjustmentDate.slice(0, 10),
             reason: detail.reason,
+            reasonCode: detail.reasonCode ?? "",
             note: detail.note ?? "",
-            lines: detail.items.map((line) => ({ key: crypto.randomUUID(), itemId: String(line.itemId), quantity: String(Number(line.quantity)), note: line.note ?? "" })),
+            lines: detail.items.map((line) => ({
+              key: crypto.randomUUID(),
+              itemId: String(line.itemId),
+              quantity: String(Number(line.quantity)),
+              note: line.note ?? "",
+              batchMode: line.batchId ? "existing" : line.batchNumber ? "new" : "",
+              batchId: line.batchId ? String(line.batchId) : "",
+              batchNumber: line.batchNumber ?? "",
+              productionDate: line.productionDate?.slice(0, 10) ?? "",
+              expiryDate: line.expiryDate?.slice(0, 10) ?? "",
+            })),
           });
         }
       } catch (reason) {
@@ -101,9 +154,14 @@ export function StockAdjustmentForm(props: Props) {
         ]);
         if (cancelled) return;
         const defaultLocation = locations.find((location) => location.isDefault) ?? locations[0];
-        setOnHandByItem(new Map(balances.filter((row) => row.locationId === defaultLocation?.id).map((row) => [row.itemId, row.onHand])));
+        // An existing draft keeps its own location; a new one uses the default.
+        const documentLocationId = detail?.locationId ?? defaultLocation?.id ?? null;
+        setLocationId(documentLocationId);
+        setOnHandByItem(new Map(balances.filter((row) => row.locationId === documentLocationId).map((row) => [row.itemId, row.onHand])));
       } catch {
         if (!cancelled) setOnHandByItem(null);
+      } finally {
+        if (!cancelled) setStockContextReady(true);
       }
     }
     void load();
@@ -112,10 +170,72 @@ export function StockAdjustmentForm(props: Props) {
     };
   }, [adjustmentId]);
 
+  // I4: load each selected item's batches once (batch picker + the
+  // cutover "already tracked" hint). Keyed on the distinct selected item ids;
+  // re-keyed when the document's location becomes known.
+  const selectedItemIdsKey = useMemo(
+    () => [...new Set(form.lines.map((line) => line.itemId).filter((id) => id !== ""))].sort().join(","),
+    [form.lines],
+  );
+  useEffect(() => {
+    if (!stockContextReady) return;
+    const missing = selectedItemIdsKey
+      .split(",")
+      .filter((id) => id !== "")
+      .map(Number)
+      .filter((id) => !requestedBatchItems.current.has(id));
+    if (missing.length === 0) return;
+    for (const id of missing) requestedBatchItems.current.add(id);
+    let cancelled = false;
+    async function loadBatches() {
+      setBatchesByItem((current) => new Map([...current, ...missing.map((id) => [id, "loading"] as const)]));
+      const query = locationId !== null ? `?locationId=${locationId}` : "";
+      const results = await Promise.all(
+        missing.map((id) =>
+          apiFetch<ItemBatches>(`/inventory/items/${id}/batches${query}`)
+            .then((data) => [id, data.batches] as const)
+            .catch(() => [id, "error"] as const),
+        ),
+      );
+      if (cancelled) {
+        for (const id of missing) requestedBatchItems.current.delete(id);
+        return;
+      }
+      setBatchesByItem((current) => new Map([...current, ...results]));
+    }
+    void loadBatches();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedItemIdsKey, locationId, stockContextReady]);
+
   const filledLines = useMemo(() => form.lines.filter((line) => line.itemId !== "" || line.quantity.trim() !== ""), [form.lines]);
+  const filledQuantities = useMemo(() => filledLines.map((line) => parseNumberInput(line.quantity)).filter((value) => Number.isFinite(value)), [filledLines]);
+  // B10/B11: whether this document needs inventory.approve (the notice under
+  // the kind select) and — a separate rule since I4/R6 — whether reasonCode
+  // is required (BATCH_CUTOVER needs approval but never a reasonCode). The
+  // backend re-checks both authoritatively.
+  const needsApproval = useMemo(() => stockAdjustmentNeedsApproval(form.kind, filledQuantities), [form.kind, filledQuantities]);
+  const needsReasonCode = useMemo(() => stockAdjustmentRequiresReasonCode(form.kind, filledQuantities), [form.kind, filledQuantities]);
 
   function update<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((current) => ({ ...current, [key]: value }));
+  }
+
+  // Switching into BATCH_CUTOVER: one item per document, every line a new
+  // lot. Switching out: typed lot numbers stay as "new batch" lines.
+  function changeKind(kind: StockAdjustmentKind) {
+    setForm((current) => {
+      if (kind === current.kind) return current;
+      if (kind === "BATCH_CUTOVER") {
+        const itemId = current.lines.find((line) => line.itemId !== "")?.itemId ?? "";
+        return { ...current, kind, lines: current.lines.map((line) => ({ ...line, itemId, batchMode: "", batchId: "" })) };
+      }
+      if (current.kind === "BATCH_CUTOVER") {
+        return { ...current, kind, lines: current.lines.map((line) => ({ ...line, batchMode: line.batchNumber.trim() ? "new" : "" })) };
+      }
+      return { ...current, kind };
+    });
   }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -126,13 +246,30 @@ export function StockAdjustmentForm(props: Props) {
     if (!form.reason.trim()) problems.push("علت ثبت سند الزامی است.");
     if (filledLines.length === 0) problems.push("حداقل یک ردیف کالا را وارد کنید.");
     const inboundOnly = INBOUND_ONLY_KINDS.includes(form.kind);
+    const outboundOnly = OUTBOUND_ONLY_KINDS.includes(form.kind);
+    const cutover = form.kind === "BATCH_CUTOVER";
+    const quantities: number[] = [];
     filledLines.forEach((line, index) => {
-      const row = index + 1;
+      const row = `ردیف ${(index + 1).toLocaleString("fa-IR")}`;
       const quantity = parseNumberInput(line.quantity);
-      if (!line.itemId) problems.push(`ردیف ${row.toLocaleString("fa-IR")}: کالا را انتخاب کنید.`);
-      if (line.quantity.trim() === "" || !Number.isFinite(quantity) || quantity === 0) problems.push(`ردیف ${row.toLocaleString("fa-IR")}: مقدار باید عددی غیر از صفر باشد.`);
-      else if (inboundOnly && quantity < 0) problems.push(`ردیف ${row.toLocaleString("fa-IR")}: در «${stockAdjustmentKindLabels[form.kind]}» مقدار باید مثبت باشد.`);
+      if (!line.itemId) problems.push(`${row}: کالا را انتخاب کنید.`);
+      if (line.quantity.trim() === "" || !Number.isFinite(quantity) || quantity === 0) problems.push(`${row}: مقدار باید عددی غیر از صفر باشد.`);
+      else {
+        quantities.push(quantity);
+        if (inboundOnly && quantity < 0) problems.push(`${row}: در «${stockAdjustmentKindLabels[form.kind]}» مقدار باید مثبت باشد.`);
+        if (outboundOnly && quantity > 0) problems.push(`${row}: در «${stockAdjustmentKindLabels[form.kind]}» مقدار باید منفی باشد.`);
+      }
+      // I4 batch fields (UX only — the backend validates per item's real tracked state).
+      const typesLot = cutover || line.batchMode === "new";
+      if (typesLot && !line.batchNumber.trim()) problems.push(`${row}: شماره بچ را وارد کنید.`);
+      if (!cutover && line.batchMode === "existing" && !line.batchId) problems.push(`${row}: بچ را انتخاب کنید.`);
+      if (!cutover && line.batchMode === "new" && Number.isFinite(quantity) && quantity < 0) problems.push(`${row}: برای کاهش موجودی باید بچ موجود انتخاب شود، نه بچ جدید.`);
+      if (typesLot && line.productionDate && line.expiryDate && line.expiryDate < line.productionDate) problems.push(`${row}: تاریخ انقضا نمی‌تواند قبل از تاریخ تولید باشد.`);
     });
+    if (cutover && new Set(filledLines.map((line) => line.itemId).filter((id) => id !== "")).size > 1) {
+      problems.push("سند «تبدیل به ردیابی بچ» فقط می‌تواند برای یک کالا باشد.");
+    }
+    if (stockAdjustmentRequiresReasonCode(form.kind, quantities) && !form.reasonCode) problems.push("علت را برای این نوع سند انتخاب کنید.");
     if (problems.length) {
       pushErrors(problems);
       return;
@@ -142,8 +279,17 @@ export function StockAdjustmentForm(props: Props) {
       kind: form.kind,
       adjustmentDate: form.adjustmentDate,
       reason: form.reason.trim(),
+      reasonCode: form.reasonCode || undefined,
       note: form.note.trim(),
-      items: filledLines.map((line) => ({ itemId: Number(line.itemId), quantity: parseNumberInput(line.quantity), note: line.note.trim() })),
+      items: filledLines.map((line) => {
+        const base = { itemId: Number(line.itemId), quantity: parseNumberInput(line.quantity), note: line.note.trim() };
+        const typesLot = cutover || line.batchMode === "new";
+        if (typesLot) {
+          return { ...base, batchNumber: line.batchNumber.trim(), productionDate: line.productionDate || undefined, expiryDate: line.expiryDate || undefined };
+        }
+        if (line.batchMode === "existing" && line.batchId) return { ...base, batchId: Number(line.batchId) };
+        return base;
+      }),
       ...(props.mode === "edit" && loaded ? { updatedAt: loaded.updatedAt } : {}),
     };
 
@@ -223,7 +369,7 @@ export function StockAdjustmentForm(props: Props) {
             <div className="grid gap-x-3 gap-y-2.5 sm:grid-cols-2 lg:grid-cols-4">
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="adjustment-kind">نوع سند<RequiredMark /></Label>
-                <select id="adjustment-kind" className={selectClass} value={form.kind} onChange={(event) => update("kind", event.target.value as StockAdjustmentKind)}>
+                <select id="adjustment-kind" className={selectClass} value={form.kind} onChange={(event) => changeKind(event.target.value as StockAdjustmentKind)}>
                   {STOCK_ADJUSTMENT_KINDS.map((kind) => (
                     <option key={kind} value={kind}>{stockAdjustmentKindLabels[kind]}</option>
                   ))}
@@ -237,8 +383,29 @@ export function StockAdjustmentForm(props: Props) {
                 <Label htmlFor="adjustment-reason">علت<RequiredMark /></Label>
                 <Input id="adjustment-reason" value={form.reason} maxLength={500} placeholder="مثلاً: شمارش انبار پایان ماه" onChange={(event) => update("reason", event.target.value)} />
               </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="adjustment-reason-code">
+                  کد علت{needsReasonCode ? <RequiredMark /> : null}
+                </Label>
+                <select
+                  id="adjustment-reason-code"
+                  className={selectClass}
+                  value={form.reasonCode}
+                  onChange={(event) => update("reasonCode", event.target.value as FormState["reasonCode"])}
+                >
+                  <option value="">{needsReasonCode ? "انتخاب کنید" : "بدون کد علت"}</option>
+                  {STOCK_ADJUSTMENT_REASONS.map((reasonCode) => (
+                    <option key={reasonCode} value={reasonCode}>{stockAdjustmentReasonLabels[reasonCode]}</option>
+                  ))}
+                </select>
+              </div>
             </div>
             <p className="mt-2 text-xs text-muted-foreground">{stockAdjustmentKindHints[form.kind]}</p>
+            {needsApproval ? (
+              <p className="mt-1 text-xs text-warning">
+                این سند پس از ذخیره باید برای تأیید ارسال شود (inventory.approve) — کاهش موجودی بدون تأیید کاربر دیگر ثبت نهایی نمی‌شود.
+              </p>
+            ) : null}
           </FormSection>
 
           <AdjustmentLinesGrid
@@ -247,6 +414,7 @@ export function StockAdjustmentForm(props: Props) {
             setLines={(updateLines) => setForm((current) => ({ ...current, lines: updateLines(current.lines) }))}
             itemOptions={itemOptions}
             onHandByItem={onHandByItem}
+            batchesByItem={batchesByItem}
           />
 
           <FormSection title="یادداشت">

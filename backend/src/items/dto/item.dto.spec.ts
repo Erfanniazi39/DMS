@@ -52,8 +52,31 @@ describe('createItemSchema sellingPrice', () => {
 });
 
 describe('updateItemSchema', () => {
-  it('requires an explicit valid status', () => {
-    expect(updateItemSchema.safeParse({ ...validItem, status: 'inactive' }).success).toBe(true);
+  it('requires an explicit valid status and itemKind', () => {
+    expect(updateItemSchema.safeParse({ ...validItem, status: 'inactive', itemKind: 'FINISHED_GOOD' }).success).toBe(true);
+    expect(updateItemSchema.safeParse({ ...validItem, status: 'inactive' }).success).toBe(false);
+    expect(updateItemSchema.safeParse({ ...validItem, itemKind: 'FINISHED_GOOD' }).success).toBe(false);
     expect(updateItemSchema.safeParse(validItem).success).toBe(false);
+  });
+
+  it('accepts every ItemKind value', () => {
+    for (const itemKind of ['FINISHED_GOOD', 'RAW_MATERIAL', 'PACKAGING']) {
+      expect(updateItemSchema.safeParse({ ...validItem, status: 'active', itemKind }).success).toBe(true);
+    }
+    expect(updateItemSchema.safeParse({ ...validItem, status: 'active', itemKind: 'NOT_A_KIND' }).success).toBe(false);
+  });
+});
+
+describe('createItemSchema itemKind', () => {
+  it('defaults to FINISHED_GOOD when omitted', () => {
+    const result = createItemSchema.safeParse(validItem);
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.itemKind).toBe('FINISHED_GOOD');
+  });
+
+  it('accepts an explicit RAW_MATERIAL/PACKAGING kind', () => {
+    expect(createItemSchema.safeParse({ ...validItem, itemKind: 'RAW_MATERIAL' }).success).toBe(true);
+    expect(createItemSchema.safeParse({ ...validItem, itemKind: 'PACKAGING' }).success).toBe(true);
+    expect(createItemSchema.safeParse({ ...validItem, itemKind: 'NOT_A_KIND' }).success).toBe(false);
   });
 });

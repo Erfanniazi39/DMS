@@ -76,6 +76,17 @@ enum ItemStatus {
   inactive
 }
 
+// Inventory build plan I1 (2026-10-08), B2: the company produces what it
+// sells and also tracks raw materials/packaging as stock. FINISHED_GOOD is
+// the only kind Sales pickers show; RAW_MATERIAL/PACKAGING are consumed by
+// production (tracked as stock, never sellable). Every existing Item row
+// defaults to FINISHED_GOOD (safe, additive).
+enum ItemKind {
+  FINISHED_GOOD
+  RAW_MATERIAL
+  PACKAGING
+}
+
 enum PurchaseStatus {
   DRAFT
   CONFIRMED
@@ -232,6 +243,9 @@ model Employee {
   purchaseRequestsAsRequester PurchaseRequest[]
   // Sales orders this employee is the salesperson on (SalesOrder.salespersonEmployee).
   salesOrdersAsSalesperson    SalesOrder[]
+  // Production outputs this employee (or production line lead) produced —
+  // ProductionOutput.producedByEmployee, optional, SetNull (I5, §5.11).
+  productionOutputsProduced   ProductionOutput[]
 
   @@map("employees")
 }
@@ -255,6 +269,10 @@ model Supplier {
   status            SupplierStatus @default(active)
   note              String?
   purchases         Purchase[]
+  // I5 (build plan §5.5): raw-material/packaging receipts from this supplier.
+  goodsReceipts     GoodsReceipt[]
+  // I8 (build plan §5.8): returns of stock back to this supplier.
+  goodsReturns      GoodsReturn[]
 
   @@map("suppliers")
 }
@@ -564,29 +582,48 @@ model ItemCategory {
 // PurchaseRequestItem keep a free-text name and never reference this table.
 // Will be referenced by SalesItem once Sales exists.
 model Item {
-  id                   Int                   @id @default(autoincrement())
-  code                 String                @unique
-  name                 String
-  categoryId           Int                   @map("category_id")
-  category             ItemCategory          @relation(fields: [categoryId], references: [id], onDelete: Restrict)
-  unitId               Int                   @map("unit_id")
-  unit                 Unit                  @relation(fields: [unitId], references: [id], onDelete: Restrict)
-  description          String?
-  status               ItemStatus            @default(active)
-  note                 String?
+  id                    Int                    @id @default(autoincrement())
+  code                  String                 @unique
+  name                  String
+  categoryId            Int                    @map("category_id")
+  category              ItemCategory           @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  unitId                Int                    @map("unit_id")
+  unit                  Unit                   @relation(fields: [unitId], references: [id], onDelete: Restrict)
+  description           String?
+  status                ItemStatus             @default(active)
+  // Inventory build plan I1, B2: which stock role this item plays. Sales
+  // pickers filter to FINISHED_GOOD only — raw materials/packaging are
+  // never sellable.
+  itemKind              ItemKind               @default(FINISHED_GOOD) @map("item_kind")
+  note                  String?
   // Default selling price (Rial, same precision as Purchase.totalAmount).
   // Optional — an item without one is priced manually on each sales line
   // (Sales batches, later). Only a default; never a historical fact.
-  sellingPrice         Decimal?              @map("selling_price") @db.Decimal(15, 0)
+  sellingPrice          Decimal?               @map("selling_price") @db.Decimal(15, 0)
   // Inventory (stock ledger) — all Restrict: an item with stock history
   // can't be deleted, only deactivated.
-  stockBalances        StockBalance[]
-  stockMovements       StockMovement[]
-  stockAdjustmentItems StockAdjustmentItem[]
-  salesOrderItems      SalesOrderItem[]
-  deliveryItems        DeliveryItem[]
-  salesInvoiceItems    SalesInvoiceItem[]
-  salesReturnItems     SalesReturnItem[]
+  stockBalances         StockBalance[]
+  stockMovements        StockMovement[]
+  stockAdjustmentItems  StockAdjustmentItem[]
+  // I3 (build plan §5.3, B14): per item+location min/reorder/max thresholds.
+  itemStockLevels       ItemStockLevel[]
+  salesOrderItems       SalesOrderItem[]
+  deliveryItems         DeliveryItem[]
+  salesInvoiceItems     SalesInvoiceItem[]
+  salesReturnItems      SalesReturnItem[]
+  // I4 (build plan §5.4): batch/expiry config + ledger — Cascade on the
+  // settings row only (pure config; an item with only a settings row must
+  // stay deletable), Restrict on actual batch history like every other
+  // stock table.
+  inventoryItemSetting  InventoryItemSetting?
+  stockBatches          StockBatch[]
+  // I5 (build plan §5.5/§5.11): inbound document lines — Restrict.
+  goodsReceiptItems     GoodsReceiptItem[]
+  productionOutputItems ProductionOutputItem[]
+  // I6 (build plan §5.6): stock-count lines for this item — Restrict.
+  stockCountItems       StockCountItem[]
+  // I8 (build plan §5.8): goods-return lines for this item — Restrict.
+  goodsReturnItems      GoodsReturnItem[]
 
   @@index([categoryId])
   @@index([unitId])
@@ -886,6 +923,11 @@ enum StockBucket {
   ON_HAND
   RESERVED
   QC
+  // I8 (build plan §5.8, B9): physically held, not sellable, not released
+  // back to QC — only leaves via a posted GoodsReturn to the supplier. Never
+  // folded into "available" (onHand − reserved), same exclusion treatment as
+  // QC/RESERVED.
+  DAMAGED
 }
 
 enum StockMovementType {
@@ -899,6 +941,31 @@ enum StockMovementType {
   RETURN_RECEIPT
   RETURN_RESTOCK
   RETURN_WRITE_OFF
+  // I2 (build plan §5.2/§5.10): a posted WRITE_OFF stock-adjustment line.
+  // ON_HAND out only for now (no DAMAGED bucket until I8/B9).
+  WRITE_OFF
+  // I5 (build plan §5.5/§5.10): a posted GoodsReceipt line — ON_HAND +q, or
+  // QC +q when the receipt has inspectionRequired (B19).
+  GOODS_RECEIPT
+  // I5 (B19): QC → ON_HAND release of a goods-receipt line (two rows, same
+  // reference: QC −r, ON_HAND +r).
+  QC_RELEASE
+  // I5 (build plan §5.11): a posted ProductionOutput line — ON_HAND +q.
+  PRODUCTION_OUTPUT
+  // I6 (build plan §5.6/§5.10/§6): a posted stock-count variance line.
+  // COUNT_GAIN when countedQty > systemQty (ON_HAND +), COUNT_LOSS when
+  // countedQty < systemQty (ON_HAND −).
+  COUNT_GAIN
+  COUNT_LOSS
+  // I8 (build plan §5.8/§5.10, B9): a posted MARK_DAMAGED stock-adjustment
+  // line — ON_HAND out, DAMAGED in (two rows, same reference).
+  MARK_DAMAGED
+  // I8: a sales-return line's "to damaged" disposition (SalesReturnItem
+  // .damagedQty) — QC out, DAMAGED in (two rows, same reference).
+  RETURN_TO_DAMAGED
+  // I8: a posted GoodsReturn line — out of whichever bucket the line names
+  // (ON_HAND | QC | DAMAGED), never more than one per row.
+  SUPPLIER_RETURN
 }
 
 // What kind of source document a StockMovement came from. Deliberately NOT
@@ -911,37 +978,118 @@ enum StockReferenceType {
   SALES_ORDER
   DELIVERY
   SALES_RETURN
+  // I5 (build plan §5.5/§5.11).
+  GOODS_RECEIPT
+  PRODUCTION_OUTPUT
+  // I6 (build plan §5.6).
+  STOCK_COUNT
+  // I8 (build plan §5.8).
+  GOODS_RETURN
 }
 
 enum StockAdjustmentKind {
   OPENING
   RECEIPT
   CORRECTION
+  // I2 (build plan §5.2, B10/B11): always a stock decrease. Always needs
+  // inventory.approve (submit → approve), reasonCode required.
+  WRITE_OFF
+  // I4 (build plan §5.4/§5.4a, B23): converts an item from unbatched to
+  // batch-tracked. Always needs inventory.approve (never self-approved),
+  // but — unlike WRITE_OFF — reasonCode is NOT required (R6: approval-needed
+  // and reasonCode-required are separate rules). Positive lines only, each
+  // naming a batchNumber; posting is a special two-step transaction, not the
+  // generic buildMovementRows() path — see StockAdjustmentsService.
+  BATCH_CUTOVER
+  // I8 (build plan §5.8, B9): found-damaged-on-the-shelf stock, unrelated to
+  // any specific receipt (e.g. a stocktake finds broken units) — ON_HAND out,
+  // DAMAGED in. Always negative lines (outbound-only, mirror of WRITE_OFF),
+  // always needs inventory.approve (same tier as WRITE_OFF, B10), reasonCode
+  // required. Posted via a dedicated two-row builder in
+  // StockAdjustmentsService, not movementTypeForAdjustmentLine()'s generic
+  // single-row path.
+  MARK_DAMAGED
 }
 
 enum StockDocumentStatus {
   DRAFT
+  // I2: a document whose kind/net quantity needs inventory.approve (B10) is
+  // submitted here instead of posted directly. approve() moves it to
+  // POSTED; reject() sends it back to DRAFT.
+  PENDING_APPROVAL
   POSTED
+}
+
+// I2 (build plan §5.2, B11): the fixed reason-code list for a WRITE_OFF or
+// a negative CORRECTION. Use as-is — not extensible without a new business
+// decision.
+enum StockAdjustmentReason {
+  DAMAGED
+  EXPIRED
+  LOST
+  FOUND
+  COUNT_ERROR
+  DATA_ENTRY_ERROR
+  SAMPLE_OR_INTERNAL_USE
+  OTHER
 }
 
 // Single warehouse for now (one seeded MAIN row, no management UI); the
 // locationId on every stock row keeps multi-warehouse additive later.
 model InventoryLocation {
-  id               Int               @id @default(autoincrement())
-  code             String            @unique
-  name             String
-  isActive         Boolean           @default(true) @map("is_active")
-  isDefault        Boolean           @default(false) @map("is_default")
-  note             String?
-  stockBalances    StockBalance[]
-  stockMovements   StockMovement[]
-  stockAdjustments StockAdjustment[]
-  salesOrders      SalesOrder[]
-  deliveries       Delivery[]
-  salesReturns     SalesReturn[]
+  id                 Int                 @id @default(autoincrement())
+  code               String              @unique
+  name               String
+  isActive           Boolean             @default(true) @map("is_active")
+  isDefault          Boolean             @default(false) @map("is_default")
+  note               String?
+  stockBalances      StockBalance[]
+  stockMovements     StockMovement[]
+  stockAdjustments   StockAdjustment[]
+  // I3 (build plan §5.3, B14): per item+location min/reorder/max thresholds.
+  itemStockLevels    ItemStockLevel[]
+  salesOrders        SalesOrder[]
+  deliveries         Delivery[]
+  salesReturns       SalesReturn[]
+  // I4 (build plan §5.4): per-batch physical buckets at this location.
+  stockBatchBalances StockBatchBalance[]
+  // I5 (build plan §5.5/§5.11): inbound documents received/produced here.
+  goodsReceipts      GoodsReceipt[]
+  productionOutputs  ProductionOutput[]
+  // I6 (build plan §5.6): stock counts performed at this location.
+  stockCounts        StockCount[]
+  // I8 (build plan §5.8): goods returns to suppliers, shipped from here.
+  goodsReturns       GoodsReturn[]
 
   @@map("inventory_locations")
 }
+
+// I3 (build plan §5.3, B14): user-set per item+location reorder thresholds.
+// minQty is compared against *available* stock (onHand − reserved), never
+// onHand alone — B14. reorderQty/maxQty are display-only (no automatic
+// purchase request is ever created from this table). The system never
+// invents a threshold — users set these themselves, nothing is defaulted.
+model ItemStockLevel {
+  id              Int               @id @default(autoincrement())
+  itemId          Int               @map("item_id")
+  item            Item              @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  locationId      Int               @map("location_id")
+  location        InventoryLocation @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  minQty          Decimal           @map("min_qty") @db.Decimal(12, 2)
+  reorderQty      Decimal?          @map("reorder_qty") @db.Decimal(12, 2)
+  maxQty          Decimal?          @map("max_qty") @db.Decimal(12, 2)
+  note            String?
+  updatedByUserId Int?              @map("updated_by_user_id")
+  updatedByUser   User?             @relation("ItemStockLevelUpdatedBy", fields: [updatedByUserId], references: [id])
+  createdAt       DateTime          @default(now()) @map("created_at")
+  updatedAt       DateTime          @default(now()) @updatedAt @map("updated_at")
+
+  @@unique([itemId, locationId])
+  @@map("item_stock_levels")
+}
+
+// SQL (hand-added, not modelled by Prisma): CHECK (min_qty >= 0),
+// CHECK (max_qty IS NULL OR max_qty >= min_qty) — see migration.sql.
 
 // Running balance per item+location, per bucket. Always equal to the SUM of
 // that item+location+bucket's StockMovement rows (InventoryService
@@ -955,6 +1103,11 @@ model StockBalance {
   onHand     Decimal           @default(0) @map("on_hand") @db.Decimal(12, 2)
   reserved   Decimal           @default(0) @db.Decimal(12, 2)
   qc         Decimal           @default(0) @db.Decimal(12, 2)
+  // I8 (build plan §5.8, B9): physically held, not sellable, never folded
+  // into "available" — same exclusion treatment as qc/reserved. Only
+  // MARK_DAMAGED/RETURN_TO_DAMAGED write it in; only a posted GoodsReturn
+  // (SUPPLIER_RETURN) takes it out.
+  damaged    Decimal           @default(0) @db.Decimal(12, 2)
   updatedAt  DateTime          @default(now()) @updatedAt @map("updated_at")
 
   @@unique([itemId, locationId])
@@ -980,34 +1133,62 @@ model StockMovement {
   createdByUserId Int?               @map("created_by_user_id")
   createdByUser   User?              @relation("StockMovementCreatedBy", fields: [createdByUserId], references: [id])
   createdAt       DateTime           @default(now()) @map("created_at")
+  // I4 (build plan §5.4): required by applyMovements() on ON_HAND/QC rows of
+  // a batch-tracked item; never set on a RESERVED row (hand-added CHECK —
+  // batches never apply to the RESERVED bucket, per §5.4a's schema
+  // correction). Restrict — a batch with ledger history can't be deleted.
+  batchId         Int?               @map("batch_id")
+  batch           StockBatch?        @relation(fields: [batchId], references: [id], onDelete: Restrict)
+  // I5 (build plan §5.5, B15): per-unit cost stamped on an inbound movement
+  // from a costed document line (goods receipt / production output). Null
+  // = unknown/not captured. Outbound average-cost stamping is I9's scope.
+  // Hidden behind inventory.cost — the stock-card / movement-browser reads
+  // omit it.
+  unitCost        Decimal?           @map("unit_cost") @db.Decimal(15, 0)
 
   @@index([itemId, locationId])
   @@index([referenceType, referenceId])
+  @@index([batchId])
   @@map("stock_movements")
 }
 
 // Manual stock receipt/adjustment document ("رسید/اصلاح موجودی") — the only
 // way stock enters the system (no Purchases/Production integration, rule 7).
-// DRAFT is editable/deletable; POSTED is immutable and carries the
-// gap-free number (ADJ-<jalali year>-000001) assigned at posting.
+// DRAFT is editable/deletable. A kind/net-quantity that needs inventory.approve
+// (B10) goes DRAFT → PENDING_APPROVAL (submit, non-editable) → POSTED
+// (approve) or back to DRAFT (reject); everything else goes DRAFT → POSTED
+// directly (post). POSTED is immutable and carries the gap-free number
+// (ADJ-<jalali year>-000001) assigned at posting/approval.
+// postedByUserId/postedAt double as "approved by/at" when approval applied —
+// approve() and post() write the same two columns (build plan §5.2).
 model StockAdjustment {
-  id               Int                   @id @default(autoincrement())
-  adjustmentNumber String?               @unique @map("adjustment_number")
-  kind             StockAdjustmentKind
-  status           StockDocumentStatus   @default(DRAFT)
-  locationId       Int                   @map("location_id")
-  location         InventoryLocation     @relation(fields: [locationId], references: [id], onDelete: Restrict)
-  adjustmentDate   DateTime              @map("adjustment_date")
-  reason           String
-  note             String?
-  createdByUserId  Int?                  @map("created_by_user_id")
-  createdByUser    User?                 @relation("StockAdjustmentCreatedBy", fields: [createdByUserId], references: [id])
-  postedByUserId   Int?                  @map("posted_by_user_id")
-  postedByUser     User?                 @relation("StockAdjustmentPostedBy", fields: [postedByUserId], references: [id])
-  postedAt         DateTime?             @map("posted_at")
-  createdAt        DateTime              @default(now()) @map("created_at")
-  updatedAt        DateTime              @default(now()) @updatedAt @map("updated_at")
-  items            StockAdjustmentItem[]
+  id                Int                    @id @default(autoincrement())
+  adjustmentNumber  String?                @unique @map("adjustment_number")
+  kind              StockAdjustmentKind
+  status            StockDocumentStatus    @default(DRAFT)
+  locationId        Int                    @map("location_id")
+  location          InventoryLocation      @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  adjustmentDate    DateTime               @map("adjustment_date")
+  reason            String
+  // B11: required by the DTO for WRITE_OFF, or CORRECTION with a negative
+  // net quantity — nullable here because pre-I2 rows have free text only.
+  reasonCode        StockAdjustmentReason? @map("reason_code")
+  note              String?
+  createdByUserId   Int?                   @map("created_by_user_id")
+  createdByUser     User?                  @relation("StockAdjustmentCreatedBy", fields: [createdByUserId], references: [id])
+  submittedByUserId Int?                   @map("submitted_by_user_id")
+  submittedByUser   User?                  @relation("StockAdjustmentSubmittedBy", fields: [submittedByUserId], references: [id])
+  submittedAt       DateTime?              @map("submitted_at")
+  postedByUserId    Int?                   @map("posted_by_user_id")
+  postedByUser      User?                  @relation("StockAdjustmentPostedBy", fields: [postedByUserId], references: [id])
+  postedAt          DateTime?              @map("posted_at")
+  rejectedByUserId  Int?                   @map("rejected_by_user_id")
+  rejectedByUser    User?                  @relation("StockAdjustmentRejectedBy", fields: [rejectedByUserId], references: [id])
+  rejectedAt        DateTime?              @map("rejected_at")
+  rejectReason      String?                @map("reject_reason")
+  createdAt         DateTime               @default(now()) @map("created_at")
+  updatedAt         DateTime               @default(now()) @updatedAt @map("updated_at")
+  items             StockAdjustmentItem[]
 
   @@index([status])
   @@map("stock_adjustments")
@@ -1023,11 +1204,389 @@ model StockAdjustmentItem {
   item              Item            @relation(fields: [itemId], references: [id], onDelete: Restrict)
   quantity          Decimal         @db.Decimal(12, 2) // signed for CORRECTION, positive otherwise
   note              String?
+  // I4 (build plan §5.4): batch fields for a batch-tracked item's line —
+  // DTO/service enforce exactly one of batchId (pick an existing batch —
+  // required for a negative line) / batchNumber (create-or-match, inbound
+  // lines only) is set, per the item's tracked state. productionDate/
+  // expiryDate feed resolveBatches() when batchNumber creates a new batch.
+  batchId           Int?            @map("batch_id")
+  batch             StockBatch?     @relation(fields: [batchId], references: [id], onDelete: Restrict)
+  batchNumber       String?         @map("batch_number")
+  productionDate    DateTime?       @map("production_date")
+  expiryDate        DateTime?       @map("expiry_date")
 
   @@index([stockAdjustmentId])
   @@index([itemId])
   @@map("stock_adjustment_items")
 }
+
+// ---------------------------------------------------------------------------
+// Inventory batch I4 (2026-10-10): batch/expiry foundation (B7/B8/B21-B24).
+// InventoryItemSetting/StockBatch/StockBatchBalance are Inventory-owned
+// config/ledger tables (E3) — Item gains no new columns beyond I1's
+// itemKind. batchTracked flips only through a posted BATCH_CUTOVER document
+// or InventoryItemSettingsService (when the item has zero stock everywhere),
+// never a direct edit (E2's lock extends to this flag too).
+// ---------------------------------------------------------------------------
+
+model InventoryItemSetting {
+  itemId            Int       @id @map("item_id")
+  item              Item      @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  batchTracked      Boolean   @default(false) @map("batch_tracked")
+  expiryRequired    Boolean   @default(false) @map("expiry_required")
+  // Optional: expiry = production date + N days, when a line gives a
+  // production date but no printed expiry date (B7).
+  shelfLifeDays     Int?      @map("shelf_life_days")
+  batchTrackedSince DateTime? @map("batch_tracked_since")
+  updatedByUserId   Int?      @map("updated_by_user_id")
+  updatedByUser     User?     @relation("InventoryItemSettingUpdatedBy", fields: [updatedByUserId], references: [id])
+  updatedAt         DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  @@map("inventory_item_settings")
+}
+
+// SQL (hand-added): CHECK (shelf_life_days IS NULL OR shelf_life_days > 0).
+
+// A producer's lot, per item. batchNumber is normalized (stock-batches.ts
+// normalizeBatchNumber() — digits to Latin, trimmed, whitespace collapsed)
+// before the uniqueness check, so the same lot typed with Persian/Arabic
+// digits never creates two rows (§5.4a R9).
+model StockBatch {
+  id                   Int                   @id @default(autoincrement())
+  itemId               Int                   @map("item_id")
+  item                 Item                  @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  batchNumber          String                @map("batch_number")
+  productionDate       DateTime?             @map("production_date")
+  expiryDate           DateTime?             @map("expiry_date")
+  note                 String?
+  createdByUserId      Int?                  @map("created_by_user_id")
+  createdByUser        User?                 @relation("StockBatchCreatedBy", fields: [createdByUserId], references: [id])
+  createdAt            DateTime              @default(now()) @map("created_at")
+  updatedAt            DateTime              @default(now()) @updatedAt @map("updated_at")
+  balances             StockBatchBalance[]
+  movements            StockMovement[]
+  stockAdjustmentItems StockAdjustmentItem[]
+  salesReturnItems     SalesReturnItem[]
+  // I6 (build plan §5.6): stock-count lines that picked this existing batch.
+  stockCountItems      StockCountItem[]
+  // I8 (build plan §5.8): goods-return lines that picked this existing batch.
+  goodsReturnItems     GoodsReturnItem[]
+
+  @@unique([itemId, batchNumber])
+  @@index([itemId, expiryDate])
+  @@map("stock_batches")
+}
+
+// SQL (hand-added): CHECK (expiry_date IS NULL OR production_date IS NULL OR expiry_date >= production_date).
+
+// Physical buckets (ON_HAND/QC — RESERVED stays item-level only, never
+// batch-split) per batch+location. Written ONLY by stock-ledger.ts
+// applyMovements(), the same invariant as StockBalance: each batch's
+// on_hand/qc must equal the SUM of its own StockMovement rows
+// (InventoryService.verifyBalances()'s new BATCH_LEDGER/BATCH_SUM checks).
+model StockBatchBalance {
+  id         Int               @id @default(autoincrement())
+  batchId    Int               @map("batch_id")
+  batch      StockBatch        @relation(fields: [batchId], references: [id], onDelete: Restrict)
+  itemId     Int               @map("item_id") // denormalized for FEFO queries
+  locationId Int               @map("location_id")
+  location   InventoryLocation @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  onHand     Decimal           @default(0) @map("on_hand") @db.Decimal(12, 2)
+  qc         Decimal           @default(0) @db.Decimal(12, 2)
+  // I8 (build plan §5.8): per-batch mirror of StockBalance.damaged.
+  damaged    Decimal           @default(0) @db.Decimal(12, 2)
+  updatedAt  DateTime          @default(now()) @updatedAt @map("updated_at")
+
+  @@unique([batchId, locationId])
+  @@index([itemId, locationId])
+  @@map("stock_batch_balances")
+}
+
+// SQL (hand-added): CHECK (on_hand >= 0), CHECK (qc >= 0), CHECK (damaged >= 0).
+
+// ---------------------------------------------------------------------------
+// Inventory batch I5 (2026-10-11): raw-material/packaging goods receipts
+// (B3 reframed, B15, B19) and production output (B1/B2, B15) — build plan
+// §5.5/§5.11, used verbatim. Both are DRAFT → POSTED documents (no approval
+// step), numbered at posting (GRN-/PRD-<jalali year>-NNNNNN), immutable once
+// POSTED (fix with a CORRECTION adjustment). Stock is written only through
+// stock-ledger.ts applyMovements() inside the posting transaction.
+// ---------------------------------------------------------------------------
+
+// رسید انبار — raw materials / packaging from suppliers. Lines target
+// Item.itemKind IN (RAW_MATERIAL, PACKAGING) only (service-enforced).
+// purchaseId is deliberately NOT a foreign key (B3, B12 philosophy, CLAUDE.md
+// rule 5/7 — Purchases never drive stock); purchaseNumber is a snapshot.
+model GoodsReceipt {
+  id                     Int                 @id @default(autoincrement())
+  receiptNumber          String?             @unique @map("receipt_number") // "GRN", at posting
+  locationId             Int                 @map("location_id")
+  location               InventoryLocation   @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  receiptDate            DateTime            @map("receipt_date")
+  supplierId             Int                 @map("supplier_id")
+  supplier               Supplier            @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  supplierName           String              @map("supplier_name") // snapshot
+  supplierDocumentNumber String?             @map("supplier_document_number") // supplier's delivery note #
+  purchaseId             Int?                @map("purchase_id") // NO FK (B3, B12 philosophy)
+  purchaseNumber         String?             @map("purchase_number") // snapshot
+  inspectionRequired     Boolean             @default(false) @map("inspection_required") // B19: lines post to QC
+  status                 StockDocumentStatus @default(DRAFT)
+  note                   String?
+  postedByUserId         Int?                @map("posted_by_user_id")
+  postedByUser           User?               @relation("GoodsReceiptPostedBy", fields: [postedByUserId], references: [id])
+  postedAt               DateTime?           @map("posted_at")
+  createdByUserId        Int?                @map("created_by_user_id")
+  createdByUser          User?               @relation("GoodsReceiptCreatedBy", fields: [createdByUserId], references: [id])
+  createdAt              DateTime            @default(now()) @map("created_at")
+  updatedAt              DateTime            @default(now()) @updatedAt @map("updated_at")
+  items                  GoodsReceiptItem[]
+  // I8 (build plan §5.8): goods returns that cite this receipt (display/cap
+  // only — optional).
+  goodsReturns            GoodsReturn[]
+
+  @@index([supplierId])
+  @@index([status])
+  @@map("goods_receipts")
+}
+
+model GoodsReceiptItem {
+  id             Int          @id @default(autoincrement())
+  goodsReceiptId Int          @map("goods_receipt_id")
+  goodsReceipt   GoodsReceipt @relation(fields: [goodsReceiptId], references: [id], onDelete: Cascade) // drafts only
+  lineNo         Int          @map("line_no")
+  itemId         Int          @map("item_id")
+  item           Item         @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  quantity       Decimal      @db.Decimal(12, 2)
+  unitCost       Decimal?     @map("unit_cost") @db.Decimal(15, 0) // B15 — visible/settable only with inventory.cost
+  batchNumber    String?      @map("batch_number") // required for batch-tracked items (I4)
+  productionDate DateTime?    @map("production_date")
+  expiryDate     DateTime?    @map("expiry_date")
+  batchId        Int?         @map("batch_id") // resolved/created at posting
+  releasedQty    Decimal      @default(0) @map("released_qty") @db.Decimal(12, 2) // QC → ON_HAND (B19)
+  rejectedQty    Decimal      @default(0) @map("rejected_qty") @db.Decimal(12, 2) // left QC via GoodsReturn (I8)
+  returnedQty    Decimal      @default(0) @map("returned_qty") @db.Decimal(12, 2) // Σ posted GoodsReturn lines (I8)
+  note           String?
+  // I8 (build plan §5.8): goods-return lines that picked this receipt line —
+  // caps Σ quantity ≤ quantity − returnedQty (service-enforced).
+  goodsReturnItems GoodsReturnItem[]
+
+  @@unique([goodsReceiptId, lineNo])
+  @@map("goods_receipt_items")
+}
+
+// SQL (hand-added): CHECK (quantity > 0), CHECK (unit_cost IS NULL OR
+// unit_cost >= 0), CHECK (released_qty >= 0 AND rejected_qty >= 0 AND
+// returned_qty >= 0), CHECK (released_qty + rejected_qty <= quantity).
+
+// رسید تولید — the primary finished-goods inbound (the company produces what
+// it sells, B1). Lines target Item.itemKind = FINISHED_GOOD only (DTO/service
+// enforced). No BOM / raw-material consumption — explicitly out of scope
+// (B1, CLAUDE.md rule 9); unitCost is a manually entered per-unit cost (B15).
+model ProductionOutput {
+  id                   Int                    @id @default(autoincrement())
+  outputNumber         String?                @unique @map("output_number") // "PRD", at posting
+  locationId           Int                    @map("location_id")
+  location             InventoryLocation      @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  productionDate       DateTime               @map("production_date")
+  producedByEmployeeId Int?                   @map("produced_by_employee_id") // Employee FK, optional — who/which line produced it
+  producedByEmployee   Employee?              @relation(fields: [producedByEmployeeId], references: [id], onDelete: SetNull)
+  status               StockDocumentStatus    @default(DRAFT)
+  note                 String?
+  postedByUserId       Int?                   @map("posted_by_user_id")
+  postedByUser         User?                  @relation("ProductionOutputPostedBy", fields: [postedByUserId], references: [id])
+  postedAt             DateTime?              @map("posted_at")
+  createdByUserId      Int?                   @map("created_by_user_id")
+  createdByUser        User?                  @relation("ProductionOutputCreatedBy", fields: [createdByUserId], references: [id])
+  createdAt            DateTime               @default(now()) @map("created_at")
+  updatedAt            DateTime               @default(now()) @updatedAt @map("updated_at")
+  items                ProductionOutputItem[]
+
+  @@index([status])
+  @@map("production_outputs")
+}
+
+model ProductionOutputItem {
+  id                 Int              @id @default(autoincrement())
+  productionOutputId Int              @map("production_output_id")
+  productionOutput   ProductionOutput @relation(fields: [productionOutputId], references: [id], onDelete: Cascade) // drafts only
+  lineNo             Int              @map("line_no")
+  itemId             Int              @map("item_id") // Restrict; itemKind must be FINISHED_GOOD (service-checked)
+  item               Item             @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  quantity           Decimal          @db.Decimal(12, 2)
+  unitCost           Decimal?         @map("unit_cost") @db.Decimal(15, 0) // B15: manually entered production cost per unit — no BOM to derive it from
+  costIsEstimated    Boolean          @default(false) @map("cost_is_estimated")
+  batchNumber        String?          @map("batch_number") // required for batch-tracked finished goods (I4)
+  productionDate     DateTime?        @map("production_date") // defaults to header date if omitted
+  expiryDate         DateTime?        @map("expiry_date")
+  batchId            Int?             @map("batch_id") // resolved/created at posting
+  note               String?
+
+  @@unique([productionOutputId, lineNo])
+  @@map("production_output_items")
+}
+
+// SQL (hand-added): CHECK (quantity > 0), CHECK (unit_cost IS NULL OR unit_cost >= 0).
+
+// ---------------------------------------------------------------------------
+// Inventory batch I6 (2026-10-11): stock counts / physical inventory (B13 —
+// adopted the architect's default, not yet confirmed by the business owner:
+// blind entry, approval by a different person than the submitter, and
+// "stale-line" detection instead of freezing warehouse operations during a
+// count). Build plan §5.6/§6/§7. Lifecycle: DRAFT (editable/deletable) →
+// COUNTING (start(), systemQty snapshotted per line) → REVIEW (submit(),
+// every line counted) → POSTED (approve(), variances posted as COUNT_GAIN/
+// COUNT_LOSS) or back to COUNTING for selected lines (requestRecount()).
+// DRAFT/COUNTING/REVIEW → CANCELLED any time before POSTED. isBlind (default
+// true, B13): while true and the count is COUNTING, systemQty is omitted
+// from every response to a caller without inventory.approve — enforced by
+// StockCountsService, never just hidden in the UI.
+// ---------------------------------------------------------------------------
+
+enum StockCountStatus {
+  DRAFT
+  COUNTING
+  REVIEW
+  POSTED
+  CANCELLED
+}
+
+enum StockCountScope {
+  FULL // every item with a balance row at the location, populated at start()
+  PARTIAL // only the lines the caller specified at create()/update()
+}
+
+model StockCount {
+  id                Int               @id @default(autoincrement())
+  countNumber       String?           @unique @map("count_number") // "CNT", at posting
+  locationId        Int               @map("location_id")
+  location          InventoryLocation @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  countDate         DateTime          @map("count_date")
+  scope             StockCountScope   @default(PARTIAL)
+  isBlind           Boolean           @default(true) @map("is_blind")
+  status            StockCountStatus  @default(DRAFT)
+  startedAt         DateTime?         @map("started_at") // snapshot moment; also the stale-check anchor, bumped on each requestRecount()
+  startedByUserId   Int?              @map("started_by_user_id")
+  startedByUser     User?             @relation("StockCountStartedBy", fields: [startedByUserId], references: [id])
+  submittedAt       DateTime?         @map("submitted_at")
+  submittedByUserId Int?              @map("submitted_by_user_id")
+  submittedByUser   User?             @relation("StockCountSubmittedBy", fields: [submittedByUserId], references: [id])
+  postedAt          DateTime?         @map("posted_at")
+  postedByUserId    Int?              @map("posted_by_user_id")
+  postedByUser      User?             @relation("StockCountPostedBy", fields: [postedByUserId], references: [id])
+  cancelledAt       DateTime?         @map("cancelled_at")
+  cancelledByUserId Int?              @map("cancelled_by_user_id")
+  cancelledByUser   User?             @relation("StockCountCancelledBy", fields: [cancelledByUserId], references: [id])
+  cancelReason      String?           @map("cancel_reason")
+  note              String?
+  createdByUserId   Int?              @map("created_by_user_id")
+  createdByUser     User?             @relation("StockCountCreatedBy", fields: [createdByUserId], references: [id])
+  createdAt         DateTime          @default(now()) @map("created_at")
+  updatedAt         DateTime          @default(now()) @updatedAt @map("updated_at")
+  items             StockCountItem[]
+
+  @@index([status])
+  @@map("stock_counts")
+}
+
+model StockCountItem {
+  id              Int                    @id @default(autoincrement())
+  stockCountId    Int                    @map("stock_count_id")
+  stockCount      StockCount             @relation(fields: [stockCountId], references: [id], onDelete: Cascade) // DRAFT/CANCELLED only
+  itemId          Int                    @map("item_id")
+  item            Item                   @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  batchId         Int?                   @map("batch_id") // I4 present — an existing batch only, never created here
+  batch           StockBatch?            @relation(fields: [batchId], references: [id], onDelete: Restrict)
+  systemQty       Decimal?               @map("system_qty") @db.Decimal(12, 2) // ON_HAND snapshot at start(); hidden from counters while isBlind + COUNTING
+  countedQty      Decimal?               @map("counted_qty") @db.Decimal(12, 2)
+  varianceQty     Decimal?               @map("variance_qty") @db.Decimal(12, 2) // counted − system, set at submit()/approve()
+  reasonCode      StockAdjustmentReason? @map("reason_code") // required when variance ≠ 0, by approve()
+  recountCount    Int                    @default(0) @map("recount_count")
+  countedByUserId Int?                   @map("counted_by_user_id")
+  countedByUser   User?                  @relation("StockCountItemCountedBy", fields: [countedByUserId], references: [id])
+  note            String?
+
+  @@index([stockCountId])
+  @@index([itemId])
+  @@map("stock_count_items")
+}
+
+// SQL (hand-added): CHECK (system_qty IS NULL OR system_qty >= 0),
+// CHECK (counted_qty IS NULL OR counted_qty >= 0),
+// UNIQUE expression index (stock_count_id, item_id, COALESCE(batch_id, 0)) —
+// Prisma's @@unique treats NULLs as distinct, so a plain @@unique([stockCountId,
+// itemId, batchId]) would let the same (document, item) appear twice with
+// batchId NULL both times; review deliberately, same flag as I4's
+// hand-added CHECK constraints.
+
+// ---------------------------------------------------------------------------
+// Inventory batch I8 (2026-10-11): damaged bucket + supplier returns (B9 —
+// resolved: damaged/expired goods are held and potentially returned to the
+// supplier for credit, not thrown away). Build plan §5.8, used verbatim.
+// DRAFT → POSTED only (no approval step, like GoodsReceipt), permission
+// inventory.receive throughout, number GRT-<jalali year>-NNNNNN at posting.
+// ---------------------------------------------------------------------------
+
+// خروج برگشت به تأمین‌کننده — physical stock leaving ON_HAND/QC/DAMAGED back
+// to the supplier. purchaseReturnId/purchaseReturnNumber are deliberately NOT
+// a foreign key (same loose-coupling convention as PurchaseItem.name,
+// CLAUDE.md rule 5) — a stored id+number for display only, pointing at
+// Purchases' own financial Return-to-Vendor record; no synchronization
+// between the two.
+model GoodsReturn {
+  id                   Int                 @id @default(autoincrement())
+  returnNumber         String?             @unique @map("return_number") // "GRT", at posting
+  locationId           Int                 @map("location_id")
+  location             InventoryLocation   @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  supplierId           Int                 @map("supplier_id")
+  supplier             Supplier            @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  supplierName         String              @map("supplier_name") // snapshot
+  goodsReceiptId       Int?                @map("goods_receipt_id") // optional — not every return traces to one receipt
+  goodsReceipt         GoodsReceipt?       @relation(fields: [goodsReceiptId], references: [id], onDelete: Restrict)
+  purchaseReturnId     Int?                @map("purchase_return_id") // NO FK — Purchases' financial RTV record
+  purchaseReturnNumber String?             @map("purchase_return_number") // snapshot
+  returnDate           DateTime            @map("return_date")
+  reason               String
+  status               StockDocumentStatus @default(DRAFT)
+  note                 String?
+  postedByUserId       Int?                @map("posted_by_user_id")
+  postedByUser         User?               @relation("GoodsReturnPostedBy", fields: [postedByUserId], references: [id])
+  postedAt             DateTime?           @map("posted_at")
+  createdByUserId      Int?                @map("created_by_user_id")
+  createdByUser        User?               @relation("GoodsReturnCreatedBy", fields: [createdByUserId], references: [id])
+  createdAt            DateTime            @default(now()) @map("created_at")
+  updatedAt            DateTime            @default(now()) @updatedAt @map("updated_at")
+  items                GoodsReturnItem[]
+
+  @@index([supplierId])
+  @@index([status])
+  @@map("goods_returns")
+}
+
+model GoodsReturnItem {
+  id                 Int               @id @default(autoincrement())
+  goodsReturnId      Int               @map("goods_return_id")
+  goodsReturn        GoodsReturn       @relation(fields: [goodsReturnId], references: [id], onDelete: Cascade) // drafts only
+  // Caps quantity: Σ returned per receipt line ≤ quantity − returnedQty
+  // (overall-any-bucket cap, build plan §6) — optional, a return of general
+  // DAMAGED/ON_HAND stock not traceable to one receipt doesn't need this.
+  goodsReceiptItemId Int?              @map("goods_receipt_item_id")
+  goodsReceiptItem   GoodsReceiptItem? @relation(fields: [goodsReceiptItemId], references: [id], onDelete: Restrict)
+  itemId             Int               @map("item_id")
+  item               Item              @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  batchId            Int?              @map("batch_id") // an existing batch only, never created here
+  batch              StockBatch?       @relation(fields: [batchId], references: [id], onDelete: Restrict)
+  fromBucket         StockBucket       @map("from_bucket") // ON_HAND | QC | DAMAGED
+  quantity           Decimal           @db.Decimal(12, 2)
+  note               String?
+
+  @@index([goodsReturnId])
+  @@index([itemId])
+  @@map("goods_return_items")
+}
+
+// SQL (hand-added): CHECK (quantity > 0), CHECK (from_bucket IN
+// ('ON_HAND', 'QC', 'DAMAGED')) — same convention as GoodsReceiptItem's
+// hand-added CHECKs.
 
 // ---------------------------------------------------------------------------
 // Sales — Sales batch 2 (2026-10-07): sales orders. See
@@ -1435,13 +1994,23 @@ model SalesReturnItem {
   item            Item             @relation(fields: [itemId], references: [id], onDelete: Restrict)
   itemName        String           @map("item_name")
   unitName        String           @map("unit_name")
+  // I4 (build plan §5.4/B22/B24): which batch this line's stock physically
+  // went back into (QC, at receive time) — resolved from the delivery's own
+  // issued batch(es), or typed as a lot number if the delivery predates the
+  // item's cutover (B22). One batch per line only (B24) — a FEFO-split
+  // delivery returned across two batches is two return documents.
+  batchId         Int?             @map("batch_id")
+  batch           StockBatch?      @relation(fields: [batchId], references: [id], onDelete: Restrict)
   // Price actually charged, snapshotted from the invoice/order line.
   unitPrice       Decimal          @map("unit_price") @db.Decimal(15, 0)
   requestedQty    Decimal          @map("requested_qty") @db.Decimal(12, 2)
   receivedQty     Decimal          @default(0) @map("received_qty") @db.Decimal(12, 2)
   restockQty      Decimal          @default(0) @map("restock_qty") @db.Decimal(12, 2)
-  // restockQty + writeOffQty = receivedQty (service-layer invariant).
+  // I8 (build plan §5.8, B9): "to damaged" disposition — physically held,
+  // not sellable (posts RETURN_TO_DAMAGED: QC out, DAMAGED in).
+  // restockQty + writeOffQty + damagedQty = receivedQty (service-layer invariant).
   writeOffQty     Decimal          @default(0) @map("write_off_qty") @db.Decimal(12, 2)
+  damagedQty      Decimal          @default(0) @map("damaged_qty") @db.Decimal(12, 2)
   creditedQty     Decimal          @default(0) @map("credited_qty") @db.Decimal(12, 2)
   conditionNote   String?          @map("condition_note")
   creditNoteItems CreditNoteItem[]
@@ -1637,61 +2206,84 @@ model RolePermission {
 // A person's Employee record (Master Data) and their User account (if any)
 // are separate, unrelated entities — see database_plan.txt at the project root.
 model User {
-  id                          Int                 @id @default(autoincrement())
-  username                    String              @unique
-  passwordHash                String              @map("password_hash")
-  email                       String?
-  phone                       String?
-  roleId                      Int                 @map("role_id")
-  role                        Role                @relation(fields: [roleId], references: [id])
-  status                      UserStatus          @default(ACTIVE)
-  createdAt                   DateTime            @default(now()) @map("created_at")
-  lastLoginAt                 DateTime?           @map("last_login_at")
-  auditLogs                   AuditLog[]
-  permissions                 UserPermission[]
+  id                           Int                    @id @default(autoincrement())
+  username                     String                 @unique
+  passwordHash                 String                 @map("password_hash")
+  email                        String?
+  phone                        String?
+  roleId                       Int                    @map("role_id")
+  role                         Role                   @relation(fields: [roleId], references: [id])
+  status                       UserStatus             @default(ACTIVE)
+  createdAt                    DateTime               @default(now()) @map("created_at")
+  lastLoginAt                  DateTime?              @map("last_login_at")
+  auditLogs                    AuditLog[]
+  permissions                  UserPermission[]
   // Purchase Requests this account entered (PurchaseRequest.createdByUser) — data-entry
   // provenance, distinct from requestedByEmployee (who actually asked for it).
-  createdPurchaseRequests     PurchaseRequest[]
+  createdPurchaseRequests      PurchaseRequest[]
   // Returns-to-vendor this account entered (PurchaseReturn.createdByUser) —
   // same data-entry provenance meaning as createdPurchaseRequests above.
-  createdPurchaseReturns      PurchaseReturn[]
+  createdPurchaseReturns       PurchaseReturn[]
   // Customer-module data-entry provenance — same meaning as above.
-  createdCustomers            Customer[]
-  customerNotes               CustomerNote[]
-  uploadedCustomerDocuments   CustomerDocument[]
-  ownedCustomerComplaints     CustomerComplaint[] @relation("CustomerComplaintOwner")
-  createdCustomerComplaints   CustomerComplaint[] @relation("CustomerComplaintCreatedBy")
+  createdCustomers             Customer[]
+  customerNotes                CustomerNote[]
+  uploadedCustomerDocuments    CustomerDocument[]
+  ownedCustomerComplaints      CustomerComplaint[]    @relation("CustomerComplaintOwner")
+  createdCustomerComplaints    CustomerComplaint[]    @relation("CustomerComplaintCreatedBy")
   // Inventory data-entry provenance — same meaning as above. Each *ByUserId
   // field has its own named relation.
-  createdStockMovements       StockMovement[]     @relation("StockMovementCreatedBy")
-  createdStockAdjustments     StockAdjustment[]   @relation("StockAdjustmentCreatedBy")
-  postedStockAdjustments      StockAdjustment[]   @relation("StockAdjustmentPostedBy")
+  createdStockMovements        StockMovement[]        @relation("StockMovementCreatedBy")
+  createdStockAdjustments      StockAdjustment[]      @relation("StockAdjustmentCreatedBy")
+  postedStockAdjustments       StockAdjustment[]      @relation("StockAdjustmentPostedBy")
+  // I2: submit/reject provenance — approve() reuses postedStockAdjustments above.
+  submittedStockAdjustments    StockAdjustment[]      @relation("StockAdjustmentSubmittedBy")
+  rejectedStockAdjustments     StockAdjustment[]      @relation("StockAdjustmentRejectedBy")
+  // I3: who last edited an item's min/reorder/max thresholds.
+  updatedItemStockLevels       ItemStockLevel[]       @relation("ItemStockLevelUpdatedBy")
+  // I4: batch/expiry provenance — same data-entry-provenance meaning as above.
+  updatedInventoryItemSettings InventoryItemSetting[] @relation("InventoryItemSettingUpdatedBy")
+  createdStockBatches          StockBatch[]           @relation("StockBatchCreatedBy")
+  // I5: goods-receipt / production-output provenance.
+  createdGoodsReceipts         GoodsReceipt[]         @relation("GoodsReceiptCreatedBy")
+  postedGoodsReceipts          GoodsReceipt[]         @relation("GoodsReceiptPostedBy")
+  createdProductionOutputs     ProductionOutput[]     @relation("ProductionOutputCreatedBy")
+  postedProductionOutputs      ProductionOutput[]     @relation("ProductionOutputPostedBy")
+  // I6: stock-count provenance — one named relation per *ByUserId field.
+  createdStockCounts           StockCount[]           @relation("StockCountCreatedBy")
+  startedStockCounts           StockCount[]           @relation("StockCountStartedBy")
+  submittedStockCounts         StockCount[]           @relation("StockCountSubmittedBy")
+  postedStockCounts            StockCount[]           @relation("StockCountPostedBy")
+  cancelledStockCounts         StockCount[]           @relation("StockCountCancelledBy")
+  countedStockCountItems       StockCountItem[]       @relation("StockCountItemCountedBy")
+  // I8: goods-return provenance.
+  createdGoodsReturns          GoodsReturn[]          @relation("GoodsReturnCreatedBy")
+  postedGoodsReturns           GoodsReturn[]          @relation("GoodsReturnPostedBy")
   // Sales-order provenance (Sales batch 2) — one named relation per field.
-  createdSalesOrders          SalesOrder[]        @relation("SalesOrderCreatedBy")
-  approvedSalesOrders         SalesOrder[]        @relation("SalesOrderApprovedBy")
-  creditOverriddenSalesOrders SalesOrder[]        @relation("SalesOrderCreditOverrideBy")
-  confirmedSalesOrders        SalesOrder[]        @relation("SalesOrderConfirmedBy")
-  cancelledSalesOrders        SalesOrder[]        @relation("SalesOrderCancelledBy")
-  closedSalesOrders           SalesOrder[]        @relation("SalesOrderClosedBy")
+  createdSalesOrders           SalesOrder[]           @relation("SalesOrderCreatedBy")
+  approvedSalesOrders          SalesOrder[]           @relation("SalesOrderApprovedBy")
+  creditOverriddenSalesOrders  SalesOrder[]           @relation("SalesOrderCreditOverrideBy")
+  confirmedSalesOrders         SalesOrder[]           @relation("SalesOrderConfirmedBy")
+  cancelledSalesOrders         SalesOrder[]           @relation("SalesOrderCancelledBy")
+  closedSalesOrders            SalesOrder[]           @relation("SalesOrderClosedBy")
   // Delivery provenance (Sales batch 3).
-  createdDeliveries           Delivery[]          @relation("DeliveryCreatedBy")
-  postedDeliveries            Delivery[]          @relation("DeliveryPostedBy")
+  createdDeliveries            Delivery[]             @relation("DeliveryCreatedBy")
+  postedDeliveries             Delivery[]             @relation("DeliveryPostedBy")
   // Sales-invoice provenance (Sales batch 4).
-  createdSalesInvoices        SalesInvoice[]      @relation("SalesInvoiceCreatedBy")
-  postedSalesInvoices         SalesInvoice[]      @relation("SalesInvoicePostedBy")
+  createdSalesInvoices         SalesInvoice[]         @relation("SalesInvoiceCreatedBy")
+  postedSalesInvoices          SalesInvoice[]         @relation("SalesInvoicePostedBy")
   // Receivables provenance (Sales batch 5).
-  cancelledCustomerPayments   CustomerPayment[]   @relation("CustomerPaymentCancelledBy")
-  createdCustomerPayments     CustomerPayment[]   @relation("CustomerPaymentCreatedBy")
-  allocatedPaymentAllocations PaymentAllocation[] @relation("PaymentAllocationAllocatedBy")
-  reversedPaymentAllocations  PaymentAllocation[] @relation("PaymentAllocationReversedBy")
+  cancelledCustomerPayments    CustomerPayment[]      @relation("CustomerPaymentCancelledBy")
+  createdCustomerPayments      CustomerPayment[]      @relation("CustomerPaymentCreatedBy")
+  allocatedPaymentAllocations  PaymentAllocation[]    @relation("PaymentAllocationAllocatedBy")
+  reversedPaymentAllocations   PaymentAllocation[]    @relation("PaymentAllocationReversedBy")
   // Sales-return provenance (Sales batch 6) — one named relation per field.
-  requestedSalesReturns       SalesReturn[]       @relation("SalesReturnRequestedBy")
-  approvedSalesReturns        SalesReturn[]       @relation("SalesReturnApprovedBy")
-  receivedSalesReturns        SalesReturn[]       @relation("SalesReturnReceivedBy")
-  inspectedSalesReturns       SalesReturn[]       @relation("SalesReturnInspectedBy")
+  requestedSalesReturns        SalesReturn[]          @relation("SalesReturnRequestedBy")
+  approvedSalesReturns         SalesReturn[]          @relation("SalesReturnApprovedBy")
+  receivedSalesReturns         SalesReturn[]          @relation("SalesReturnReceivedBy")
+  inspectedSalesReturns        SalesReturn[]          @relation("SalesReturnInspectedBy")
   // Credit-note provenance (Sales batch 6).
-  createdCreditNotes          CreditNote[]        @relation("CreditNoteCreatedBy")
-  postedCreditNotes           CreditNote[]        @relation("CreditNotePostedBy")
+  createdCreditNotes           CreditNote[]           @relation("CreditNoteCreatedBy")
+  postedCreditNotes            CreditNote[]           @relation("CreditNotePostedBy")
 
   @@map("users")
 }

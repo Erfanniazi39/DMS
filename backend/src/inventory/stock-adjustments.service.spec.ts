@@ -1,8 +1,21 @@
 import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { RECORD_MODIFIED_CODE } from '../common/optimistic-lock';
-import { createStockAdjustmentSchema, updateStockAdjustmentSchema } from './dto/inventory.dto';
-import { ADJ_DATE, balanceOf, buildStockAdjustmentsService, createInventoryDb, draftAdjustment, seedStock, VERSION, type InventoryDb } from './inventory.spec-helpers';
+import { createStockAdjustmentSchema, rejectStockAdjustmentSchema, updateStockAdjustmentSchema } from './dto/inventory.dto';
+import {
+  ADJ_DATE,
+  balanceOf,
+  buildStockAdjustmentsService,
+  createInventoryDb,
+  damagedOf,
+  draftAdjustment,
+  seedBatch,
+  seedStock,
+  setBucket,
+  trackItem,
+  VERSION,
+  type InventoryDb,
+} from './inventory.spec-helpers';
 
 // StockAdjustmentsService — DRAFT CRUD and DRAFT → POSTED. Posting is checked
 // against the in-memory fake (real rollback semantics), so "a failed post
@@ -37,7 +50,7 @@ describe('StockAdjustmentsService', () => {
       const data = db.stockAdjustment.create.mock.calls[0][0].data;
       expect(data).toEqual(expect.objectContaining({ status: 'DRAFT', locationId: 1, createdByUserId: 3, kind: 'RECEIPT' }));
       expect(data.adjustmentNumber).toBeUndefined();
-      expect(data.items.create).toEqual([{ itemId: 1, quantity: 10, note: undefined }]);
+      expect(data.items.create).toEqual([{ itemId: 1, quantity: 10, note: undefined, batchId: null, batchNumber: null, productionDate: null, expiryDate: null }]);
       expect(db.auditLog.create).toHaveBeenCalledWith({ data: expect.objectContaining({ action: 'STOCK_ADJUSTMENT_CREATED', entityType: 'StockAdjustment', entityId: '7' }) });
       // Creating a draft never touches stock.
       expect(db.stockMovement.createMany).not.toHaveBeenCalled();
@@ -147,7 +160,20 @@ describe('StockAdjustmentsService', () => {
     it('a post that would take stock negative fails as a whole: no movement, no balance change, no status change, and NO number burned', async () => {
       const db = createInventoryDb();
       seedStock(db, 1, 2);
-      mockDraft(db, draftAdjustment({ kind: 'CORRECTION', items: [{ id: 91, itemId: 1, quantity: new Prisma.Decimal(-3), note: null }] }));
+      // Net quantity is +47 (positive), so this CORRECTION does NOT need
+      // approval (B10) and post() is the right endpoint — but item 1's own
+      // line alone still takes it negative (2 − 3 = −1), which must fail the
+      // whole batch regardless of the document's net sign.
+      mockDraft(
+        db,
+        draftAdjustment({
+          kind: 'CORRECTION',
+          items: [
+            { id: 91, itemId: 1, quantity: new Prisma.Decimal(-3), note: null },
+            { id: 92, itemId: 2, quantity: new Prisma.Decimal(50), note: null },
+          ],
+        }),
+      );
       const service = buildStockAdjustmentsService(db);
 
       await expect(service.post(7, VERSION, 3)).rejects.toMatchObject({ response: expect.objectContaining({ code: 'NEGATIVE_STOCK' }) });
@@ -191,6 +217,340 @@ describe('StockAdjustmentsService', () => {
     });
   });
 
+  describe('submit / approve / reject (I2, B10)', () => {
+    function writeOffDraft(overrides: Record<string, unknown> = {}) {
+      return draftAdjustment({
+        kind: 'WRITE_OFF',
+        reasonCode: 'DAMAGED',
+        items: [{ id: 91, itemId: 1, quantity: new Prisma.Decimal(-3), note: null }],
+        ...overrides,
+      });
+    }
+
+    it('submit → approve (by a different user): PENDING_APPROVAL, then POSTED with a WRITE_OFF movement', async () => {
+      const db = createInventoryDb();
+      seedStock(db, 1, 10);
+      mockDraft(db, writeOffDraft());
+      const service = buildStockAdjustmentsService(db);
+
+      const submitted = await service.submit(7, VERSION, 3);
+      expect(submitted.status).toBe('PENDING_APPROVAL');
+      expect(db.auditLog.create).toHaveBeenCalledWith({ data: expect.objectContaining({ action: 'STOCK_ADJUSTMENT_SUBMITTED' }) });
+      // Submitting never touches stock.
+      expect(db.state.movements).toHaveLength(1); // only the seedStock OPENING_BALANCE
+
+      const approved = await service.approve(7, VERSION, 9); // 9 ≠ 3: a different approver
+      expect(approved.status).toBe('POSTED');
+      expect(approved.adjustmentNumber).toBe('ADJ-1405-000001');
+      expect(db.state.movements).toEqual([
+        expect.objectContaining({ movementType: 'OPENING_BALANCE' }),
+        expect.objectContaining({ itemId: 1, movementType: 'WRITE_OFF', referenceType: 'STOCK_ADJUSTMENT', createdByUserId: 9 }),
+      ]);
+      expect(db.state.movements[1].quantity.toString()).toBe('-3');
+      expect(balanceOf(db, 1)?.onHand).toBe('7');
+      expect(db.auditLog.create).toHaveBeenCalledWith({ data: expect.objectContaining({ action: 'STOCK_ADJUSTMENT_APPROVED', entityId: '7' }) });
+    });
+
+    it('submit → reject → resubmit → approve: rejection sends it back to an editable DRAFT', async () => {
+      const db = createInventoryDb();
+      seedStock(db, 1, 10);
+      mockDraft(db, writeOffDraft());
+      const service = buildStockAdjustmentsService(db);
+
+      await service.submit(7, VERSION, 3);
+      const rejected = await service.reject(7, VERSION, 'مدارک کافی نیست', 9);
+      expect(rejected.status).toBe('DRAFT');
+      expect(rejected.rejectReason).toBe('مدارک کافی نیست');
+      expect(db.auditLog.create).toHaveBeenCalledWith({ data: expect.objectContaining({ action: 'STOCK_ADJUSTMENT_REJECTED' }) });
+      // Nothing was posted to stock by a rejected submission.
+      expect(db.state.movements).toHaveLength(1);
+
+      // The draft is editable again (ensureEditable(status) passes for DRAFT)
+      // and can be resubmitted without further changes.
+      const resubmitted = await service.submit(7, VERSION, 3);
+      expect(resubmitted.status).toBe('PENDING_APPROVAL');
+      const approved = await service.approve(7, VERSION, 9);
+      expect(approved.status).toBe('POSTED');
+    });
+
+    it('rejects an empty reject reason at the DTO level', () => {
+      expect(rejectStockAdjustmentSchema.safeParse({ updatedAt: VERSION.toISOString() }).success).toBe(false);
+      expect(rejectStockAdjustmentSchema.safeParse({ updatedAt: VERSION.toISOString(), rejectReason: '  ' }).success).toBe(false);
+      expect(rejectStockAdjustmentSchema.safeParse({ updatedAt: VERSION.toISOString(), rejectReason: 'مدارک ناقص' }).success).toBe(true);
+    });
+
+    it('refuses self-approval: the submitter cannot approve their own document', async () => {
+      const db = createInventoryDb();
+      seedStock(db, 1, 10);
+      mockDraft(db, writeOffDraft());
+      const service = buildStockAdjustmentsService(db);
+
+      await service.submit(7, VERSION, 3);
+      await expect(service.approve(7, VERSION, 3)).rejects.toBeInstanceOf(ConflictException);
+      // No movement was written and the document is still PENDING_APPROVAL.
+      expect(db.state.movements).toHaveLength(1);
+      const current = await service.get(7);
+      expect(current.status).toBe('PENDING_APPROVAL');
+    });
+
+    it('post() refuses a PENDING_APPROVAL document — only approve() may move it (the Sales Batch 2 class of bug)', async () => {
+      const db = createInventoryDb();
+      seedStock(db, 1, 10);
+      mockDraft(db, writeOffDraft());
+      const service = buildStockAdjustmentsService(db);
+
+      await service.submit(7, VERSION, 3);
+      await expect(service.post(7, VERSION, 9)).rejects.toBeInstanceOf(ConflictException);
+      expect(db.state.movements).toHaveLength(1);
+      expect(db.state.sequences.size).toBe(0);
+    });
+
+    it('post() also refuses a DRAFT document whose kind/net quantity needs approval (must submit() first)', async () => {
+      const db = createInventoryDb();
+      mockDraft(db, writeOffDraft());
+      const service = buildStockAdjustmentsService(db);
+      await expect(service.post(7, VERSION, 3)).rejects.toBeInstanceOf(ConflictException);
+      expect(db.state.movements).toHaveLength(0);
+    });
+
+    it('submit() refuses a DRAFT document that does NOT need approval (a plain RECEIPT)', async () => {
+      const db = createInventoryDb();
+      mockDraft(db); // RECEIPT, positive quantities
+      const service = buildStockAdjustmentsService(db);
+      await expect(service.submit(7, VERSION, 3)).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('approve()/reject() refuse a document that is not PENDING_APPROVAL', async () => {
+      const db = createInventoryDb();
+      mockDraft(db); // DRAFT
+      const service = buildStockAdjustmentsService(db);
+      await expect(service.approve(7, VERSION, 9)).rejects.toBeInstanceOf(ConflictException);
+      await expect(service.reject(7, VERSION, 'دلیلی', 9)).rejects.toBeInstanceOf(ConflictException);
+    });
+  });
+
+  // I8 (build plan §5.8, B9): found-damaged-on-the-shelf stock — ON_HAND out,
+  // DAMAGED in, two rows per line, posted by its own dedicated builder
+  // (buildMarkDamagedMovementRows()), never the generic single-row path.
+  // Same approval tier as WRITE_OFF (needs approval, no self-approval,
+  // reasonCode required) — exercised via submit() → approve(), never post().
+  describe('MARK_DAMAGED (I8, B9)', () => {
+    function markDamagedDraft(overrides: Record<string, unknown> = {}) {
+      return draftAdjustment({
+        kind: 'MARK_DAMAGED',
+        reasonCode: 'DAMAGED',
+        items: [{ id: 91, itemId: 1, quantity: new Prisma.Decimal(-3), note: null, batchId: null, batchNumber: null, productionDate: null, expiryDate: null }],
+        ...overrides,
+      });
+    }
+
+    it('submit → approve (by a different user): two movements per line (ON_HAND out, DAMAGED in), same reference', async () => {
+      const db = createInventoryDb();
+      seedStock(db, 1, 10);
+      mockDraft(db, markDamagedDraft());
+      const service = buildStockAdjustmentsService(db);
+
+      const submitted = await service.submit(7, VERSION, 3);
+      expect(submitted.status).toBe('PENDING_APPROVAL');
+      // Submitting never touches stock.
+      expect(db.state.movements).toHaveLength(1); // only the seedStock OPENING_BALANCE
+
+      const approved = await service.approve(7, VERSION, 9); // 9 ≠ 3: a different approver
+      expect(approved.status).toBe('POSTED');
+      expect(approved.adjustmentNumber).toBe('ADJ-1405-000001');
+      expect(balanceOf(db, 1)).toEqual({ onHand: '7', reserved: '0', qc: '0' });
+      expect(damagedOf(db, 1)).toBe('3');
+
+      const marked = db.state.movements.filter((m: any) => m.movementType === 'MARK_DAMAGED');
+      expect(marked.map((m: any) => [m.bucket, m.quantity.toString(), m.referenceLineId])).toEqual([
+        ['ON_HAND', '-3', 91],
+        ['DAMAGED', '3', 91],
+      ]);
+      expect(marked.every((m: any) => m.referenceType === 'STOCK_ADJUSTMENT' && m.referenceId === 7)).toBe(true);
+      expect(db.auditLog.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ action: 'STOCK_ADJUSTMENT_APPROVED', entityId: '7', details: expect.stringContaining('ADJ-1405-000001') }),
+      });
+    });
+
+    it('needs approval and a reasonCode, refuses self-approval, and post() refuses it directly', async () => {
+      const db = createInventoryDb();
+      seedStock(db, 1, 10);
+      const service = buildStockAdjustmentsService(db);
+
+      mockDraft(db, markDamagedDraft());
+      await expect(service.post(7, VERSION, 3)).rejects.toBeInstanceOf(ConflictException);
+      expect(db.state.movements).toHaveLength(1);
+
+      await service.submit(7, VERSION, 3);
+      await expect(service.approve(7, VERSION, 3)).rejects.toBeInstanceOf(ConflictException); // same submitter
+      expect(db.state.movements).toHaveLength(1);
+
+      const approved = await service.approve(7, VERSION, 9);
+      expect(approved.status).toBe('POSTED');
+    });
+
+    it('a batch-tracked item’s line requires an existing batchId (never a new batchNumber); batch balances move too', async () => {
+      const db = createInventoryDb();
+      trackItem(db, 1);
+      seedStock(db, 1, 10);
+      const batch = seedBatch(db, { itemId: 1, batchNumber: 'B1', onHand: 10 });
+      mockDraft(
+        db,
+        markDamagedDraft({ items: [{ id: 91, itemId: 1, quantity: new Prisma.Decimal(-3), note: null, batchId: batch.id, batchNumber: null, productionDate: null, expiryDate: null }] }),
+      );
+      const service = buildStockAdjustmentsService(db);
+
+      await service.submit(7, VERSION, 3);
+      await service.approve(7, VERSION, 9);
+
+      const batchBalance = db.state.batchBalances.find((b: any) => b.batchId === batch.id);
+      expect(batchBalance.onHand.toString()).toBe('7');
+      expect(batchBalance.damaged.toString()).toBe('3');
+    });
+
+    it('a MARK_DAMAGED that would take ON_HAND negative fails as a whole: no movement, no DAMAGED change, no number burned', async () => {
+      const db = createInventoryDb();
+      seedStock(db, 1, 2);
+      mockDraft(db, markDamagedDraft({ items: [{ id: 91, itemId: 1, quantity: new Prisma.Decimal(-5), note: null, batchId: null, batchNumber: null, productionDate: null, expiryDate: null }] }));
+      const service = buildStockAdjustmentsService(db);
+
+      await service.submit(7, VERSION, 3);
+      await expect(service.approve(7, VERSION, 9)).rejects.toMatchObject({ response: expect.objectContaining({ code: 'NEGATIVE_STOCK' }) });
+      expect(balanceOf(db, 1)).toEqual({ onHand: '2', reserved: '0', qc: '0' });
+      expect(damagedOf(db, 1)).toBe('0');
+      expect(db.state.sequences.get('ADJ:1405')).toBeUndefined();
+    });
+  });
+
+  // I4 (B23/§6/§5.4a R2/R3, build plan §16 resume step 4 — the highest
+  // priority gap: postBatchCutover() had zero coverage). Converts item 1
+  // from unbatched to batch-tracked: ADJUSTMENT_OUT of the whole unbatched
+  // on-hand, batchTracked flips, then ADJUSTMENT_IN per batch line.
+  describe('BATCH_CUTOVER (I4)', () => {
+    function cutoverDraft(overrides: Record<string, unknown> = {}) {
+      return draftAdjustment({
+        kind: 'BATCH_CUTOVER',
+        items: [
+          { id: 91, itemId: 1, quantity: new Prisma.Decimal(6), note: null, batchId: null, batchNumber: 'LOT-1', productionDate: null, expiryDate: null },
+          { id: 92, itemId: 1, quantity: new Prisma.Decimal(4), note: null, batchId: null, batchNumber: 'LOT-2', productionDate: null, expiryDate: null },
+        ],
+        ...overrides,
+      });
+    }
+
+    it('happy path: ADJUSTMENT_OUT of the unbatched total, batchTracked flips, ADJUSTMENT_IN per batch line, two audit entries', async () => {
+      const db = createInventoryDb();
+      seedStock(db, 1, 10);
+      mockDraft(db, cutoverDraft());
+      const service = buildStockAdjustmentsService(db);
+
+      await service.submit(7, VERSION, 3);
+      const approved = await service.approve(7, VERSION, 9);
+
+      expect(approved.status).toBe('POSTED');
+      expect(approved.adjustmentNumber).toBe('ADJ-1405-000001');
+      // Nets to zero — the item's own on-hand is unchanged.
+      expect(balanceOf(db, 1)?.onHand).toBe('10');
+
+      const setting = db.state.itemSettings.find((row) => row.itemId === 1);
+      expect(setting).toEqual(expect.objectContaining({ batchTracked: true }));
+      expect(setting?.batchTrackedSince).toBeInstanceOf(Date);
+
+      const batches = db.state.batches.filter((batch) => batch.itemId === 1);
+      expect(batches.map((batch) => batch.batchNumber).sort()).toEqual(['LOT-1', 'LOT-2']);
+
+      const outMovement = db.state.movements.find((movement: any) => movement.movementType === 'ADJUSTMENT_OUT');
+      expect(outMovement).toEqual(expect.objectContaining({ itemId: 1, bucket: 'ON_HAND', referenceLineId: null }));
+      expect((outMovement as any).quantity.toString()).toBe('-10');
+
+      const inMovements = db.state.movements.filter((movement: any) => movement.movementType === 'ADJUSTMENT_IN');
+      expect(inMovements).toHaveLength(2);
+      expect(inMovements.every((movement: any) => Boolean(movement.batchId))).toBe(true);
+      expect(inMovements.map((movement: any) => movement.quantity.toString()).sort()).toEqual(['4', '6']);
+
+      expect(db.auditLog.create.mock.calls.map((call: any) => call[0].data.action)).toEqual(
+        expect.arrayContaining(['STOCK_ADJUSTMENT_APPROVED', 'INVENTORY_ITEM_SETTING_BATCH_CUTOVER']),
+      );
+    });
+
+    it('refuses when the batch lines do not sum to the item’s current on-hand (409 BATCH_CUTOVER_QUANTITY_MISMATCH), nothing written', async () => {
+      const db = createInventoryDb();
+      seedStock(db, 1, 10);
+      mockDraft(
+        db,
+        cutoverDraft({
+          items: [{ id: 91, itemId: 1, quantity: new Prisma.Decimal(9), note: null, batchId: null, batchNumber: 'LOT-1', productionDate: null, expiryDate: null }],
+        }),
+      );
+      const service = buildStockAdjustmentsService(db);
+
+      await service.submit(7, VERSION, 3);
+      await expect(service.approve(7, VERSION, 9)).rejects.toMatchObject({ response: expect.objectContaining({ code: 'BATCH_CUTOVER_QUANTITY_MISMATCH' }) });
+      expect(balanceOf(db, 1)?.onHand).toBe('10');
+      expect(db.state.movements).toHaveLength(1); // only the seeded opening movement
+      expect(db.state.itemSettings.find((row) => row.itemId === 1)).toBeUndefined();
+    });
+
+    it('refuses when the item has QC stock anywhere (must be cleared first)', async () => {
+      const db = createInventoryDb();
+      seedStock(db, 1, 10);
+      setBucket(db, 1, 'QC', 2);
+      mockDraft(db, cutoverDraft());
+      const service = buildStockAdjustmentsService(db);
+
+      await service.submit(7, VERSION, 3);
+      await expect(service.approve(7, VERSION, 9)).rejects.toThrow('کنترل کیفیت');
+      expect(db.state.itemSettings.find((row) => row.itemId === 1)).toBeUndefined();
+    });
+
+    it('refuses when the item has stock at another location (409 BATCH_CUTOVER_STOCK_ELSEWHERE)', async () => {
+      const db = createInventoryDb();
+      seedStock(db, 1, 10); // location 1 — the cutover document's own location
+      seedStock(db, 1, 5, 2); // location 2 — stock elsewhere
+      mockDraft(db, cutoverDraft());
+      const service = buildStockAdjustmentsService(db);
+
+      await service.submit(7, VERSION, 3);
+      await expect(service.approve(7, VERSION, 9)).rejects.toMatchObject({ response: expect.objectContaining({ code: 'BATCH_CUTOVER_STOCK_ELSEWHERE' }) });
+      expect(db.state.itemSettings.find((row) => row.itemId === 1)).toBeUndefined();
+    });
+
+    it('refuses an item that is already batch-tracked (cutover is one-way, never repeated)', async () => {
+      const db = createInventoryDb();
+      seedStock(db, 1, 10);
+      trackItem(db, 1);
+      mockDraft(db, cutoverDraft());
+      const service = buildStockAdjustmentsService(db);
+
+      await service.submit(7, VERSION, 3);
+      await expect(service.approve(7, VERSION, 9)).rejects.toThrow('قبلاً به ردیابی بچ تبدیل شده');
+    });
+
+    it('needs approval (submit() accepts it) but never a reasonCode — and self-approval is still refused (B23)', async () => {
+      const db = createInventoryDb();
+      seedStock(db, 1, 10);
+      mockDraft(db, cutoverDraft({ reasonCode: null }));
+      const service = buildStockAdjustmentsService(db);
+
+      const submitted = await service.submit(7, VERSION, 3);
+      expect(submitted.status).toBe('PENDING_APPROVAL');
+
+      await expect(service.approve(7, VERSION, 3)).rejects.toBeInstanceOf(ConflictException); // same submitter
+      expect(db.state.itemSettings.find((row) => row.itemId === 1)).toBeUndefined();
+
+      const approved = await service.approve(7, VERSION, 9); // different approver
+      expect(approved.status).toBe('POSTED');
+    });
+
+    it('post() refuses BATCH_CUTOVER directly — it always needs submit() → approve()', async () => {
+      const db = createInventoryDb();
+      seedStock(db, 1, 10);
+      mockDraft(db, cutoverDraft());
+      await expect(buildStockAdjustmentsService(db).post(7, VERSION, 3)).rejects.toBeInstanceOf(ConflictException);
+      expect(db.state.itemSettings.find((row) => row.itemId === 1)).toBeUndefined();
+    });
+  });
+
   describe('remove', () => {
     it('deletes a DRAFT (lines cascade) and audits', async () => {
       const db = createInventoryDb();
@@ -218,10 +578,48 @@ describe('stock adjustment DTOs', () => {
     if (result.success) expect(result.data.items[0].quantity).toBe(10);
   });
 
-  it('OPENING / RECEIPT lines must be positive; CORRECTION lines may be negative', () => {
+  it('OPENING / RECEIPT lines must be positive; CORRECTION lines may be negative (with a reasonCode, since a negative net quantity needs approval)', () => {
     expect(createStockAdjustmentSchema.safeParse({ ...base, items: [{ itemId: 1, quantity: -1 }] }).success).toBe(false);
     expect(createStockAdjustmentSchema.safeParse({ ...base, kind: 'OPENING', items: [{ itemId: 1, quantity: -1 }] }).success).toBe(false);
-    expect(createStockAdjustmentSchema.safeParse({ ...base, kind: 'CORRECTION', items: [{ itemId: 1, quantity: -1.25 }] }).success).toBe(true);
+    expect(
+      createStockAdjustmentSchema.safeParse({ ...base, kind: 'CORRECTION', reasonCode: 'COUNT_ERROR', items: [{ itemId: 1, quantity: -1.25 }] })
+        .success,
+    ).toBe(true);
+  });
+
+  it('reasonCode (B10/B11): required for WRITE_OFF and a net-negative CORRECTION; optional otherwise', () => {
+    // WRITE_OFF without a reasonCode is refused.
+    expect(createStockAdjustmentSchema.safeParse({ ...base, kind: 'WRITE_OFF', items: [{ itemId: 1, quantity: -2 }] }).success).toBe(false);
+    // WRITE_OFF with a reasonCode and a negative quantity succeeds.
+    expect(
+      createStockAdjustmentSchema.safeParse({ ...base, kind: 'WRITE_OFF', reasonCode: 'DAMAGED', items: [{ itemId: 1, quantity: -2 }] }).success,
+    ).toBe(true);
+    // A positive-net CORRECTION never needs a reasonCode.
+    expect(createStockAdjustmentSchema.safeParse({ ...base, kind: 'CORRECTION', items: [{ itemId: 1, quantity: 4 }] }).success).toBe(true);
+    // A net-negative CORRECTION (two lines summing negative) without a reasonCode is refused.
+    expect(
+      createStockAdjustmentSchema.safeParse({
+        ...base,
+        kind: 'CORRECTION',
+        items: [
+          { itemId: 1, quantity: 2 },
+          { itemId: 2, quantity: -5 },
+        ],
+      }).success,
+    ).toBe(false);
+    // An unknown reasonCode is rejected.
+    expect(
+      createStockAdjustmentSchema.safeParse({ ...base, kind: 'WRITE_OFF', reasonCode: 'STOLEN', items: [{ itemId: 1, quantity: -2 }] }).success,
+    ).toBe(false);
+  });
+
+  it('WRITE_OFF lines must be negative (the mirror of OPENING/RECEIPT)', () => {
+    expect(
+      createStockAdjustmentSchema.safeParse({ ...base, kind: 'WRITE_OFF', reasonCode: 'DAMAGED', items: [{ itemId: 1, quantity: 2 }] }).success,
+    ).toBe(false);
+    expect(
+      createStockAdjustmentSchema.safeParse({ ...base, kind: 'WRITE_OFF', reasonCode: 'DAMAGED', items: [{ itemId: 1, quantity: -2 }] }).success,
+    ).toBe(true);
   });
 
   it('rejects zero, more than two decimals, missing reason, no lines, and an unknown kind', () => {
@@ -244,5 +642,23 @@ describe('stock adjustment DTOs', () => {
   it('update requires the loaded version', () => {
     expect(updateStockAdjustmentSchema.safeParse(base).success).toBe(false);
     expect(updateStockAdjustmentSchema.safeParse({ ...base, updatedAt: VERSION.toISOString() }).success).toBe(true);
+  });
+
+  it('BATCH_CUTOVER (I4, §5.4a R6/B23): never requires a reasonCode even though it needs approval, every line needs a NEW batchNumber (never an existing batchId), and lines must be positive', () => {
+    const cutover = { ...base, kind: 'BATCH_CUTOVER', items: [{ itemId: 1, quantity: 6, batchNumber: 'LOT-1' }] };
+    expect(createStockAdjustmentSchema.safeParse(cutover).success).toBe(true); // no reasonCode, still valid
+    expect(createStockAdjustmentSchema.safeParse({ ...cutover, items: [{ itemId: 1, quantity: 6, batchNumber: '' }] }).success).toBe(false); // batchNumber required
+    expect(createStockAdjustmentSchema.safeParse({ ...cutover, items: [{ itemId: 1, quantity: 6, batchId: 5, batchNumber: 'LOT-1' }] }).success).toBe(false); // existing batchId forbidden
+    expect(createStockAdjustmentSchema.safeParse({ ...cutover, items: [{ itemId: 1, quantity: -6, batchNumber: 'LOT-1' }] }).success).toBe(false); // inbound-only
+  });
+
+  it('MARK_DAMAGED (I8, B9): lines must be negative and a reasonCode is required, same as WRITE_OFF', () => {
+    expect(createStockAdjustmentSchema.safeParse({ ...base, kind: 'MARK_DAMAGED', items: [{ itemId: 1, quantity: -2 }] }).success).toBe(false); // reasonCode required
+    expect(
+      createStockAdjustmentSchema.safeParse({ ...base, kind: 'MARK_DAMAGED', reasonCode: 'DAMAGED', items: [{ itemId: 1, quantity: 2 }] }).success,
+    ).toBe(false); // must be negative
+    expect(
+      createStockAdjustmentSchema.safeParse({ ...base, kind: 'MARK_DAMAGED', reasonCode: 'DAMAGED', items: [{ itemId: 1, quantity: -2 }] }).success,
+    ).toBe(true);
   });
 });

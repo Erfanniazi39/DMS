@@ -6,24 +6,32 @@
 import {
   BarChart3,
   Boxes,
+  Building,
   Building2,
   CalendarClock,
+  ClipboardCheck,
   ClipboardList,
   ClipboardPen,
+  Factory,
   FilePlus2,
   FileText,
   HandCoins,
+  Layers,
   LineChart,
   MapPin,
   Package,
   PackageCheck,
+  PackagePlus,
   Plus,
   Receipt,
   RotateCcw,
   ScrollText,
+  ShieldCheck,
   ShoppingBag,
   ShoppingCart,
+  SlidersHorizontal,
   Tags,
+  TrendingDown,
   Truck,
   UserRound,
   Users,
@@ -94,7 +102,10 @@ export const navGroups: NavGroup[] = [
           { label: "گزارش‌های فروش", href: "/sales-reports", icon: LineChart, sectionLabel: "گزارش" },
         ],
       },
-      // Inventory (Sales batch 1).
+      // Inventory (Sales batch 1; movements/integrity added I1; stock
+      // levels + low-stock report added I3; goods receipts + production
+      // output added I5 — viewable with inventory.view, the parent's gate;
+      // create/post/QC release need inventory.receive, enforced on the pages).
       {
         label: "موجودی",
         href: "/inventory",
@@ -102,7 +113,32 @@ export const navGroups: NavGroup[] = [
         permission: "inventory.view",
         children: [
           { label: "لیست موجودی", href: "/inventory", icon: Boxes },
+          { label: "رسید انبار", href: "/inventory/receipts", icon: PackagePlus },
+          { label: "رسید تولید", href: "/inventory/production", icon: Factory },
           { label: "اصلاح موجودی", href: "/inventory/adjustments", icon: ClipboardPen },
+          // I6 — create/edit/start/enter-count/submit/cancel need
+          // inventory.count; approve/request-recount need inventory.approve;
+          // gated here only on inventory.view (the parent's gate), same as
+          // every other inventory child — the page's own buttons gate further.
+          { label: "شمارش موجودی", href: "/inventory/counts", icon: ClipboardCheck },
+          { label: "دفتر گردش کالا", href: "/inventory/movements", icon: ScrollText },
+          // Read-only report — inventory.view (the parent's own gate) is
+          // enough; editing the thresholds it's based on needs inventory.manage.
+          { label: "گزارش کمبود موجودی", href: "/inventory/reports/low-stock", icon: TrendingDown },
+          // I4 — read-only, inventory.view like the low-stock report.
+          { label: "گزارش انقضای بچ‌ها", href: "/inventory/reports/expiry", icon: CalendarClock },
+          // Admin-level inventory configuration (I3) — never WAREHOUSE/SALES_MANAGER.
+          { label: "آستانه‌های موجودی", href: "/inventory/stock-levels", permission: "inventory.manage", icon: SlidersHorizontal },
+          // I4 — per-item batch/expiry configuration, inventory.manage only.
+          { label: "تنظیمات بچ و انقضا", href: "/inventory/item-settings", permission: "inventory.manage", icon: Layers },
+          // I7's location-admin slice only — transfers are explicitly out of
+          // scope. Listing needs only inventory.view (same as every other
+          // inventory child); the page's own "افزودن/ویرایش" buttons gate on
+          // inventory.manage.
+          { label: "انبارها", href: "/inventory/locations", icon: Building },
+          // Admin-only diagnostic — moved from inventory.adjust (I1's stand-in)
+          // to inventory.manage (I3) now that it exists in the permission catalog.
+          { label: "یکپارچگی موجودی", href: "/inventory/integrity", permission: "inventory.manage", icon: ShieldCheck },
         ],
       },
       // Receivables (Sales batch 5) — a sibling of "فروش", not nested under

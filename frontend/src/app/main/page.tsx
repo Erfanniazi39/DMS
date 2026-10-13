@@ -12,6 +12,7 @@ import {
   ReceiptText,
   RotateCw,
   ShoppingCart,
+  TriangleAlert,
   Wallet,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -132,6 +133,18 @@ type OpenRequest = {
   priority: PurchaseRequestPriority;
   requesterDepartment: { id: number; name: string };
   ageDays: number;
+};
+
+// GET /dashboard/low-stock-summary (I3, B14) — the same rows as
+// /inventory/reports/low-stock, just surfaced as a KPI count + short list.
+// Not period-scoped (current state only, like open-items above).
+type LowStockRow = {
+  id: number;
+  itemId: number;
+  available: string;
+  minQty: string;
+  item: { id: number; code: string; name: string };
+  location: { id: number; name: string };
 };
 
 // GET /dashboard/open-items — current state, independent of the period.
@@ -315,8 +328,16 @@ export default function AdminDashboardPage() {
   const [salesError, setSalesError] = useState<string | null>(null);
   const [salesReloadKey, setSalesReloadKey] = useState(0);
 
+  // I3 (B14): low-stock KPI — loads and retries on its own, gated on
+  // inventory.view only (anyone who can see inventory can see this card;
+  // editing the thresholds it's based on needs inventory.manage instead).
+  const [lowStock, setLowStock] = useState<LowStockRow[] | null>(null);
+  const [lowStockError, setLowStockError] = useState<string | null>(null);
+  const [lowStockReloadKey, setLowStockReloadKey] = useState(0);
+
   const canViewPurchases = user?.permissions.includes("purchases.manage") ?? false;
   const canViewSales = user?.permissions.includes("sales.view") ?? false;
+  const canViewInventory = user?.permissions.includes("inventory.view") ?? false;
   const customIncomplete = period === "custom" && (!customFrom || !customTo);
   const customReversed = period === "custom" && !!customFrom && !!customTo && customFrom > customTo;
   const rangeInvalid = customIncomplete || customReversed;
@@ -420,6 +441,27 @@ export default function AdminDashboardPage() {
       cancelled = true;
     };
   }, [canViewPurchases, openItemsReloadKey]);
+
+  useEffect(() => {
+    if (!canViewInventory) return;
+    let cancelled = false;
+    async function loadLowStock() {
+      setLowStockError(null);
+      try {
+        const data = await apiFetch<LowStockRow[]>("/dashboard/low-stock-summary");
+        if (!cancelled) setLowStock(data);
+      } catch (reason) {
+        if (!cancelled) {
+          setLowStock(null);
+          setLowStockError((reason as ApiError).message ?? "دریافت وضعیت کمبود موجودی ناموفق بود.");
+        }
+      }
+    }
+    void loadLowStock();
+    return () => {
+      cancelled = true;
+    };
+  }, [canViewInventory, lowStockReloadKey]);
 
   if (!user) return null;
 
@@ -819,11 +861,48 @@ export default function AdminDashboardPage() {
           </div>
         </section>
 
-        {visibleKpis.length > 0 ? <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4" aria-label="شاخص‌های کلیدی">
+        {visibleKpis.length > 0 || canViewInventory ? <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4" aria-label="شاخص‌های کلیدی">
           {visibleKpis.map((kpi) => {
             const KpiIcon = kpi.icon;
             return <Card key={kpi.key} size="sm"><CardContent className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="text-sm text-muted-foreground">{kpi.label}</p>{renderKpiBody(kpi.key)}</div><span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-accent text-accent-foreground"><KpiIcon className="size-4" /></span></CardContent></Card>;
           })}
+          {canViewInventory ? (
+            <Card size="sm" className="cursor-pointer transition-colors hover:bg-muted/40" onClick={() => router.push("/inventory/reports/low-stock")}>
+              <CardContent className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-sm text-muted-foreground">کمبود موجودی</p>
+                  {lowStockError ? (
+                    <button
+                      type="button"
+                      className="mt-3 block text-sm font-medium text-destructive underline-offset-2 hover:underline"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setLowStockReloadKey((key) => key + 1);
+                      }}
+                    >
+                      {lowStockError} (تلاش دوباره)
+                    </button>
+                  ) : lowStock === null ? (
+                    <p className="mt-3 text-sm text-muted-foreground">در حال بارگذاری...</p>
+                  ) : (
+                    <>
+                      <p className={`mt-2 text-xl font-semibold tabular-nums tracking-tight ${lowStock.length > 0 ? "text-destructive" : ""}`}>
+                        {toPersianDigits(lowStock.length)}
+                      </p>
+                      <p className="mt-1 truncate text-xs text-muted-foreground">
+                        {lowStock.length === 0
+                          ? "همه کالاها بالای آستانه تعیین‌شده هستند"
+                          : `کالا زیر آستانه — مثلاً ${lowStock[0].item.name}`}
+                      </p>
+                    </>
+                  )}
+                </div>
+                <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-accent text-accent-foreground">
+                  <TriangleAlert className="size-4" />
+                </span>
+              </CardContent>
+            </Card>
+          ) : null}
         </section> : null}
 
         {canViewTransactions ? <section className="grid gap-6 xl:grid-cols-[minmax(0,1.6fr)_minmax(20rem,1fr)]">

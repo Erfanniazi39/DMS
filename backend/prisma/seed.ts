@@ -6,7 +6,10 @@ const prisma = new PrismaClient();
 
 // SALESPERSON / WAREHOUSE / ACCOUNTANT added in Sales batch 1 (2026-10-06):
 // separation of duties — no single person should sell, deliver, and collect.
-const ROLES = ['ADMIN', 'DATA_OPERATOR', 'PURCHASE_MANAGER', 'SALES_MANAGER', 'VIEWER', 'SALESPERSON', 'WAREHOUSE', 'ACCOUNTANT'] as const;
+// INVENTORY_MANAGER added in Inventory batch I2 (2026-10-10, B20): the only
+// role holding inventory.approve — WAREHOUSE creates/submits but never
+// approves its own stock adjustments.
+const ROLES = ['ADMIN', 'DATA_OPERATOR', 'PURCHASE_MANAGER', 'SALES_MANAGER', 'VIEWER', 'SALESPERSON', 'WAREHOUSE', 'ACCOUNTANT', 'INVENTORY_MANAGER'] as const;
 
 // Single warehouse for now (business decision 2026-10-06) — the default
 // InventoryLocation that stock adjustments post to when no location is given.
@@ -92,6 +95,21 @@ const PERMISSIONS = [
   'receivables.manage',
   'inventory.view',
   'inventory.adjust',
+  // I2 (2026-10-10, B10/B20): approve/reject a PENDING_APPROVAL stock
+  // adjustment — INVENTORY_MANAGER only, never WAREHOUSE.
+  'inventory.approve',
+  // I3 (2026-10-10): locations, stock levels, item inventory settings, batch
+  // correction — admin-level inventory configuration. Keep in sync with
+  // PERMISSION_CATALOG in src/access/access.service.ts.
+  'inventory.manage',
+  // I5 (2026-10-11): inbound stock documents (goods receipts + QC release,
+  // production output) / unit costs (B15 — never granted to Sales roles).
+  // Keep in sync with PERMISSION_CATALOG in src/access/access.service.ts.
+  'inventory.receive',
+  'inventory.cost',
+  // I6 (2026-10-11, B13): stock counts. Keep in sync with PERMISSION_CATALOG
+  // in src/access/access.service.ts.
+  'inventory.count',
   'documents.upload',
   'reports.view',
 ] as const;
@@ -141,8 +159,25 @@ async function main() {
     VIEWER: ['reports.view'],
     // New roles, Sales batch 1 (2026-10-06).
     SALESPERSON: ['sales.view', 'sales.manage', 'customers.view', 'items.view', 'inventory.view'],
-    WAREHOUSE: ['sales.view', 'sales.deliver', 'inventory.view', 'inventory.adjust'],
+    // I6 (2026-10-11, B13 — flagged for confirmation): + inventory.count.
+    // Mirrors the existing inventory.adjust/inventory.approve split exactly
+    // — WAREHOUSE does the physical counting (create/start/enter/submit),
+    // INVENTORY_MANAGER approves the variances. Never inventory.approve.
+    WAREHOUSE: ['sales.view', 'sales.deliver', 'inventory.view', 'inventory.adjust', 'inventory.count'],
     ACCOUNTANT: ['sales.view', 'sales.invoice', 'receivables.view', 'receivables.manage', 'customers.finance'],
+    // I2 (2026-10-10, B20): a manager-level superset of WAREHOUSE that can
+    // also approve/reject — the only role with inventory.approve.
+    // I3 (2026-10-10): + inventory.manage — editing stock levels (and the
+    // integrity check) is manager-level config, not something WAREHOUSE gets.
+    // I5 (2026-10-11): + inventory.receive (goods receipts, QC release,
+    // production output). NOT inventory.cost — only ADMIN holds it until the
+    // business owner decides which role(s) see/enter costs (B15).
+    // I6 (2026-10-11, B13 — flagged for confirmation, same as I5's grants):
+    // + inventory.count. INVENTORY_MANAGER already holds inventory.approve,
+    // so it both runs counts and approves their variances — fine today with
+    // one inventory role, but no-self-approval (B10's rule, reused for
+    // counts) still refuses approving a count the same user submitted.
+    INVENTORY_MANAGER: ['inventory.view', 'inventory.adjust', 'inventory.approve', 'inventory.manage', 'inventory.receive', 'inventory.count'],
   } as const;
 
   // The grants above are upserted (additive) — that alone can never take a
