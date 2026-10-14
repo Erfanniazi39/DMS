@@ -48,6 +48,13 @@ const PurchaseTrendChart = dynamic(() => import("./PurchaseTrendChart"), {
   loading: () => <SectionMessage message="در حال بارگذاری نمودار..." />,
 });
 
+const TradeComparisonChart = dynamic(() => import("./TradeComparisonChart"), {
+  ssr: false,
+  loading: () => <SectionMessage message="در حال بارگذاری نمودار..." />,
+});
+
+const COMPARE_METRIC = "مقایسه خرید و فروش";
+
 type PeriodKey = "today" | "week" | "month" | "custom";
 
 const periodOptions: { key: PeriodKey; label: string }[] = [
@@ -467,7 +474,8 @@ export default function AdminDashboardPage() {
 
   const canViewTransactions = canViewPurchases || canViewSales;
   const visibleKpis = kpis.filter((kpi) => user.permissions.includes(kpi.permission));
-  const activeChartMetric = chartMetric === "خریدها" && !canViewPurchases ? "فروش‌ها" : chartMetric;
+  const canCompare = canViewPurchases && canViewSales;
+  const activeChartMetric = chartMetric === COMPARE_METRIC && !canCompare ? "خریدها" : chartMetric === "خریدها" && !canViewPurchases ? "فروش‌ها" : chartMetric;
   const periodLabel = periodOptions.find((option) => option.key === period)?.label ?? "";
   // Either summary carries the same echoed period/from/to — whichever one
   // has actually loaded (a sales.view-only user without purchases.manage
@@ -545,6 +553,13 @@ export default function AdminDashboardPage() {
   }
 
   function renderTrend() {
+    if (activeChartMetric === COMPARE_METRIC) {
+      const failure = error && !rangeInvalid ? error : salesError && !rangeInvalid ? salesError : null;
+      if (failure) return <ErrorState message={failure} onRetry={() => { retry(); retrySales(); }} />;
+      if (pendingMessage || salesPendingMessage || !summary || !salesSummary) return <SectionMessage message={pendingMessage ?? salesPendingMessage ?? ""} />;
+      if (summary.totals.purchaseCount === 0 && salesSummary.totals.salesCount === 0) return <EmptyState message="در این بازه خرید یا فروشی ثبت نشده است." />;
+      return <TradeComparisonChart purchases={summary.trend} sales={salesSummary.trend} bucket={summary.period.bucket} />;
+    }
     if (activeChartMetric === "فروش‌ها") {
       if (salesError && !rangeInvalid) return <ErrorState message={salesError} onRetry={retrySales} />;
       if (salesPendingMessage || !salesSummary) return <SectionMessage message={salesPendingMessage ?? ""} />;
@@ -556,6 +571,7 @@ export default function AdminDashboardPage() {
           seriesLabel="مبلغ فروش"
           countLabel="فاکتور"
           ariaLabel="نمودار مبلغ فروش در بازه انتخاب‌شده"
+          tone="sales"
         />
       );
     }
@@ -576,9 +592,12 @@ export default function AdminDashboardPage() {
     return (
       <ul className="divide-y divide-border text-sm">
         {activity.entries.map((entry) => {
-          const href = entry.entityNumber && entry.entityId
-            ? `/admin/${entry.entityType === "Purchase" ? "purchases" : "purchase-requests"}/${entry.entityId}`
-            : null;
+          // A deleted record no longer has a page; its saved snapshot (admins only) does.
+          const href = entry.action.endsWith("_DELETED") && entry.entityId && user?.permissions.includes("users.create")
+            ? `/admin/deleted-records?entityType=${entry.entityType}&entityId=${entry.entityId}`
+            : entry.entityNumber && entry.entityId
+              ? `/admin/${entry.entityType === "Purchase" ? "purchases" : "purchase-requests"}/${entry.entityId}`
+              : null;
           const line = (
             <>
               <span className="min-w-0 flex-1 truncate">
@@ -907,7 +926,7 @@ export default function AdminDashboardPage() {
 
         {canViewTransactions ? <section className="grid gap-6 xl:grid-cols-[minmax(0,1.6fr)_minmax(20rem,1fr)]">
           <Card>
-            <CardHeader className="border-b border-border"><div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center"><div><CardTitle>روند خرید و فروش</CardTitle><p className="mt-1 text-sm text-muted-foreground">گزارش دوره: {periodDescription}{(activeChartMetric === "خریدها" ? summary?.period.bucket : salesSummary?.period.bucket) === "week" ? " (هفتگی)" : ""}</p></div><select className="h-8 rounded-lg border border-input bg-background px-2.5 text-sm outline-none focus:border-ring focus:ring-3 focus:ring-ring/20" value={activeChartMetric} onChange={(event) => setChartMetric(event.target.value)}>{canViewPurchases ? <option>خریدها</option> : null}{canViewSales ? <option>فروش‌ها</option> : null}</select></div></CardHeader>
+            <CardHeader className="border-b border-border"><div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center"><div><CardTitle>روند خرید و فروش</CardTitle><p className="mt-1 text-sm text-muted-foreground">گزارش دوره: {periodDescription}{(activeChartMetric === "فروش‌ها" ? salesSummary?.period.bucket : summary?.period.bucket) === "week" ? " (هفتگی)" : ""}</p></div><select className="h-8 rounded-lg border border-input bg-background px-2.5 text-sm outline-none focus:border-ring focus:ring-3 focus:ring-ring/20" value={activeChartMetric} onChange={(event) => setChartMetric(event.target.value)}>{canViewPurchases ? <option>خریدها</option> : null}{canViewSales ? <option>فروش‌ها</option> : null}{canCompare ? <option>{COMPARE_METRIC}</option> : null}</select></div></CardHeader>
             <CardContent className="pt-4">{renderTrend()}</CardContent>
           </Card>
           <Card><CardHeader className="border-b border-border"><CardTitle>فعالیت‌های اخیر</CardTitle></CardHeader><CardContent className="pt-4">{renderActivity()}</CardContent></Card>

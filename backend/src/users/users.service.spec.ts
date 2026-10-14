@@ -11,7 +11,7 @@ function createPrismaMock() {
 describe('UsersService', () => {
   it('creates a user without referencing or creating an employee', async () => {
     const prisma = createPrismaMock();
-    const service = new UsersService(prisma as never);
+    const service = new UsersService(prisma as never, { log: jest.fn() } as never);
     (prisma as any).user.findUnique.mockResolvedValue(null);
     (prisma as any).role.findUnique.mockResolvedValue({ id: 1, name: 'VIEWER' });
     (prisma as any).user.create.mockResolvedValue({
@@ -38,7 +38,7 @@ describe('UsersService', () => {
 
   it('rejects a duplicate username without creating a user', async () => {
     const prisma = createPrismaMock();
-    const service = new UsersService(prisma as never);
+    const service = new UsersService(prisma as never, { log: jest.fn() } as never);
     (prisma as any).user.findUnique.mockResolvedValue({ id: 1 });
 
     await expect(
@@ -49,7 +49,7 @@ describe('UsersService', () => {
 
   it('lists users without any employee data', async () => {
     const prisma = createPrismaMock();
-    const service = new UsersService(prisma as never);
+    const service = new UsersService(prisma as never, { log: jest.fn() } as never);
     (prisma as any).user.findMany.mockResolvedValue([
       {
         id: 1,

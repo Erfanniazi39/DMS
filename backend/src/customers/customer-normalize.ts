@@ -1,4 +1,5 @@
 import { Prisma } from '@prisma/client';
+import { toAsciiDigits } from '../common/persian-text';
 
 // Persian text normalization for customer search and duplicate detection.
 // Users type the same name several ways: Arabic ي/ك vs Persian ی/ک, a
@@ -9,17 +10,11 @@ import { Prisma } from '@prisma/client';
 
 const ARABIC_YEH = /ي/g; // ي
 const ARABIC_KAF = /ك/g; // ك
-const PERSIAN_DIGITS = /[۰-۹]/g; // ۰-۹
-const ARABIC_INDIC_DIGITS = /[٠-٩]/g; // ٠-٩
 const ZWNJ = /‌/g;
 
-// Persian/Arabic-Indic digits -> ASCII. Used on numeric identifiers
-// (phone, national id, economic code) before validation and storage.
-export function toAsciiDigits(value: string): string {
-  return value
-    .replace(PERSIAN_DIGITS, (digit) => String(digit.charCodeAt(0) - 0x06f0))
-    .replace(ARABIC_INDIC_DIGITS, (digit) => String(digit.charCodeAt(0) - 0x0660));
-}
+// Persian/Arabic digits -> ASCII lives in common/ (shared with Suppliers);
+// re-exported so existing imports keep working.
+export { toAsciiDigits };
 
 // ي→ی, ك→ک, digits→ASCII, ZWNJ→space, runs of whitespace collapsed, trimmed.
 export function normalizePersianText(value: string): string {

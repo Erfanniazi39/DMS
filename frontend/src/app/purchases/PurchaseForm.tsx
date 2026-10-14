@@ -11,6 +11,7 @@ import { Label } from "@/components/ui/label";
 import { JalaliDateInput } from "@/components/ui/jalali-date-input";
 import { useToasts, ToastViewport } from "@/components/ui/toast";
 import { apiFetch, apiUpload, type ApiError } from "@/lib/api";
+import { fillSuggestedCode } from "@/lib/suggested-code";
 import { parseNumberInput } from "@/lib/number-input";
 import { todayIso } from "@/lib/format";
 import { useAdminUser } from "@/app/admin/layout";
@@ -20,7 +21,6 @@ import {
   type PurchaseRequestStatus,
 } from "@/app/purchase-requests/shared";
 import {
-  PURCHASE_SOURCE_TYPES,
   RequiredMark,
   StatusBadge,
   purchasePaymentStatusLabels,
@@ -45,6 +45,7 @@ import { FormSection } from "./_form/FormSection";
 import { ItemsGrid, emptyItemRow, type ItemFormRow } from "./_form/ItemsGrid";
 import { StagedDocuments, type StagedDocument } from "./_form/StagedDocuments";
 import { RequestPicker } from "./_form/RequestPicker";
+import { SupplierPanel } from "./_form/SupplierPanel";
 
 // Sort order for the "درخواست خرید مرتبط" picker — requests it actually
 // makes sense to buy against (APPROVED/PARTIALLY_PURCHASED) float to the
@@ -379,18 +380,6 @@ export function PurchaseForm(props: Props) {
     setForm((current) => ({ ...current, [key]: value }));
   }
 
-  // "درخواست خرید مرتبط" only applies to an OPERATIONAL purchase — a
-  // HISTORICAL_IMPORT is an old paper record and is never part of the
-  // Purchase Request workflow. Switching to historical clears any request
-  // already picked, so a now-hidden value is never silently submitted.
-  function changeSourceType(sourceType: PurchaseSourceType) {
-    setForm((current) => ({
-      ...current,
-      sourceType,
-      purchaseRequestId: sourceType === "OPERATIONAL" ? current.purchaseRequestId : "",
-    }));
-  }
-
   // Manually picking a request here (as opposed to arriving via the
   // Purchase Request detail page's "ثبت خرید"/"ایجاد خرید" actions, which
   // already pre-fill through the ?prefill= flow above) should have the same
@@ -531,6 +520,7 @@ export function PurchaseForm(props: Props) {
 
   function openTypeDialog() {
     setTypeForm({ code: "", nameFa: "", nameEn: "" });
+    fillSuggestedCode("/purchase-types/next-code", (code) => setTypeForm((current) => (current.code === "" ? { ...current, code } : current)));
     setTypeDialogOpen(true);
   }
 
@@ -667,7 +657,7 @@ export function PurchaseForm(props: Props) {
           "برای افزودن تأمین‌کننده جدید به صفحه تأمین‌کنندگان منتقل می‌شوید و اطلاعات واردشده در این فرم ذخیره نخواهد شد. ادامه می‌دهید؟",
         )
       ) {
-        router.push("/suppliers");
+        router.push("/suppliers/new");
       } else {
         // The <select> is controlled, but the browser already moved its DOM
         // selection to "__new__" before onChange fired. Re-set the same
@@ -677,8 +667,20 @@ export function PurchaseForm(props: Props) {
       }
       return;
     }
+    // The supplier's own purchase type fills the type field: exactly one →
+    // set it; several → the user picks (hint below the field). A request-linked
+    // purchase keeps the request's type.
+    const supplierTypes = (suppliers.find((supplier) => String(supplier.id) === value)?.purchaseTypes ?? []).filter((type) => type.isActive);
+    if (supplierTypes.length === 1 && !form.purchaseRequestId) {
+      setForm((current) => ({ ...current, supplierId: value, purchaseTypeId: String(supplierTypes[0].id) }));
+      return;
+    }
     update("supplierId", value);
   }
+
+  // Several purchase types on the chosen supplier: list them next to the field.
+  const supplierTypeNames = (suppliers.find((supplier) => String(supplier.id) === form.supplierId)?.purchaseTypes ?? []).filter((type) => type.isActive).map((type) => type.nameFa);
+  const supplierTypeHint = supplierTypeNames.length > 1 ? `انواع خرید این تأمین‌کننده: ${supplierTypeNames.join("، ")}` : null;
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -858,21 +860,15 @@ export function PurchaseForm(props: Props) {
           {/* Section 1 — اطلاعات خرید */}
           <FormSection title="اطلاعات خرید">
             <div className="grid gap-x-3 gap-y-2.5 sm:grid-cols-2 lg:grid-cols-4">
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor="purchase-source-type">نوع ثبت</Label>
-                <select
-                  id="purchase-source-type"
-                  className={selectClass}
-                  value={form.sourceType}
-                  onChange={(event) => changeSourceType(event.target.value as PurchaseSourceType)}
-                >
-                  {PURCHASE_SOURCE_TYPES.map((sourceType) => (
-                    <option key={sourceType} value={sourceType}>
-                      {purchaseSourceTypeLabels[sourceType]}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              {/* «نوع ثبت» is no longer chosen here (owner, 2026-10-14): new purchases are always
+                  operational — past purchases are entered on /purchases/historical. Editing an
+                  already-historical purchase keeps its type, shown read-only. */}
+              {form.sourceType === "HISTORICAL_IMPORT" ? (
+                <div className="flex flex-col gap-1.5">
+                  <Label>نوع ثبت</Label>
+                  <p className="flex h-9 items-center text-sm">{purchaseSourceTypeLabels.HISTORICAL_IMPORT}</p>
+                </div>
+              ) : null}
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="purchase-date-year">تاریخ خرید<RequiredMark /></Label>
                 <JalaliDateInput idPrefix="purchase-date" value={form.purchaseDate} onChange={(value) => update("purchaseDate", value)} required />
@@ -898,6 +894,7 @@ export function PurchaseForm(props: Props) {
                     <Plus className="size-4" />
                   </Button>
                 </div>
+                {supplierTypeHint ? <p className="text-xs text-muted-foreground">{supplierTypeHint}</p> : null}
               </div>
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="purchase-supplier">تأمین‌کننده<RequiredMark /></Label>
@@ -971,6 +968,9 @@ export function PurchaseForm(props: Props) {
                   onCancelOverwrite={() => setPendingPurchaseRequestId(null)}
                 />
               ) : null}
+            </div>
+            <div className="mt-3 border-t border-border pt-2.5">
+              <SupplierPanel supplierId={form.supplierId && form.supplierId !== "__new__" ? Number(form.supplierId) : null} />
             </div>
             {form.sourceType === "HISTORICAL_IMPORT" ? (
               <p className="mt-2 text-xs text-muted-foreground">

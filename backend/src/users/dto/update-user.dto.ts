@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { emptyToUndefined, optionalEmail } from '../../common/zod-fields';
+import { usernameSchema } from './username';
 
 // Partial-update DTO for editing an existing USER account.
 // Every field is optional — the caller sends only what changed.
@@ -18,9 +19,12 @@ const optionalPhone = z.preprocess(
     .optional(),
 );
 
+const optionalFullName = z.preprocess(emptyToUndefined, z.string().trim().max(100, 'نام و نام خانوادگی حداکثر ۱۰۰ کاراکتر است').optional());
+
 export const updateUserSchema = z
   .object({
-    username: z.string().min(3, 'نام کاربری باید حداقل ۳ کاراکتر باشد').optional(),
+    fullName: optionalFullName,
+    username: usernameSchema.optional(),
     password: z.string().min(8, 'رمز عبور باید حداقل ۸ کاراکتر باشد').optional(),
     email: optionalEmail,
     phone: optionalPhone,

@@ -25,6 +25,8 @@ import {
   type StockCountScope,
   type StockCountStatus,
 } from "../shared";
+import { SortHeader, useTableSort } from "@/components/ui/sortable";
+import { sortQuery } from "@/lib/table-sort";
 
 const toolbarFieldLabel = "text-[11px] font-medium uppercase tracking-wide text-muted-foreground";
 const toolbarSelectClass = "h-8 rounded-md border border-input bg-background px-2 text-xs outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50";
@@ -48,6 +50,8 @@ export default function StockCountsPage() {
   const [error, setError] = useState<string | null>(null);
   const [filters, setFilters] = useState<Filters>(emptyFilters);
   const [page, setPage] = useState(1);
+  // Server-side column sorting (?sortBy=&sortDir=); a change returns to page 1.
+  const { sort, onSort } = useTableSort(null, () => setPage(1));
   const [total, setTotal] = useState(0);
   const [reloadKey, setReloadKey] = useState(0);
   const lastQueryRef = useRef(filters.q);
@@ -72,7 +76,7 @@ export default function StockCountsPage() {
         if (filters.locationId) params.set("locationId", filters.locationId);
         params.set("page", String(page));
         params.set("pageSize", String(LIST_PAGE_SIZE));
-        const data = await apiFetch<Paginated<StockCountListItem>>(`/inventory/stock-counts?${params.toString()}`);
+        const data = await apiFetch<Paginated<StockCountListItem>>(`/inventory/stock-counts?${params.toString()}${sortQuery(sort)}`);
         if (cancelled) return;
         if (data.items.length === 0 && data.total > 0 && page > 1) {
           setPage(totalPages(data.total, LIST_PAGE_SIZE));
@@ -94,7 +98,7 @@ export default function StockCountsPage() {
       cancelled = true;
       clearTimeout(timeout);
     };
-  }, [filters, page, reloadKey, canView]);
+  }, [filters, page, reloadKey, canView, sort]);
 
   function updateFilter<K extends keyof Filters>(key: K, value: Filters[K]) {
     setFilters((current) => ({ ...current, [key]: value }));
@@ -203,14 +207,14 @@ export default function StockCountsPage() {
               <table className="w-full text-right text-sm">
                 <thead className="bg-muted/40 text-xs text-muted-foreground">
                   <tr>
-                    <th className="px-3 py-2.5 font-medium">شماره سند</th>
-                    <th className="px-3 py-2.5 font-medium">تاریخ شمارش</th>
-                    <th className="px-3 py-2.5 font-medium">نوع شمارش</th>
-                    <th className="px-3 py-2.5 font-medium">کور؟</th>
-                    <th className="px-3 py-2.5 font-medium">انبار</th>
+                    <SortHeader label="شماره سند" sortKey="countNumber" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="تاریخ شمارش" sortKey="countDate" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="نوع شمارش" sortKey="scope" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="کور؟" sortKey="isBlind" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="انبار" sortKey="location" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
                     <th className="px-3 py-2.5 font-medium">ردیف</th>
-                    <th className="px-3 py-2.5 font-medium">ثبت‌کننده</th>
-                    <th className="px-3 py-2.5 font-medium">وضعیت</th>
+                    <SortHeader label="ثبت‌کننده" sortKey="createdBy" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="وضعیت" sortKey="status" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
                     {canCount ? <th className="px-3 py-2.5 font-medium">عملیات</th> : null}
                   </tr>
                 </thead>

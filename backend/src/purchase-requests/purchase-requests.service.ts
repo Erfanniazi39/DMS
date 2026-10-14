@@ -1,7 +1,7 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma, PurchaseRequestPriority, PurchaseRequestStatus } from '@prisma/client';
 import { randomUUID } from 'crypto';
-import { toSkipTake, type PaginationParams } from '../common/pagination';
+import { toSkipTake, type PaginationParams, buildOrderBy, type SortParams } from '../common/pagination';
 import { PrismaService } from '../prisma/prisma.service';
 import { ACTIVE_DEPARTMENT_STATUS } from '../departments/department-rules';
 import { ensureActiveUnits } from '../units/unit-rules';
@@ -18,6 +18,7 @@ export type PurchaseRequestListFilters = {
   status?: string;
   priority?: string;
   requesterDepartmentId?: number;
+  sort?: SortParams;
 };
 
 // Everything the detail page needs — same "one shared include, list() uses
@@ -67,6 +68,16 @@ function toItemData(item: IncomingItem) {
   };
 }
 
+// Columns the purchase-requests table can be sorted by.
+const PURCHASE_REQUEST_SORT_COLUMNS: Record<string, (dir: 'asc' | 'desc') => Prisma.PurchaseRequestOrderByWithRelationInput> = {
+  requestDate: (dir) => ({ requestDate: dir }),
+  requestNumber: (dir) => ({ requestNumber: dir }),
+  department: (dir) => ({ requesterDepartment: { name: dir } }),
+  requestedBy: (dir) => ({ requestedByEmployee: { lastName: dir } }),
+  priority: (dir) => ({ priority: dir }),
+  status: (dir) => ({ status: dir }),
+};
+
 @Injectable()
 export class PurchaseRequestsService {
   constructor(
@@ -98,7 +109,7 @@ export class PurchaseRequestsService {
 
     const query = {
       where,
-      orderBy: [{ requestDate: 'desc' }, { id: 'desc' }],
+      orderBy: buildOrderBy(filters.sort, PURCHASE_REQUEST_SORT_COLUMNS, [{ requestDate: 'desc' }, { id: 'desc' }], [{ id: 'desc' }]),
       include: {
         requesterDepartment: { select: { id: true, code: true, name: true } },
         requestedByEmployee: { select: { id: true, firstName: true, lastName: true } },

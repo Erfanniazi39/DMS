@@ -11,6 +11,7 @@ import { RequiredMark, selectClass, textareaClass } from "@/components/ui/form-f
 import { useToasts, ToastViewport } from "@/components/ui/toast";
 import { apiFetch, type ApiError } from "@/lib/api";
 import { parseNumberInput } from "@/lib/number-input";
+import { useFeature, useSessionUser } from "@/lib/session";
 import { todayIso } from "@/lib/format";
 import {
   INBOUND_ONLY_KINDS,
@@ -73,6 +74,11 @@ export function StockAdjustmentForm(props: Props) {
   const adjustmentId = props.mode === "edit" ? props.adjustmentId : null;
 
   const [form, setForm] = useState<FormState>(emptyForm);
+  const batchTrackingOn = useFeature("inventoryBatchTracking");
+  const approvalWorkflowOn = useFeature("inventoryApprovalWorkflow");
+  const canApprove = useSessionUser()?.permissions.includes("inventory.approve") ?? false;
+  // BATCH_CUTOVER is hidden in v1 (kept only when editing an existing draft of it).
+  const kindOptions = STOCK_ADJUSTMENT_KINDS.filter((kind) => kind !== "BATCH_CUTOVER" || batchTrackingOn || form.kind === "BATCH_CUTOVER");
   const locationSearch = useSyncExternalStore(subscribeToNothing, readLocationSearch, readServerLocationSearch);
   const [prefillApplied, setPrefillApplied] = useState(false);
   if (!prefillApplied && locationSearch !== null && props.mode === "create") {
@@ -80,7 +86,7 @@ export function StockAdjustmentForm(props: Props) {
     const params = new URLSearchParams(locationSearch);
     const kind = params.get("kind");
     const itemId = params.get("itemId");
-    if (kind && (STOCK_ADJUSTMENT_KINDS as string[]).includes(kind)) {
+    if (kind && (STOCK_ADJUSTMENT_KINDS as string[]).includes(kind) && (kind !== "BATCH_CUTOVER" || batchTrackingOn)) {
       setForm((current) => ({ ...current, kind: kind as StockAdjustmentKind, lines: [emptyLineRow(itemId && /^\d+$/.test(itemId) ? itemId : "")] }));
     }
   }
@@ -370,7 +376,7 @@ export function StockAdjustmentForm(props: Props) {
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="adjustment-kind">نوع سند<RequiredMark /></Label>
                 <select id="adjustment-kind" className={selectClass} value={form.kind} onChange={(event) => changeKind(event.target.value as StockAdjustmentKind)}>
-                  {STOCK_ADJUSTMENT_KINDS.map((kind) => (
+                  {kindOptions.map((kind) => (
                     <option key={kind} value={kind}>{stockAdjustmentKindLabels[kind]}</option>
                   ))}
                 </select>
@@ -403,7 +409,11 @@ export function StockAdjustmentForm(props: Props) {
             <p className="mt-2 text-xs text-muted-foreground">{stockAdjustmentKindHints[form.kind]}</p>
             {needsApproval ? (
               <p className="mt-1 text-xs text-warning">
-                این سند پس از ذخیره باید برای تأیید ارسال شود (inventory.approve) — کاهش موجودی بدون تأیید کاربر دیگر ثبت نهایی نمی‌شود.
+                {approvalWorkflowOn || form.kind === "BATCH_CUTOVER"
+                  ? "این سند پس از ذخیره باید برای تأیید ارسال شود (inventory.approve) — کاهش موجودی بدون تأیید کاربر دیگر ثبت نهایی نمی‌شود."
+                  : canApprove
+                    ? "کاهش موجودی است — پس از ذخیره، ثبت نهایی آن با مجوز تأیید شما انجام می‌شود."
+                    : "کاهش موجودی است — ثبت نهایی این سند فقط توسط کاربر دارای مجوز «تأیید اسناد موجودی» ممکن است."}
               </p>
             ) : null}
           </FormSection>

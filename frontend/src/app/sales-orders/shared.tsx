@@ -211,15 +211,32 @@ export type CreditDetails = {
 export type SalesFormOptions = {
   location: { id: number; code: string; name: string };
   customers: { id: number; customerNumber: string; name: string; creditHold: boolean }[];
-  items: { id: number; code: string; name: string; sellingPrice: string | null; unit: { id: number; nameFa: string }; available: string }[];
+  items: { id: number; code: string; name: string; sellingPrice: string | null; categoryId: number; unit: { id: number; nameFa: string }; available: string }[];
   employees: { id: number; code: string; firstName: string; lastName: string }[];
+  categories: { id: number; nameFa: string }[];
 };
 
 export type SalesItemOption = SalesFormOptions["items"][number];
 
 // GET /sales-orders/customer-context/:customerId (sales.manage).
 export type CustomerContext = {
-  customer: { id: number; customerNumber: string; name: string; status: string; economicCode: string | null };
+  customer: {
+    id: number;
+    customerNumber: string;
+    name: string;
+    status: string;
+    economicCode: string | null;
+    customerKind: "INDIVIDUAL" | "ORGANIZATION";
+    title: string | null;
+    legalName: string | null;
+    registrationNumber: string | null;
+    phone: string;
+    phone2: string | null;
+    mobile: string | null;
+    email: string | null;
+    groupName: string | null;
+    primaryContact: { name: string; roleTitle: string | null; mobile: string | null; phone: string | null } | null;
+  };
   creditHold: boolean;
   paymentTerm: { id: number; nameFa: string; dueDays: number } | null;
   addresses: {

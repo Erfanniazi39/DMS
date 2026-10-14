@@ -52,7 +52,7 @@ Reaching CONFIRMED is one transaction:
 5. Reserve stock with `stock-ledger.ts` `reserveAvailable()`: per line, RESERVED += min(qty, onHand − reserved).
 6. Set `reservedQty`, mark CONFIRMED, write the audit row(s).
 
-If anything fails, nothing is kept, including the number. A stock shortfall is **not** a block: the response carries `backorders: [{ lineNo, itemId, itemName, quantity, reserved, shortfall }]`.
+If anything fails, nothing is kept, including the number. **Only with `DMS_FEATURE_SALES_BACKORDERS=false` is a stock shortfall a block** (default is backorders, as below) — 409 `INSUFFICIENT_STOCK` with `details.lines[{ lineNo, itemId, itemName, requested, available }]`, checked in `finalizeConfirm()` (binding, under row locks) and early at submit-for-approval (non-binding). The pre-v1 backorder behaviour (response carries `backorders: [{ lineNo, itemId, itemName, quantity, reserved, shortfall }]`, never a block) is dormant behind `DMS_FEATURE_SALES_BACKORDERS=true` (`common/feature-flags.ts`).
 
 Credit figures (limit, exposure) appear in errors and in `customerContext()` only for `sales.approve` or `customers.finance` holders.
 

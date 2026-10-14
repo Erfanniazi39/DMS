@@ -86,9 +86,10 @@ describe('CustomerGroupsService', () => {
     expect(prisma.customerGroup.update).not.toHaveBeenCalled();
   });
 
-  it('DTO: defaults isActive to true on create and requires sortOrder on update', () => {
+  it('DTO: defaults isActive on create; nameEn and sortOrder are optional', () => {
     expect(createCustomerGroupSchema.parse({ code: ' vip ', nameEn: 'VIP', nameFa: 'ویژه' })).toEqual({ code: 'vip', nameEn: 'VIP', nameFa: 'ویژه', isActive: true });
-    expect(updateCustomerGroupSchema.safeParse({ code: 'vip', nameEn: 'VIP', nameFa: 'ویژه', isActive: true }).success).toBe(false);
+    expect(createCustomerGroupSchema.parse({ code: 'vip', nameFa: 'ویژه' })).toEqual({ code: 'vip', nameEn: '', nameFa: 'ویژه', isActive: true });
+    expect(updateCustomerGroupSchema.safeParse({ code: 'vip', nameFa: 'ویژه', isActive: true }).success).toBe(true);
   });
 });
 

@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { RECORD_MODIFIED_CODE } from '../common/optimistic-lock';
 import { createStockAdjustmentSchema, rejectStockAdjustmentSchema, updateStockAdjustmentSchema } from './dto/inventory.dto';
@@ -305,12 +305,38 @@ describe('StockAdjustmentsService', () => {
       expect(db.state.sequences.size).toBe(0);
     });
 
-    it('post() also refuses a DRAFT document whose kind/net quantity needs approval (must submit() first)', async () => {
+    it('post() also refuses a DRAFT document whose kind/net quantity needs approval (must submit() first) — workflow flag on', async () => {
+      process.env.DMS_FEATURE_APPROVAL_WORKFLOW = 'true';
+      try {
+        const db = createInventoryDb();
+        mockDraft(db, writeOffDraft());
+        const service = buildStockAdjustmentsService(db);
+        await expect(service.post(7, VERSION, 3, undefined, { canApprove: true })).rejects.toBeInstanceOf(ConflictException);
+        expect(db.state.movements).toHaveLength(0);
+      } finally {
+        delete process.env.DMS_FEATURE_APPROVAL_WORKFLOW;
+      }
+    });
+
+    it('v1 (workflow flag off): an inventory.approve holder posts a WRITE_OFF directly, and the audit says so', async () => {
       const db = createInventoryDb();
+      seedStock(db, 1, 10);
       mockDraft(db, writeOffDraft());
-      const service = buildStockAdjustmentsService(db);
-      await expect(service.post(7, VERSION, 3)).rejects.toBeInstanceOf(ConflictException);
-      expect(db.state.movements).toHaveLength(0);
+      const posted = await buildStockAdjustmentsService(db).post(7, VERSION, 3, undefined, { canApprove: true });
+      expect(posted.status).toBe('POSTED');
+      expect(db.state.movements.filter((m: any) => m.movementType === 'WRITE_OFF')).toHaveLength(1);
+      expect(db.auditLog.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ action: 'STOCK_ADJUSTMENT_POSTED', details: expect.stringContaining('ثبت مستقیم با مجوز تأیید') }),
+      });
+    });
+
+    it('v1 (workflow flag off): without inventory.approve a WRITE_OFF is refused (403), nothing written, no number burned', async () => {
+      const db = createInventoryDb();
+      seedStock(db, 1, 10);
+      mockDraft(db, writeOffDraft());
+      await expect(buildStockAdjustmentsService(db).post(7, VERSION, 3)).rejects.toBeInstanceOf(ForbiddenException);
+      expect(db.state.movements).toHaveLength(1);
+      expect(db.state.sequences.size).toBe(0);
     });
 
     it('submit() refuses a DRAFT document that does NOT need approval (a plain RECEIPT)', async () => {
@@ -547,6 +573,14 @@ describe('StockAdjustmentsService', () => {
       seedStock(db, 1, 10);
       mockDraft(db, cutoverDraft());
       await expect(buildStockAdjustmentsService(db).post(7, VERSION, 3)).rejects.toBeInstanceOf(ConflictException);
+      expect(db.state.itemSettings.find((row) => row.itemId === 1)).toBeUndefined();
+    });
+
+    it('v1: even an inventory.approve holder cannot post BATCH_CUTOVER directly', async () => {
+      const db = createInventoryDb();
+      seedStock(db, 1, 10);
+      mockDraft(db, cutoverDraft());
+      await expect(buildStockAdjustmentsService(db).post(7, VERSION, 3, undefined, { canApprove: true })).rejects.toBeInstanceOf(ConflictException);
       expect(db.state.itemSettings.find((row) => row.itemId === 1)).toBeUndefined();
     });
   });

@@ -7,11 +7,29 @@
 
 import { createContext, useContext } from "react";
 
+// v1 scope switches from the backend (common/feature-flags.ts) — a hidden
+// feature's nav entries and routes disappear; its data stays.
+export type FeatureFlag =
+  | "salesBackorders"
+  | "inventoryApprovalWorkflow"
+  | "inventoryBatchTracking"
+  | "inventoryStockCounts"
+  | "inventoryDamagedAndReturns"
+  | "customerCreditLimit"
+  | "customerTerritories"
+  | "paymentTerms"
+  | "salesStockEffects";
+
 export type SessionUser = {
   id: number;
   username: string;
   permissions: string[];
+  features: Record<FeatureFlag, boolean>;
 };
+
+export function useFeature(flag: FeatureFlag) {
+  return useContext(SessionUserContext)?.features?.[flag] ?? false;
+}
 
 export const SessionUserContext = createContext<SessionUser | null>(null);
 

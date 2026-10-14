@@ -1,6 +1,9 @@
-import { Body, Controller, Get, Param, ParseIntPipe, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, HttpCode, Param, ParseIntPipe, Patch, Post, Query, Req, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import type { Request } from 'express';
-import { parsePagination } from '../common/pagination';
+import { memoryStorage } from 'multer';
+import { extname } from 'path';
+import { parsePagination, parseSort } from '../common/pagination';
 import { ZodValidationPipe } from '../common/zod-validation.pipe';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
@@ -8,6 +11,7 @@ import { SessionAuthGuard } from '../auth/guards/session-auth.guard';
 import { CustomerBalancesService } from './customer-balances.service';
 import { CustomerPaymentsService, type ReceivablesActor } from './customer-payments.service';
 import { PaymentAllocationsService } from './payment-allocations.service';
+import { CustomerPaymentDocumentsService, PAYMENT_DOCUMENT_EXTENSIONS } from './customer-payment-documents.service';
 import {
   allocatePaymentSchema,
   reverseAllocationSchema,
@@ -47,6 +51,7 @@ export class ReceivablesController {
     private readonly payments: CustomerPaymentsService,
     private readonly allocations: PaymentAllocationsService,
     private readonly balances: CustomerBalancesService,
+    private readonly documents: CustomerPaymentDocumentsService,
   ) {}
 
   // --- Payments (دریافت‌ها) ---------------------------------------------------
@@ -63,6 +68,7 @@ export class ReceivablesController {
         customerId: query.customerId,
         dateFrom: query.dateFrom,
         dateTo: query.dateTo,
+        sort: parseSort(query.sortBy, query.sortDir),
       },
       parsePagination(query.page, query.pageSize),
     );
@@ -117,12 +123,61 @@ export class ReceivablesController {
     return this.payments.bounceCheque(id, dto, actorOf(req));
   }
 
+  // --- Payment documents (مدارک) — transfer slip / cheque photo ---------------
+
+  @Get('payments/:id/documents')
+  @RequirePermissions('receivables.view')
+  listDocuments(@Param('id', ParseIntPipe) id: number) {
+    return this.documents.list(id);
+  }
+
+  // Multipart: field "file" (+ optional text field "note"). Held in memory
+  // (10 MB cap) so the service can check the content before anything is written.
+  @Post('payments/:id/documents')
+  @RequirePermissions('receivables.manage')
+  @UseInterceptors(
+    FileInterceptor('file', {
+      storage: memoryStorage(),
+      fileFilter: (_request, file, callback) => {
+        if (!PAYMENT_DOCUMENT_EXTENSIONS.has(extname(file.originalname).toLowerCase())) {
+          callback(new BadRequestException('فقط فایل PDF یا تصویر با فرمت jpg، jpeg یا png مجاز است'), false);
+          return;
+        }
+        callback(null, true);
+      },
+      limits: { fileSize: 10 * 1024 * 1024 },
+    }),
+  )
+  addDocument(@Param('id', ParseIntPipe) id: number, @Req() req: Request, @Body() body: { note?: string }, @UploadedFile() file?: Express.Multer.File) {
+    if (!file) throw new BadRequestException('فایلی ارسال نشده است');
+    return this.documents.add(id, { originalName: file.originalname, buffer: file.buffer }, typeof body?.note === 'string' ? body.note.slice(0, 500) : undefined, actorOf(req));
+  }
+
+  @Delete('payments/:id/documents/:documentId')
+  @HttpCode(204)
+  @RequirePermissions('receivables.manage')
+  async removeDocument(@Param('id', ParseIntPipe) id: number, @Param('documentId', ParseIntPipe) documentId: number, @Req() req: Request) {
+    await this.documents.remove(id, documentId, actorOf(req));
+  }
+
   // --- Allocations (تخصیص‌ها) -------------------------------------------------
 
   @Get('allocations/suggest')
   @RequirePermissions('receivables.manage')
   suggestAllocation(@Query(new ZodValidationPipe(suggestAllocationQuerySchema)) query: SuggestAllocationQuery) {
     return this.allocations.suggestAllocation(query.customerId, query.amount);
+  }
+
+  @Get('invoices/:invoiceId/allocations')
+  @RequirePermissions('receivables.view')
+  invoiceAllocations(@Param('invoiceId', ParseIntPipe) invoiceId: number) {
+    return this.allocations.listForInvoice(invoiceId);
+  }
+
+  @Get('sales-orders/:salesOrderId/allocations')
+  @RequirePermissions('receivables.view')
+  salesOrderAllocations(@Param('salesOrderId', ParseIntPipe) salesOrderId: number) {
+    return this.allocations.listForSalesOrder(salesOrderId);
   }
 
   @Post('allocations')

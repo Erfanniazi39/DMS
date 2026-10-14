@@ -9,6 +9,10 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToasts, ToastViewport } from "@/components/ui/toast";
 import { apiFetch, type ApiError } from "@/lib/api";
+import { fillSuggestedCode } from "@/lib/suggested-code";
+import { SortHeader, useClientTable } from "@/components/ui/sortable";
+import { ListPagination } from "@/components/ui/list-pagination";
+import type { SortValue } from "@/lib/table-sort";
 
 type DepartmentStatus = "active" | "inactive";
 type Department = { id: number; code: string; name: string; status: DepartmentStatus; note: string | null };
@@ -28,6 +32,13 @@ type StatusFilter = "all" | DepartmentStatus;
 
 const emptyForm: FormState = { code: "", name: "", note: "", status: "active" };
 const statusLabels: Record<DepartmentStatus, string> = { active: "فعال", inactive: "غیرفعال" };
+
+// Accessors for in-memory column sorting — each sorts by what its column shows.
+const DEPARTMENTS_SORT_GETTERS: Record<string, (row: Department) => SortValue> = {
+  name: (row) => row.name,
+  code: (row) => row.code,
+  status: (row) => row.status === "active" ? "فعال" : "غیرفعال",
+};
 
 export default function DepartmentsPage() {
   const [departments, setDepartments] = useState<Department[]>([]);
@@ -94,6 +105,8 @@ export default function DepartmentsPage() {
       return matchesQuery && matchesStatus;
     });
   }, [departments, query, statusFilter]);
+  // Sort + page the (small, already loaded) rows in memory; click a header to sort.
+  const table = useClientTable(filteredDepartments, DEPARTMENTS_SORT_GETTERS, { pageSize: 20 });
 
   function update<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((current) => ({ ...current, [key]: value }));
@@ -102,6 +115,7 @@ export default function DepartmentsPage() {
   function openCreateForm() {
     setEditingId(null);
     setForm(emptyForm);
+    fillSuggestedCode("/departments/next-code", (code) => setForm((current) => (current.code === "" ? { ...current, code } : current)));
     setFormOpen(true);
   }
 
@@ -229,15 +243,15 @@ export default function DepartmentsPage() {
                 <table className="w-full min-w-[42rem] text-right text-sm">
                   <thead className="bg-muted/50 text-muted-foreground">
                     <tr>
-                      <th className="px-4 py-3 font-medium">نام دپارتمان</th>
-                      <th className="px-4 py-3 font-medium">کد</th>
+                      <SortHeader label="نام دپارتمان" sortKey="name" sort={table.sort} onSort={table.onSort} className="px-4 py-3 font-medium" />
+                      <SortHeader label="کد" sortKey="code" sort={table.sort} onSort={table.onSort} className="px-4 py-3 font-medium" />
                       <th className="px-4 py-3 font-medium">تعداد کارکنان</th>
-                      <th className="px-4 py-3 font-medium">وضعیت</th>
+                      <SortHeader label="وضعیت" sortKey="status" sort={table.sort} onSort={table.onSort} className="px-4 py-3 font-medium" />
                       <th className="px-4 py-3 font-medium">عملیات</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">
-                    {filteredDepartments.map((department) => {
+                    {table.pageRows.map((department) => {
                       const employeeCount = employeesByDepartment.get(department.id)?.length ?? 0;
                       return (
                         <tr
@@ -272,6 +286,7 @@ export default function DepartmentsPage() {
                 </table>
               </div>
             )}
+                {table.total > table.pageSize ? <ListPagination page={table.page} pageSize={table.pageSize} total={table.total} onPageChange={table.setPage} className="mt-3" /> : null}
           </CardContent>
         </Card>
       </div>

@@ -94,6 +94,9 @@ export const purchaseRequestListQuerySchema = z.object({
   requesterDepartmentId: optionalId('فیلتر دپارتمان نامعتبر است'),
   page: z.string({ error: 'شماره صفحه نامعتبر است' }).optional(),
   pageSize: z.string({ error: 'تعداد ردیف در هر صفحه نامعتبر است' }).optional(),
+  // Column sorting (?sortBy=&sortDir=) — see common/pagination.ts parseSort().
+  sortBy: z.string().optional(),
+  sortDir: z.string().optional(),
 });
 
 export type CreatePurchaseRequestDto = z.infer<typeof createPurchaseRequestSchema>;

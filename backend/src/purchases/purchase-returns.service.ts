@@ -4,6 +4,7 @@ import { randomUUID } from 'crypto';
 import { toIsoDay } from '../common/zod-fields';
 import { PrismaService } from '../prisma/prisma.service';
 import { AUDIT_ENTITY, AuditService } from '../audit/audit.service';
+import { archiveDeletedRecord } from '../audit/deleted-records';
 import { PURCHASE_STATUS_LABELS_FA, RETURNABLE_PURCHASE_STATUSES } from './purchase-rules';
 import type { CreatePurchaseReturnDto } from './dto/purchase.dto';
 
@@ -131,9 +132,12 @@ export class PurchaseReturnsService {
   // field needs recomputing here (returns never touched them in the first
   // place).
   async removeReturn(purchaseId: number, returnId: number, userId: number | null, ipAddress?: string) {
-    const purchaseReturn = await this.prisma.purchaseReturn.findFirst({ where: { id: returnId, purchaseId } });
+    const purchaseReturn = await this.prisma.purchaseReturn.findFirst({ where: { id: returnId, purchaseId }, include: { items: true } });
     if (!purchaseReturn) throw new NotFoundException('برگشت پیدا نشد');
-    await this.prisma.purchaseReturn.delete({ where: { id: returnId } });
+    await this.prisma.$transaction(async (tx) => {
+      await archiveDeletedRecord(tx, { entityType: 'PurchaseReturn', entityId: returnId, label: purchaseReturn.returnNumber, record: purchaseReturn, userId });
+      await tx.purchaseReturn.delete({ where: { id: returnId } });
+    });
     await this.audit.log({ userId, ipAddress, action: 'PURCHASE_RETURN_DELETED', entityType: AUDIT_ENTITY.PURCHASE, entityId: purchaseId, details: purchaseReturn.returnNumber });
     return { success: true };
   }

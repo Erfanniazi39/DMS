@@ -3,6 +3,7 @@
 import { Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { MoneyInput } from "@/components/ui/money-input";
 import { parseNumberInput } from "@/lib/number-input";
 import { RequiredMark, formatMoney, selectClass, type UnitOption } from "../shared";
 import { FormSection } from "./FormSection";
@@ -119,20 +120,18 @@ export function ItemsGrid({
                     </select>
                   </td>
                   <td className="px-2 py-1">
-                    <Input
+                    <MoneyInput
                       aria-label="قیمت واحد"
-                      inputMode="decimal"
                       placeholder="-"
                       value={item.unitPrice}
-                      onChange={(event) => updateItem(item.key, { unitPrice: event.target.value })}
+                      onChange={(value) => updateItem(item.key, { unitPrice: value })}
                     />
                   </td>
                   <td className="px-2 py-1">
-                    <Input
+                    <MoneyInput
                       aria-label="قیمت کل"
-                      inputMode="decimal"
                       value={item.totalPrice}
-                      onChange={(event) => updateItem(item.key, { totalPrice: event.target.value })}
+                      onChange={(value) => updateItem(item.key, { totalPrice: value })}
                     />
                   </td>
                   <td className="px-2 py-1">

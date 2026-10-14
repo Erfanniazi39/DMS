@@ -165,7 +165,9 @@ describe('PurchaseReturnsService', () => {
     prisma.purchaseReturn.findFirst.mockResolvedValueOnce({ id: 14, purchaseId: 8, returnNumber: 'RTN-000014' });
 
     await expect(service.removeReturn(8, 14, 9, '127.0.0.1')).resolves.toEqual({ success: true });
-    expect(prisma.purchaseReturn.findFirst).toHaveBeenCalledWith({ where: { id: 14, purchaseId: 8 } });
+    expect(prisma.purchaseReturn.findFirst).toHaveBeenCalledWith({ where: { id: 14, purchaseId: 8 }, include: { items: true } });
+    // The deleted return is snapshotted before it goes.
+    expect(prisma.deletedRecord.create).toHaveBeenCalledWith({ data: expect.objectContaining({ entityType: 'PurchaseReturn', entityId: 14, label: 'RTN-000014', deletedByUserId: 9 }) });
     expect(prisma.purchaseReturn.delete).toHaveBeenCalledWith({ where: { id: 14 } });
     expect(prisma.auditLog.create).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ action: 'PURCHASE_RETURN_DELETED', entityId: '8', details: 'RTN-000014' }) }),

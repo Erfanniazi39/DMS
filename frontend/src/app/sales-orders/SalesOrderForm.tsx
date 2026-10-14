@@ -148,7 +148,7 @@ export function SalesOrderForm(props: Props) {
           }
           for (const line of detail.items) {
             if (!merged.items.some((item) => item.id === line.itemId)) {
-              merged.items.push({ id: line.itemId, code: line.itemCode, name: line.itemName, sellingPrice: line.listUnitPrice, unit: { id: line.unitId, nameFa: line.unitName }, available: "0" });
+              merged.items.push({ id: line.itemId, code: line.itemCode, name: line.itemName, sellingPrice: line.listUnitPrice, categoryId: 0, unit: { id: line.unitId, nameFa: line.unitName }, available: "0" });
             }
           }
           if (detail.salespersonEmployee && !merged.employees.some((employee) => employee.id === detail.salespersonEmployee!.id)) {
@@ -223,6 +223,7 @@ export function SalesOrderForm(props: Props) {
     const problems: string[] = [];
     if (!form.orderDate) problems.push("تاریخ سفارش الزامی است.");
     if (!form.customerId) problems.push("مشتری را انتخاب کنید.");
+    if (form.requestedDeliveryDate && form.orderDate && form.requestedDeliveryDate < form.orderDate) problems.push("تاریخ تحویل درخواستی نمی‌تواند پیش از تاریخ سفارش باشد.");
     if (filledLines.length === 0) problems.push("حداقل یک ردیف کالا را وارد کنید.");
     filledLines.forEach((line, index) => {
       const row = `ردیف ${(index + 1).toLocaleString("fa-IR")}`;
@@ -349,7 +350,7 @@ export function SalesOrderForm(props: Props) {
             <div className="grid gap-x-3 gap-y-2.5 sm:grid-cols-2 lg:grid-cols-4">
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="order-date-year">تاریخ سفارش<RequiredMark /></Label>
-                <JalaliDateInput idPrefix="order-date" value={form.orderDate} onChange={(value) => update("orderDate", value)} required />
+                <JalaliDateInput idPrefix="order-date" value={form.orderDate} onChange={(value) => setForm((current) => ({ ...current, orderDate: value, requestedDeliveryDate: value && current.requestedDeliveryDate && current.requestedDeliveryDate < value ? "" : current.requestedDeliveryDate }))} required />
               </div>
               <div className="flex flex-col gap-1.5 sm:col-span-2">
                 <Label htmlFor="order-customer">مشتری<RequiredMark /></Label>
@@ -394,7 +395,7 @@ export function SalesOrderForm(props: Props) {
               </div>
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="order-requested-date-year">تاریخ تحویل درخواستی</Label>
-                <JalaliDateInput idPrefix="order-requested-date" value={form.requestedDeliveryDate} maxYear={JALALI_MAX_YEAR} onChange={(value) => update("requestedDeliveryDate", value)} />
+                <JalaliDateInput idPrefix="order-requested-date" value={form.requestedDeliveryDate} minDate={form.orderDate || undefined} maxYear={JALALI_MAX_YEAR} onChange={(value) => update("requestedDeliveryDate", value)} />
               </div>
             </div>
             <div className="mt-3 border-t border-border pt-2.5">
@@ -406,6 +407,7 @@ export function SalesOrderForm(props: Props) {
             lines={form.lines}
             setLines={(updateLines) => setForm((current) => ({ ...current, lines: updateLines(current.lines) }))}
             itemOptions={options.items}
+            categories={options.categories}
             listPriceFallback={listPriceFallback}
             canDiscount={canApprove}
             locationName={options.location.name}

@@ -1,4 +1,5 @@
 import { ConflictException, Injectable } from '@nestjs/common';
+import { suggestNextCode } from '../common/next-code';
 import { PrismaService } from '../prisma/prisma.service';
 import type { CreatePurchaseTypeDto } from './dto/purchase-type.dto';
 
@@ -15,6 +16,11 @@ export class PurchaseTypesService {
       where: { isActive: true },
       orderBy: { sortOrder: 'asc' },
     });
+  }
+
+  // The suggested code for the create form (PREFIX-000001, editable there).
+  nextCode() {
+    return suggestNextCode('PTY', (startsWith) => this.prisma.purchaseType.findMany({ where: { code: { startsWith } }, select: { code: true } }));
   }
 
   async create(dto: CreatePurchaseTypeDto) {

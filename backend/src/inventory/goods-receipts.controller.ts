@@ -1,7 +1,7 @@
 import { Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
 import { z } from 'zod';
-import { parsePagination } from '../common/pagination';
+import { parsePagination, parseSort } from '../common/pagination';
 import { requiredId } from '../common/zod-fields';
 import { ZodValidationPipe } from '../common/zod-validation.pipe';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
@@ -56,7 +56,7 @@ export class GoodsReceiptsController {
   @RequirePermissions('inventory.view')
   list(@Query(new ZodValidationPipe(goodsReceiptListQuerySchema)) query: GoodsReceiptListQuery) {
     return this.receiptsService.list(
-      { q: query.q?.trim() || undefined, status: query.status, supplierId: query.supplierId },
+      { q: query.q?.trim() || undefined, status: query.status, supplierId: query.supplierId, sort: parseSort(query.sortBy, query.sortDir) },
       parsePagination(query.page, query.pageSize),
     );
   }

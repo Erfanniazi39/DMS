@@ -2,9 +2,10 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException }
 import { Prisma, type StockCountStatus } from '@prisma/client';
 import { nextDocumentNumber } from '../common/document-sequence';
 import { isSameVersion, recordModifiedConflict } from '../common/optimistic-lock';
-import { toSkipTake, type PaginationParams } from '../common/pagination';
+import { toSkipTake, type PaginationParams, buildOrderBy, type SortParams } from '../common/pagination';
 import { PrismaService } from '../prisma/prisma.service';
 import { AUDIT_ENTITY, AuditService } from '../audit/audit.service';
+import { archiveDeletedRecord } from '../audit/deleted-records';
 import { InventoryService } from './inventory.service';
 import { CANCELLABLE_STOCK_COUNT_STATUSES, EDITABLE_STOCK_COUNT_STATUSES, STOCK_COUNT_DOC_TYPE } from './inventory-rules';
 import { applyMovements, type MovementInput } from './stock-ledger';
@@ -19,7 +20,7 @@ import type {
   UpdateStockCountDto,
 } from './dto/stock-count.dto';
 
-export type StockCountListFilters = { q?: string; status?: StockCountStatus; scope?: 'FULL' | 'PARTIAL'; locationId?: number };
+export type StockCountListFilters = { q?: string; status?: StockCountStatus; scope?: 'FULL' | 'PARTIAL'; locationId?: number; sort?: SortParams };
 
 // B13 (not yet confirmed by the business owner — the architect's documented
 // default was adopted so the batch could proceed; see
@@ -63,6 +64,17 @@ function maskBlindFields<T extends { status: string; isBlind: boolean; items: Re
     }),
   };
 }
+
+// Columns the stock-counts table can be sorted by (the line count is derived).
+const STOCK_COUNT_SORT_COLUMNS: Record<string, (dir: 'asc' | 'desc') => Prisma.StockCountOrderByWithRelationInput> = {
+  countNumber: (dir) => ({ countNumber: { sort: dir, nulls: 'last' } }),
+  countDate: (dir) => ({ countDate: dir }),
+  scope: (dir) => ({ scope: dir }),
+  isBlind: (dir) => ({ isBlind: dir }),
+  location: (dir) => ({ location: { name: dir } }),
+  createdBy: (dir) => ({ createdByUser: { username: dir } }),
+  status: (dir) => ({ status: dir }),
+};
 
 // Stock counts (شمارش موجودی) — Inventory batch I6, build plan §5.6/§6.
 // B13 (adopted the architect's documented default, NOT yet confirmed by the
@@ -120,7 +132,7 @@ export class StockCountsService {
         createdByUser: { select: { id: true, username: true } },
         _count: { select: { items: true } },
       },
-      orderBy: [{ countDate: 'desc' }, { id: 'desc' }],
+      orderBy: buildOrderBy(filters.sort, STOCK_COUNT_SORT_COLUMNS, [{ countDate: 'desc' }, { id: 'desc' }], [{ id: 'desc' }]),
     } satisfies Prisma.StockCountFindManyArgs;
 
     if (!pagination) return this.prisma.stockCount.findMany(query);
@@ -509,9 +521,10 @@ export class StockCountsService {
   async remove(id: number, userId: number | null, ipAddress?: string) {
     await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM stock_counts WHERE id = ${id} FOR UPDATE`;
-      const count = await tx.stockCount.findUnique({ where: { id }, select: { id: true, status: true, scope: true } });
+      const count = await tx.stockCount.findUnique({ where: { id }, include: { items: true } });
       if (!count) throw new NotFoundException('سند شمارش موجودی پیدا نشد');
       this.ensureEditable(count.status);
+      await archiveDeletedRecord(tx, { entityType: AUDIT_ENTITY.STOCK_COUNT, entityId: id, label: 'پیش‌نویس شمارش موجودی', record: count, userId });
       await tx.stockCount.delete({ where: { id } });
       await this.audit.log(
         { userId, ipAddress, action: 'STOCK_COUNT_DELETED', entityType: AUDIT_ENTITY.STOCK_COUNT, entityId: id, details: 'پیش‌نویس' },

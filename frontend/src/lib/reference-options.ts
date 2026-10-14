@@ -4,7 +4,8 @@
 
 export type PurchaseTypeOption = { id: number; code: string; nameFa: string; nameEn: string };
 export type UnitOption = { id: number; code: string; nameFa: string; nameEn: string };
-export type SupplierOption = { id: number; code: string; name: string; status: "active" | "inactive" | "blacklisted" };
+// purchaseTypes: the purchase types this supplier is used for (GET /suppliers) — drives the type auto-fill on the purchase form.
+export type SupplierOption = { id: number; code: string; name: string; status: "active" | "inactive" | "blacklisted"; purchaseTypes?: { id: number; nameFa: string; isActive: boolean }[] };
 export type DepartmentOption = { id: number; code: string; name: string; status: "active" | "inactive" };
 export type EmployeeOption = {
   id: number;

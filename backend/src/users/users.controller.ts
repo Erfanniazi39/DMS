@@ -6,9 +6,11 @@ import {
   ParseIntPipe,
   Patch,
   Post,
+  Req,
   UseGuards,
   UsePipes,
 } from '@nestjs/common';
+import type { Request } from 'express';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { SessionAuthGuard } from '../auth/guards/session-auth.guard';
@@ -27,8 +29,8 @@ export class UsersController {
   @Post()
   @RequirePermissions('users.create')
   @UsePipes(new ZodValidationPipe(createUserSchema))
-  create(@Body() dto: CreateUserDto) {
-    return this.usersService.create(dto);
+  create(@Body() dto: CreateUserDto, @Req() req: Request) {
+    return this.usersService.create(dto, req.session.userId ?? null, req.ip);
   }
 
   @Get()
@@ -37,12 +39,19 @@ export class UsersController {
     return this.usersService.list();
   }
 
+  @Get(':id')
+  @RequirePermissions('users.create')
+  get(@Param('id', ParseIntPipe) id: number) {
+    return this.usersService.get(id);
+  }
+
   @Patch(':id')
   @RequirePermissions('users.create')
   update(
     @Param('id', ParseIntPipe) id: number,
     @Body(new ZodValidationPipe(updateUserSchema)) dto: UpdateUserDto,
+    @Req() req: Request,
   ) {
-    return this.usersService.update(id, dto);
+    return this.usersService.update(id, dto, req.session.userId ?? null, req.ip);
   }
 }

@@ -3,6 +3,7 @@ import type { Request } from 'express';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { SessionAuthGuard } from '../auth/guards/session-auth.guard';
+import { RequireFeature } from '../common/feature-flags';
 import { ZodValidationPipe } from '../common/zod-validation.pipe';
 import { upsertInventoryItemSettingSchema, type UpsertInventoryItemSettingDto } from './dto/item-setting.dto';
 import {
@@ -73,12 +74,14 @@ export class InventoryAdminController {
 
   // I4 (build plan §5.4/§5.4a): per-item batch/expiry configuration.
   @Get('item-settings/:itemId')
+  @RequireFeature('inventoryBatchTracking')
   @RequirePermissions('inventory.manage')
   getItemSetting(@Param('itemId', ParseIntPipe) itemId: number) {
     return this.itemSettingsService.get(itemId);
   }
 
   @Put('item-settings/:itemId')
+  @RequireFeature('inventoryBatchTracking')
   @RequirePermissions('inventory.manage')
   upsertItemSetting(
     @Param('itemId', ParseIntPipe) itemId: number,

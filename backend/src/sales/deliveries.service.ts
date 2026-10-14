@@ -1,14 +1,32 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { Prisma, type SalesDocumentStatus } from '@prisma/client';
 import { nextDocumentNumber } from '../common/document-sequence';
-import { isSameVersion, recordModifiedConflict } from '../common/optimistic-lock';
-import { toSkipTake, type PaginationParams } from '../common/pagination';
+import {
+  isSameVersion,
+  recordModifiedConflict,
+} from '../common/optimistic-lock';
+import {
+  toSkipTake,
+  type PaginationParams,
+  buildOrderBy,
+  type SortParams,
+} from '../common/pagination';
 import { AUDIT_ENTITY, AuditService } from '../audit/audit.service';
+import { archiveDeletedRecord } from '../audit/deleted-records';
 import { getCustomerCreditPolicy } from '../customers/customer-rules';
 import { InventoryService } from '../inventory/inventory.service';
 import { issueForDelivery } from '../inventory/stock-ledger';
+import { isFeatureEnabled } from '../common/feature-flags';
 import { PrismaService } from '../prisma/prisma.service';
-import { applyDeliveredQuantities, recomputeOrderProgress } from './sales-progress';
+import {
+  applyDeliveredQuantities,
+  recomputeOrderProgress,
+} from './sales-progress';
 import {
   CUSTOMER_CREDIT_HOLD,
   DELIVERABLE_SALES_ORDER_STATUSES,
@@ -18,7 +36,12 @@ import {
   SALES_DOCUMENT_STATUS_LABELS_FA,
   SALES_ORDER_STATUS_LABELS_FA,
 } from './sales-rules';
-import type { CreateDeliveryDto, DeliveryItemDto, PostDeliveryDto, UpdateDeliveryDto } from './dto/delivery.dto';
+import type {
+  CreateDeliveryDto,
+  DeliveryItemDto,
+  PostDeliveryDto,
+  UpdateDeliveryDto,
+} from './dto/delivery.dto';
 
 export type DeliveryActor = { userId: number | null; ipAddress?: string };
 
@@ -29,6 +52,7 @@ export type DeliveryListFilters = {
   salesOrderId?: number;
   dateFrom?: Date;
   dateTo?: Date;
+  sort?: SortParams;
 };
 
 const userSelect = { select: { id: true, username: true } } as const;
@@ -80,11 +104,49 @@ type OrderForDelivery = {
   customerId: number;
   locationId: number;
   deliveryAddressText: string | null;
-  items: { id: number; lineNo: number; itemId: number; itemName: string; quantity: Prisma.Decimal; deliveredQty: Prisma.Decimal; reservedQty: Prisma.Decimal }[];
+  items: {
+    id: number;
+    lineNo: number;
+    itemId: number;
+    itemName: string;
+    quantity: Prisma.Decimal;
+    deliveredQty: Prisma.Decimal;
+    reservedQty: Prisma.Decimal;
+  }[];
 };
 
-const undelivered = (line: { quantity: Prisma.Decimal; deliveredQty: Prisma.Decimal }) =>
-  new Prisma.Decimal(line.quantity).minus(new Prisma.Decimal(line.deliveredQty));
+const undelivered = (line: {
+  quantity: Prisma.Decimal;
+  deliveredQty: Prisma.Decimal;
+}) =>
+  new Prisma.Decimal(line.quantity).minus(
+    new Prisma.Decimal(line.deliveredQty),
+  );
+
+// Columns of the posted-deliveries table / of the «awaiting delivery» queue.
+const DELIVERY_SORT_COLUMNS: Record<
+  string,
+  (dir: 'asc' | 'desc') => Prisma.DeliveryOrderByWithRelationInput
+> = {
+  deliveryNumber: (dir) => ({ deliveryNumber: dir }),
+  deliveryDate: (dir) => ({ deliveryDate: dir }),
+  order: (dir) => ({ salesOrder: { orderNumber: dir } }),
+  customer: (dir) => ({ salesOrder: { customerName: dir } }),
+  receivedBy: (dir) => ({ receivedByName: dir }),
+  status: (dir) => ({ status: dir }),
+};
+const DELIVERY_QUEUE_SORT_COLUMNS: Record<
+  string,
+  (dir: 'asc' | 'desc') => Prisma.SalesOrderOrderByWithRelationInput
+> = {
+  orderNumber: (dir) => ({ orderNumber: dir }),
+  orderDate: (dir) => ({ orderDate: dir }),
+  requestedDeliveryDate: (dir) => ({
+    requestedDeliveryDate: { sort: dir, nulls: 'last' },
+  }),
+  customer: (dir) => ({ customerName: dir }),
+  deliveryStatus: (dir) => ({ deliveryStatus: dir }),
+};
 
 // حواله تحویل — lifecycle per docs/sales-module-build-plan.md §5:
 //
@@ -123,8 +185,16 @@ export class DeliveriesService {
     if (filters.q) {
       where.OR = [
         { deliveryNumber: { contains: filters.q, mode: 'insensitive' } },
-        { salesOrder: { orderNumber: { contains: filters.q, mode: 'insensitive' } } },
-        { salesOrder: { customerName: { contains: filters.q, mode: 'insensitive' } } },
+        {
+          salesOrder: {
+            orderNumber: { contains: filters.q, mode: 'insensitive' },
+          },
+        },
+        {
+          salesOrder: {
+            customerName: { contains: filters.q, mode: 'insensitive' },
+          },
+        },
         { receivedByName: { contains: filters.q, mode: 'insensitive' } },
       ];
     }
@@ -139,9 +209,16 @@ export class DeliveriesService {
     }
     const query = {
       where,
-      orderBy: [{ deliveryDate: 'desc' }, { id: 'desc' }],
+      orderBy: buildOrderBy(
+        filters.sort,
+        DELIVERY_SORT_COLUMNS,
+        [{ deliveryDate: 'desc' }, { id: 'desc' }],
+        [{ id: 'desc' }],
+      ),
       include: {
-        salesOrder: { select: { id: true, orderNumber: true, customerName: true } },
+        salesOrder: {
+          select: { id: true, orderNumber: true, customerName: true },
+        },
         customer: { select: { id: true, customerNumber: true } },
         _count: { select: { items: true } },
       },
@@ -152,12 +229,17 @@ export class DeliveriesService {
       this.prisma.delivery.findMany({ ...query, ...toSkipTake(pagination) }),
       this.prisma.delivery.count({ where }),
     ]);
-    return { items, total, page: pagination.page, pageSize: pagination.pageSize };
+    return {
+      items,
+      total,
+      page: pagination.page,
+      pageSize: pagination.pageSize,
+    };
   }
 
   // Work queue: CONFIRMED orders with at least one line still to deliver
   // (deliveryStatus ≠ DELIVERED), oldest requested/ordered first.
-  async queue(q?: string, pagination?: PaginationParams) {
+  async queue(q?: string, pagination?: PaginationParams, sort?: SortParams) {
     const where: Prisma.SalesOrderWhereInput = {
       status: { in: DELIVERABLE_SALES_ORDER_STATUSES },
       deliveryStatus: { not: 'DELIVERED' },
@@ -171,7 +253,16 @@ export class DeliveriesService {
     }
     const query = {
       where,
-      orderBy: [{ requestedDeliveryDate: { sort: 'asc', nulls: 'last' } }, { orderDate: 'asc' }, { id: 'asc' }],
+      orderBy: buildOrderBy(
+        sort,
+        DELIVERY_QUEUE_SORT_COLUMNS,
+        [
+          { requestedDeliveryDate: { sort: 'asc', nulls: 'last' } },
+          { orderDate: 'asc' },
+          { id: 'asc' },
+        ],
+        [{ id: 'asc' }],
+      ),
       select: {
         id: true,
         orderNumber: true,
@@ -190,7 +281,8 @@ export class DeliveriesService {
       rows.map(({ items, _count, ...order }) => ({
         ...order,
         lineCount: items.length,
-        openLineCount: items.filter((line) => undelivered(line).greaterThan(0)).length,
+        openLineCount: items.filter((line) => undelivered(line).greaterThan(0))
+          .length,
         draftDeliveryCount: _count.deliveries,
       }));
 
@@ -199,11 +291,19 @@ export class DeliveriesService {
       this.prisma.salesOrder.findMany({ ...query, ...toSkipTake(pagination) }),
       this.prisma.salesOrder.count({ where }),
     ]);
-    return { items: shape(rows), total, page: pagination.page, pageSize: pagination.pageSize };
+    return {
+      items: shape(rows),
+      total,
+      page: pagination.page,
+      pageSize: pagination.pageSize,
+    };
   }
 
   async get(id: number) {
-    const delivery = await this.prisma.delivery.findUnique({ where: { id }, include: deliveryDetailInclude });
+    const delivery = await this.prisma.delivery.findUnique({
+      where: { id },
+      include: deliveryDetailInclude,
+    });
     if (!delivery) throw new NotFoundException('حواله تحویل پیدا نشد');
     return delivery;
   }
@@ -234,7 +334,9 @@ export class DeliveriesService {
       },
     });
     if (!order) throw new NotFoundException('سفارش فروش پیدا نشد');
-    const availability = await this.inventory.listAvailability(order.locationId);
+    const availability = await this.inventory.listAvailability(
+      order.locationId,
+    );
     const byItem = new Map(availability.map((row) => [row.itemId, row]));
     const zero = new Prisma.Decimal(0);
     return {
@@ -256,8 +358,14 @@ export class DeliveriesService {
 
     const requested =
       dto.items ??
-      order.items.filter((line) => undelivered(line).greaterThan(0)).map((line) => ({ salesOrderItemId: line.id, quantity: undelivered(line).toNumber() }));
-    if (requested.length === 0) throw new ConflictException('همهٔ اقلام این سفارش تحویل شده است');
+      order.items
+        .filter((line) => undelivered(line).greaterThan(0))
+        .map((line) => ({
+          salesOrderItemId: line.id,
+          quantity: undelivered(line).toNumber(),
+        }));
+    if (requested.length === 0)
+      throw new ConflictException('همهٔ اقلام این سفارش تحویل شده است');
     const lines = this.prepareLines(order, requested);
 
     return this.prisma.$transaction(async (tx) => {
@@ -296,17 +404,24 @@ export class DeliveriesService {
   // Optimistic lock on updatedAt, re-checked atomically together with
   // status = DRAFT inside the transaction.
   async update(id: number, dto: UpdateDeliveryDto, actor: DeliveryActor) {
-    const existing = await this.prisma.delivery.findUnique({ where: { id }, select: { id: true, status: true, updatedAt: true, salesOrderId: true } });
+    const existing = await this.prisma.delivery.findUnique({
+      where: { id },
+      select: { id: true, status: true, updatedAt: true, salesOrderId: true },
+    });
     if (!existing) throw new NotFoundException('حواله تحویل پیدا نشد');
     this.ensureEditable(existing.status);
-    if (!isSameVersion(existing.updatedAt, dto.updatedAt)) throw recordModifiedConflict();
+    if (!isSameVersion(existing.updatedAt, dto.updatedAt))
+      throw recordModifiedConflict();
     const order = await this.loadOrder(this.prisma, existing.salesOrderId);
     this.ensureOrderDeliverable(order);
     this.ensureDateNotBeforeOrder(dto.deliveryDate, order.orderDate);
     const lines = this.prepareLines(order, dto.items);
 
     return this.prisma.$transaction(async (tx) => {
-      const claimed = await tx.delivery.updateMany({ where: { id, updatedAt: existing.updatedAt, status: 'DRAFT' }, data: { updatedAt: new Date() } });
+      const claimed = await tx.delivery.updateMany({
+        where: { id, updatedAt: existing.updatedAt, status: 'DRAFT' },
+        data: { updatedAt: new Date() },
+      });
       if (claimed.count !== 1) throw recordModifiedConflict();
       await tx.deliveryItem.deleteMany({ where: { deliveryId: id } });
       const updated = await tx.delivery.update({
@@ -342,7 +457,10 @@ export class DeliveriesService {
       await this.lockDelivery(tx, id);
       const delivery = await tx.delivery.findUnique({
         where: { id },
-        select: { id: true, status: true, salesOrder: { select: { id: true, orderNumber: true } } },
+        include: {
+          items: true,
+          salesOrder: { select: { id: true, orderNumber: true } },
+        },
       });
       if (!delivery) throw new NotFoundException('حواله تحویل پیدا نشد');
       if (!EDITABLE_SALES_DOCUMENT_STATUSES.includes(delivery.status)) {
@@ -350,6 +468,15 @@ export class DeliveriesService {
           `فقط حوالهٔ «پیش‌نویس» قابل حذف است؛ این حواله «${SALES_DOCUMENT_STATUS_LABELS_FA[delivery.status]}» است و قابل حذف نیست.`,
         );
       }
+      await archiveDeletedRecord(tx, {
+        entityType: AUDIT_ENTITY.DELIVERY,
+        entityId: id,
+        label: delivery.salesOrder.orderNumber
+          ? `سفارش ${delivery.salesOrder.orderNumber}`
+          : null,
+        record: delivery,
+        userId: actor.userId,
+      });
       await tx.delivery.delete({ where: { id } });
       await this.audit.log(
         {
@@ -372,13 +499,20 @@ export class DeliveriesService {
       await this.lockDelivery(tx, id);
       const delivery = await tx.delivery.findUnique({
         where: { id },
-        include: { items: { orderBy: { id: 'asc' } }, location: { select: { isActive: true } } },
+        include: {
+          items: { orderBy: { id: 'asc' } },
+          location: { select: { isActive: true } },
+        },
       });
       if (!delivery) throw new NotFoundException('حواله تحویل پیدا نشد');
-      if (delivery.status === 'POSTED') throw new ConflictException('این حواله قبلاً ثبت شده است');
-      if (!isSameVersion(delivery.updatedAt, dto.updatedAt)) throw recordModifiedConflict();
-      if (delivery.items.length === 0) throw new BadRequestException('حوالهٔ بدون ردیف کالا قابل ثبت نیست');
-      if (!delivery.location?.isActive) throw new ConflictException('انبار این حواله غیرفعال است');
+      if (delivery.status === 'POSTED')
+        throw new ConflictException('این حواله قبلاً ثبت شده است');
+      if (!isSameVersion(delivery.updatedAt, dto.updatedAt))
+        throw recordModifiedConflict();
+      if (delivery.items.length === 0)
+        throw new BadRequestException('حوالهٔ بدون ردیف کالا قابل ثبت نیست');
+      if (!delivery.location?.isActive)
+        throw new ConflictException('انبار این حواله غیرفعال است');
 
       await tx.$queryRaw`SELECT id FROM sales_orders WHERE id = ${delivery.salesOrderId} FOR UPDATE`;
       const order = await this.loadOrder(tx, delivery.salesOrderId);
@@ -391,7 +525,8 @@ export class DeliveriesService {
         throw new ConflictException({
           statusCode: 409,
           code: CUSTOMER_CREDIT_HOLD,
-          message: 'مشتری این سفارش در توقف اعتباری است و ثبت حوالهٔ تحویل برای آن امکان‌پذیر نیست',
+          message:
+            'مشتری این سفارش در توقف اعتباری است و ثبت حوالهٔ تحویل برای آن امکان‌پذیر نیست',
         });
       }
 
@@ -400,7 +535,10 @@ export class DeliveriesService {
       const orderLines = new Map(order.items.map((line) => [line.id, line]));
       const pairs = delivery.items.map((item) => {
         const line = orderLines.get(item.salesOrderItemId);
-        if (!line) throw new ConflictException('یکی از ردیف‌های این حواله دیگر در سفارش وجود ندارد');
+        if (!line)
+          throw new ConflictException(
+            'یکی از ردیف‌های این حواله دیگر در سفارش وجود ندارد',
+          );
         const open = undelivered(line);
         if (new Prisma.Decimal(item.quantity).greaterThan(open)) {
           throw new ConflictException(
@@ -410,20 +548,40 @@ export class DeliveriesService {
         return { item, line };
       });
 
-      const deliveryNumber = await nextDocumentNumber(tx, DELIVERY_DOC_TYPE, delivery.deliveryDate);
-      const issued = await issueForDelivery(
+      const deliveryNumber = await nextDocumentNumber(
         tx,
-        {
-          locationId: delivery.locationId,
-          movementDate: delivery.deliveryDate,
-          referenceType: 'DELIVERY',
-          referenceId: delivery.id,
-          referenceNumber: deliveryNumber,
-          createdByUserId: actor.userId,
-        },
-        pairs.map(({ item, line }) => ({ referenceLineId: item.id, itemId: item.itemId, quantity: item.quantity, reservedQty: line.reservedQty })),
+        DELIVERY_DOC_TYPE,
+        delivery.deliveryDate,
       );
-      const consumedByDeliveryItem = new Map(issued.map((result) => [result.referenceLineId, result.reservedConsumed]));
+      // salesStockEffects off (v1): the delivery doesn't touch inventory at all.
+      const issued = !isFeatureEnabled('salesStockEffects')
+        ? pairs.map(({ item }) => ({
+            referenceLineId: item.id,
+            reservedConsumed: new Prisma.Decimal(0),
+          }))
+        : await issueForDelivery(
+            tx,
+            {
+              locationId: delivery.locationId,
+              movementDate: delivery.deliveryDate,
+              referenceType: 'DELIVERY',
+              referenceId: delivery.id,
+              referenceNumber: deliveryNumber,
+              createdByUserId: actor.userId,
+            },
+            pairs.map(({ item, line }) => ({
+              referenceLineId: item.id,
+              itemId: item.itemId,
+              quantity: item.quantity,
+              reservedQty: line.reservedQty,
+            })),
+          );
+      const consumedByDeliveryItem = new Map(
+        issued.map((result) => [
+          result.referenceLineId,
+          result.reservedConsumed,
+        ]),
+      );
 
       await applyDeliveredQuantities(
         tx,
@@ -436,7 +594,12 @@ export class DeliveriesService {
       );
       await tx.delivery.update({
         where: { id },
-        data: { status: 'POSTED', deliveryNumber, postedByUserId: actor.userId, postedAt: new Date() },
+        data: {
+          status: 'POSTED',
+          deliveryNumber,
+          postedByUserId: actor.userId,
+          postedAt: new Date(),
+        },
       });
       const progress = await recomputeOrderProgress(tx, order.id);
 
@@ -487,7 +650,10 @@ export class DeliveriesService {
     await tx.$queryRaw`SELECT id FROM deliveries WHERE id = ${id} FOR UPDATE`;
   }
 
-  private async loadOrder(client: Prisma.TransactionClient | PrismaService, salesOrderId: number): Promise<OrderForDelivery> {
+  private async loadOrder(
+    client: Prisma.TransactionClient | PrismaService,
+    salesOrderId: number,
+  ): Promise<OrderForDelivery> {
     const order = await client.salesOrder.findUnique({
       where: { id: salesOrderId },
       select: {
@@ -500,7 +666,15 @@ export class DeliveriesService {
         deliveryAddressText: true,
         items: {
           orderBy: { lineNo: 'asc' },
-          select: { id: true, lineNo: true, itemId: true, itemName: true, quantity: true, deliveredQty: true, reservedQty: true },
+          select: {
+            id: true,
+            lineNo: true,
+            itemId: true,
+            itemName: true,
+            quantity: true,
+            deliveredQty: true,
+            reservedQty: true,
+          },
         },
       },
     });
@@ -517,24 +691,38 @@ export class DeliveriesService {
   }
 
   private ensureDateNotBeforeOrder(deliveryDate: Date, orderDate: Date) {
-    if (deliveryDate.getTime() < orderDate.getTime()) throw new BadRequestException('تاریخ تحویل نمی‌تواند پیش از تاریخ سفارش باشد');
+    if (deliveryDate.getTime() < orderDate.getTime())
+      throw new BadRequestException(
+        'تاریخ تحویل نمی‌تواند پیش از تاریخ سفارش باشد',
+      );
   }
 
   private ensureEditable(status: SalesDocumentStatus) {
     if (!EDITABLE_SALES_DOCUMENT_STATUSES.includes(status)) {
-      throw new ConflictException(`فقط حوالهٔ «پیش‌نویس» قابل ویرایش است؛ این حواله «${SALES_DOCUMENT_STATUS_LABELS_FA[status]}» است`);
+      throw new ConflictException(
+        `فقط حوالهٔ «پیش‌نویس» قابل ویرایش است؛ این حواله «${SALES_DOCUMENT_STATUS_LABELS_FA[status]}» است`,
+      );
     }
   }
 
   // Each requested line must belong to the order and fit its undelivered
   // quantity (quantity − deliveredQty). Lines are stored in order-line order.
-  private prepareLines(order: OrderForDelivery, items: Pick<DeliveryItemDto, 'salesOrderItemId' | 'quantity'>[]) {
+  private prepareLines(
+    order: OrderForDelivery,
+    items: Pick<DeliveryItemDto, 'salesOrderItemId' | 'quantity'>[],
+  ) {
     const orderLines = new Map(order.items.map((line) => [line.id, line]));
     const seen = new Set<number>();
     const prepared = items.map((entry) => {
       const line = orderLines.get(entry.salesOrderItemId);
-      if (!line) throw new BadRequestException('ردیف انتخاب‌شده متعلق به این سفارش نیست');
-      if (seen.has(line.id)) throw new BadRequestException(`ردیف ${line.lineNo} سفارش بیش از یک بار در حواله آمده است`);
+      if (!line)
+        throw new BadRequestException(
+          'ردیف انتخاب‌شده متعلق به این سفارش نیست',
+        );
+      if (seen.has(line.id))
+        throw new BadRequestException(
+          `ردیف ${line.lineNo} سفارش بیش از یک بار در حواله آمده است`,
+        );
       seen.add(line.id);
       const open = undelivered(line);
       if (new Prisma.Decimal(entry.quantity).greaterThan(open)) {
@@ -542,8 +730,17 @@ export class DeliveriesService {
           `ردیف ${line.lineNo} («${line.itemName}»): مقدار تحویل (${entry.quantity}) از مقدار تحویل‌نشدهٔ سفارش (${open.toString()}) بیشتر است`,
         );
       }
-      return { lineNo: line.lineNo, data: { salesOrderItemId: line.id, itemId: line.itemId, quantity: entry.quantity } };
+      return {
+        lineNo: line.lineNo,
+        data: {
+          salesOrderItemId: line.id,
+          itemId: line.itemId,
+          quantity: entry.quantity,
+        },
+      };
     });
-    return prepared.sort((a, b) => a.lineNo - b.lineNo).map((entry) => entry.data);
+    return prepared
+      .sort((a, b) => a.lineNo - b.lineNo)
+      .map((entry) => entry.data);
   }
 }

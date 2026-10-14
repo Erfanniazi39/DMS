@@ -4,10 +4,11 @@ import { useEffect, useState, type FormEvent } from "react";
 import { Pencil } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogBody, DialogCloseButton, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
+import { MoneyInput } from "@/components/ui/money-input";
 import { Label } from "@/components/ui/label";
 import { apiFetch, type ApiError } from "@/lib/api";
 import { parseNumberInput } from "@/lib/number-input";
+import { useFeature } from "@/lib/session";
 import {
   PAYMENT_METHODS,
   StatusBadge,
@@ -49,6 +50,8 @@ export function FinancialSection({
   toasts: SectionToasts;
 }) {
   const { pushError, pushErrors, pushSuccess } = toasts;
+  const creditLimitOn = useFeature("customerCreditLimit");
+  const paymentTermsOn = useFeature("paymentTerms");
   const [profile, setProfile] = useState<CustomerFinancialProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -61,7 +64,7 @@ export function FinancialSection({
   useEffect(() => {
     if (!canFinance) return;
     let ignore = false;
-    Promise.all([apiFetch<CustomerFinancialProfile>(`/customers/${customerId}/financial`), apiFetch<PaymentTermOption[]>("/payment-terms")])
+    Promise.all([apiFetch<CustomerFinancialProfile>(`/customers/${customerId}/financial`), paymentTermsOn ? apiFetch<PaymentTermOption[]>("/payment-terms") : Promise.resolve([] as PaymentTermOption[])])
       .then(([profileData, termsData]) => {
         if (ignore) return;
         setProfile(profileData);
@@ -79,7 +82,7 @@ export function FinancialSection({
     return () => {
       ignore = true;
     };
-  }, [customerId, canFinance, reloadKey]);
+  }, [customerId, canFinance, reloadKey, paymentTermsOn]);
 
   function update<K extends keyof FinancialForm>(key: K, value: FinancialForm[K]) {
     setForm((current) => ({ ...current, [key]: value }));
@@ -167,18 +170,20 @@ export function FinancialSection({
         ) : (
           <div className="space-y-4">
             <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm md:grid-cols-4">
-              <div>
+              {paymentTermsOn ? <div>
                 <dt className="text-xs text-muted-foreground">شرایط پرداخت</dt>
                 <dd className="mt-1">{profile.paymentTerm ? profile.paymentTerm.nameFa : <span className="text-muted-foreground">تعیین نشده (نقدی)</span>}</dd>
-              </div>
+              </div> : null}
               <div>
                 <dt className="text-xs text-muted-foreground">روش پرداخت ترجیحی</dt>
                 <dd className="mt-1">{profile.preferredPaymentMethod ? paymentMethodLabels[profile.preferredPaymentMethod] : "-"}</dd>
               </div>
-              <div>
-                <dt className="text-xs text-muted-foreground">سقف اعتبار</dt>
-                <dd className="mt-1 tabular-nums">{profile.creditLimit !== null ? `${formatMoney(profile.creditLimit)} ریال` : <span className="text-muted-foreground">بدون اعتبار</span>}</dd>
-              </div>
+              {creditLimitOn ? (
+                <div>
+                  <dt className="text-xs text-muted-foreground">سقف اعتبار</dt>
+                  <dd className="mt-1 tabular-nums">{profile.creditLimit !== null ? `${formatMoney(profile.creditLimit)} ریال` : <span className="text-muted-foreground">بدون اعتبار</span>}</dd>
+                </div>
+              ) : null}
               <div>
                 <dt className="text-xs text-muted-foreground">توقف اعتباری</dt>
                 <dd className="mt-1">
@@ -202,7 +207,7 @@ export function FinancialSection({
           </DialogHeader>
           <DialogBody>
             <form id="financial-form" className="grid gap-4 md:grid-cols-2" onSubmit={submit} noValidate>
-              <div className="flex flex-col gap-2">
+              {paymentTermsOn ? <div className="flex flex-col gap-2">
                 <Label htmlFor="financial-term">شرایط پرداخت</Label>
                 <select id="financial-term" className={selectClass} value={form.paymentTermId} onChange={(event) => update("paymentTermId", event.target.value)}>
                   <option value="">تعیین نشده (نقدی)</option>
@@ -210,7 +215,7 @@ export function FinancialSection({
                     <option key={term.id} value={term.id}>{term.nameFa}{term.isActive ? "" : " (غیرفعال)"}</option>
                   ))}
                 </select>
-              </div>
+              </div> : null}
               <div className="flex flex-col gap-2">
                 <Label htmlFor="financial-method">روش پرداخت ترجیحی</Label>
                 <select
@@ -225,10 +230,13 @@ export function FinancialSection({
                   ))}
                 </select>
               </div>
-              <div className="flex flex-col gap-2 md:col-span-2">
-                <Label htmlFor="financial-limit">سقف اعتبار (ریال)</Label>
-                <Input id="financial-limit" inputMode="numeric" placeholder="خالی = بدون اعتبار" value={form.creditLimit} onChange={(event) => update("creditLimit", event.target.value)} />
-              </div>
+              {/* Hidden in v1; the loaded value is still sent back unchanged on save. */}
+              {creditLimitOn ? (
+                <div className="flex flex-col gap-2 md:col-span-2">
+                  <Label htmlFor="financial-limit">سقف اعتبار (ریال)</Label>
+                  <MoneyInput id="financial-limit" placeholder="خالی = بدون اعتبار" value={form.creditLimit} onChange={(value) => update("creditLimit", value)} />
+                </div>
+              ) : null}
               <label htmlFor="financial-hold" className="flex items-center gap-2 text-sm md:col-span-2">
                 <input id="financial-hold" type="checkbox" className="size-4" checked={form.creditHold} onChange={(event) => update("creditHold", event.target.checked)} />
                 توقف اعتباری

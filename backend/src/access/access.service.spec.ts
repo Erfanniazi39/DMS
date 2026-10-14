@@ -25,7 +25,7 @@ function createPrismaMock() {
 describe('AccessService', () => {
   it('rejects creating a role that already exists by name', async () => {
     const prisma = createPrismaMock();
-    const service = new AccessService(prisma as never);
+    const service = new AccessService(prisma as never, { log: jest.fn() } as never);
     (prisma as any).role.findUnique.mockResolvedValue({ id: 1, name: 'ADMIN' });
 
     await expect(service.createRole('ADMIN', [])).rejects.toBeInstanceOf(ConflictException);
@@ -34,7 +34,7 @@ describe('AccessService', () => {
 
   it('rejects a permission code that is not in PERMISSION_CATALOG', async () => {
     const prisma = createPrismaMock();
-    const service = new AccessService(prisma as never);
+    const service = new AccessService(prisma as never, { log: jest.fn() } as never);
     (prisma as any).role.findUnique.mockResolvedValue(null);
 
     // (Was 'inventory.view' until that became a real permission in Sales
@@ -46,7 +46,7 @@ describe('AccessService', () => {
 
   it('creates a role with only catalog-listed permissions', async () => {
     const prisma = createPrismaMock();
-    const service = new AccessService(prisma as never);
+    const service = new AccessService(prisma as never, { log: jest.fn() } as never);
     (prisma as any).role.findUnique.mockResolvedValue(null);
     (prisma as any).permission.findMany.mockResolvedValue([{ id: 5, name: 'purchases.manage' }]);
     (prisma as any).role.create.mockResolvedValue({ id: 2, name: 'MANAGER' });
@@ -65,7 +65,7 @@ describe('AccessService', () => {
 
   it('de-duplicates repeated permission codes before validating them against the catalog', async () => {
     const prisma = createPrismaMock();
-    const service = new AccessService(prisma as never);
+    const service = new AccessService(prisma as never, { log: jest.fn() } as never);
     (prisma as any).role.findUnique.mockResolvedValue(null);
     (prisma as any).permission.findMany.mockResolvedValue([{ id: 5, name: 'purchases.manage' }]);
     (prisma as any).role.create.mockResolvedValue({ id: 2, name: 'MANAGER' });
@@ -79,7 +79,7 @@ describe('AccessService', () => {
 
   it('rejects updating a role that does not exist', async () => {
     const prisma = createPrismaMock();
-    const service = new AccessService(prisma as never);
+    const service = new AccessService(prisma as never, { log: jest.fn() } as never);
     (prisma as any).role.findUnique.mockResolvedValue(null);
 
     await expect(service.updateRole(999, [])).rejects.toBeInstanceOf(NotFoundException);
@@ -88,7 +88,7 @@ describe('AccessService', () => {
 
   it('replaces a role\'s permission set (delete-all then recreate) inside a single transaction', async () => {
     const prisma = createPrismaMock();
-    const service = new AccessService(prisma as never);
+    const service = new AccessService(prisma as never, { log: jest.fn() } as never);
     (prisma as any).role.findUnique.mockResolvedValue({ id: 3, name: 'MANAGER' });
     (prisma as any).permission.findMany.mockResolvedValue([{ id: 7, name: 'reports.view' }]);
     (prisma as any).role.update.mockResolvedValue({ id: 3, name: 'MANAGER' });
@@ -103,7 +103,7 @@ describe('AccessService', () => {
 
   it('rejects setting permissions on a user that does not exist', async () => {
     const prisma = createPrismaMock();
-    const service = new AccessService(prisma as never);
+    const service = new AccessService(prisma as never, { log: jest.fn() } as never);
     (prisma as any).user.findUnique.mockResolvedValue(null);
 
     await expect(service.setUserPermissions(999, [])).rejects.toBeInstanceOf(NotFoundException);
@@ -112,7 +112,7 @@ describe('AccessService', () => {
 
   it('derives a user\'s effective permissions as the de-duplicated union of role permissions and per-user extra permissions', async () => {
     const prisma = createPrismaMock();
-    const service = new AccessService(prisma as never);
+    const service = new AccessService(prisma as never, { log: jest.fn() } as never);
     (prisma as any).user.findMany.mockResolvedValue([
       {
         id: 1,

@@ -160,3 +160,16 @@ export const optionalEmail = z.preprocess(emptyToUndefined, z.string().trim().em
 export function enumField<const T extends readonly [string, ...string[]]>(values: T, message: string) {
   return z.enum(values, { error: message });
 }
+
+// A percentage within Decimal(5,2): 0–100, at most two decimals.
+export function optionalPercent(label: string) {
+  return z.preprocess(
+    toNumberInput,
+    z
+      .number({ error: `${label} باید عدد باشد` })
+      .min(0, { error: `${label} نمی‌تواند منفی باشد` })
+      .max(100, { error: `${label} نمی‌تواند بیشتر از ۱۰۰ باشد` })
+      .refine(hasAtMostTwoDecimals, { error: `${label} حداکثر می‌تواند دو رقم اعشار داشته باشد` })
+      .optional(),
+  );
+}

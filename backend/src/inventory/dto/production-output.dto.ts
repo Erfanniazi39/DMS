@@ -74,6 +74,9 @@ export const productionOutputListQuerySchema = z.object({
   status: z.preprocess(emptyToUndefined, enumField(STOCK_DOCUMENT_STATUSES, 'فیلتر وضعیت نامعتبر است').optional()),
   page: z.string({ error: 'شماره صفحه نامعتبر است' }).optional(),
   pageSize: z.string({ error: 'تعداد ردیف در هر صفحه نامعتبر است' }).optional(),
+  // Column sorting (?sortBy=&sortDir=) — see common/pagination.ts parseSort().
+  sortBy: z.string().optional(),
+  sortDir: z.string().optional(),
 });
 
 export type CreateProductionOutputDto = z.infer<typeof createProductionOutputSchema>;

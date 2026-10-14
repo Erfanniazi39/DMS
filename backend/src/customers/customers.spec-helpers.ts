@@ -41,6 +41,7 @@ export function createPrismaMock() {
     // Search ids / duplicate candidates.
     $queryRaw: jest.fn().mockResolvedValue([]),
     auditLog: { create: jest.fn(), findMany: jest.fn().mockResolvedValue([]) },
+    deletedRecord: { create: jest.fn() },
   };
   // Transactions just invoke the callback with the mock itself.
   (mock as any).$transaction = jest.fn((callback: (tx: unknown) => unknown) => callback(mock));
@@ -74,6 +75,7 @@ export const detailRow = {
   createdByUser: null,
   contacts: [],
   addresses: [],
+  bankAccounts: [],
   notes: [],
   documents: [],
   complaints: [],

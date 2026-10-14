@@ -26,4 +26,9 @@ describe('updateUserSchema', () => {
   it('rejects an empty update', () => {
     expect(updateUserSchema.safeParse({}).success).toBe(false);
   });
+
+  it('rejects a non-Latin username on rename', () => {
+    expect(updateUserSchema.safeParse({ username: 'شسیب' }).success).toBe(false);
+    expect(updateUserSchema.safeParse({ username: 'new.name' }).success).toBe(true);
+  });
 });

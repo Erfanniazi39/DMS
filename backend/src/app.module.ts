@@ -23,6 +23,8 @@ import { DashboardModule } from './dashboard/dashboard.module';
 import { InventoryModule } from './inventory/inventory.module';
 import { SalesModule } from './sales/sales.module';
 import { ReceivablesModule } from './receivables/receivables.module';
+import { LettersModule } from './letters/letters.module';
+import { SearchModule } from './search/search.module';
 
 @Module({
   imports: [
@@ -48,6 +50,8 @@ import { ReceivablesModule } from './receivables/receivables.module';
     InventoryModule,
     SalesModule,
     ReceivablesModule,
+    LettersModule,
+    SearchModule,
   ],
   controllers: [AppController],
   providers: [AppService],

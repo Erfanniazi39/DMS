@@ -2,15 +2,18 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException }
 import { Prisma, type SalesDocumentStatus, type SalesPaymentStatus, type SalesSourceType } from '@prisma/client';
 import { nextDocumentNumber } from '../common/document-sequence';
 import { isSameVersion, recordModifiedConflict } from '../common/optimistic-lock';
-import { toSkipTake, type PaginationParams } from '../common/pagination';
+import { toSkipTake, type PaginationParams, buildOrderBy, type SortParams } from '../common/pagination';
+import { rialToPersianWords } from '../common/persian-words';
 import { toIsoDay } from '../common/zod-fields';
 import { AUDIT_ENTITY, AuditService } from '../audit/audit.service';
-import { getCustomerCreditPolicy } from '../customers/customer-rules';
+import { archiveDeletedRecord } from '../audit/deleted-records';
+import { getCustomerCreditPolicy, getCustomerInvoiceSnapshot } from '../customers/customer-rules';
 import { PrismaService } from '../prisma/prisma.service';
 import { applyInvoicedQuantities, deriveInvoicePaymentStatus, invoiceOpenAmount, recomputeOrderProgress, type OrderProgress } from './sales-progress';
 import {
   EDITABLE_SALES_DOCUMENT_STATUSES,
   formatAddress,
+  invoiceSettlementKind,
   OPEN_SALES_INVOICE_WHERE,
   OPENING_BALANCE_ITEM_NAME,
   SALES_DOCUMENT_STATUS_LABELS_FA,
@@ -34,6 +37,7 @@ export type SalesInvoiceListFilters = {
   deliveryId?: number;
   dateFrom?: Date;
   dateTo?: Date;
+  sort?: SortParams;
 };
 
 type Money = Prisma.Decimal | number | string;
@@ -120,6 +124,25 @@ export async function listOpenInvoices(tx: Prisma.TransactionClient, customerId:
   return rows.map((row) => ({ ...row, openAmount: invoiceOpenAmount(row) })).filter((row) => row.openAmount.greaterThan(0));
 }
 
+// Columns of the «deliveries awaiting an invoice» queue (the line counts are derived).
+const INVOICE_QUEUE_SORT_COLUMNS: Record<string, (dir: 'asc' | 'desc') => Prisma.DeliveryOrderByWithRelationInput> = {
+  deliveryNumber: (dir) => ({ deliveryNumber: dir }),
+  deliveryDate: (dir) => ({ deliveryDate: dir }),
+  order: (dir) => ({ salesOrder: { orderNumber: dir } }),
+  customer: (dir) => ({ salesOrder: { customerName: dir } }),
+};
+
+// Columns the invoices table can be sorted by (the open-balance cell is derived).
+const SALES_INVOICE_SORT_COLUMNS: Record<string, (dir: 'asc' | 'desc') => Prisma.SalesInvoiceOrderByWithRelationInput> = {
+  invoiceNumber: (dir) => ({ invoiceNumber: { sort: dir, nulls: 'last' } }),
+  invoiceDate: (dir) => ({ invoiceDate: dir }),
+  dueDate: (dir) => ({ dueDate: { sort: dir, nulls: 'last' } }),
+  customer: (dir) => ({ customerName: dir }),
+  totalAmount: (dir) => ({ totalAmount: dir }),
+  paymentStatus: (dir) => ({ paymentStatus: dir }),
+  status: (dir) => ({ status: dir }),
+};
+
 // فاکتور فروش — lifecycle per docs/sales-module-build-plan.md §5:
 //
 //   createFromDelivery  DRAFT for a POSTED delivery (B7: one invoice per
@@ -186,7 +209,7 @@ export class SalesInvoicesService {
     if (and.length > 0) where.AND = and;
     const query = {
       where,
-      orderBy: [{ invoiceDate: 'desc' }, { id: 'desc' }],
+      orderBy: buildOrderBy(filters.sort, SALES_INVOICE_SORT_COLUMNS, [{ invoiceDate: 'desc' }, { id: 'desc' }], [{ id: 'desc' }]),
       include: {
         customer: { select: { id: true, customerNumber: true } },
         salesOrder: { select: { id: true, orderNumber: true } },
@@ -194,19 +217,19 @@ export class SalesInvoicesService {
       },
     } satisfies Prisma.SalesInvoiceFindManyArgs;
 
-    if (!pagination) return this.prisma.salesInvoice.findMany(query);
+    if (!pagination) return (await this.prisma.salesInvoice.findMany(query)).map(withSettlementKind);
     const [items, total] = await Promise.all([
       this.prisma.salesInvoice.findMany({ ...query, ...toSkipTake(pagination) }),
       this.prisma.salesInvoice.count({ where }),
     ]);
-    return { items, total, page: pagination.page, pageSize: pagination.pageSize };
+    return { items: items.map(withSettlementKind), total, page: pagination.page, pageSize: pagination.pageSize };
   }
 
   // Work queue: POSTED deliveries with at least one line that no POSTED
   // invoice covers yet (with one invoice per delivery covering every
   // uninvoiced line — B7 — that is exactly "not yet invoiced"), oldest
   // first. draftInvoiceId: an existing draft for the delivery, if any.
-  async queue(q?: string, pagination?: PaginationParams) {
+  async queue(q?: string, pagination?: PaginationParams, sort?: SortParams) {
     const where: Prisma.DeliveryWhereInput = {
       status: 'POSTED',
       items: { some: { invoiceItems: { none: { salesInvoice: { status: 'POSTED' } } } } },
@@ -220,7 +243,7 @@ export class SalesInvoicesService {
     }
     const query = {
       where,
-      orderBy: [{ deliveryDate: 'asc' }, { id: 'asc' }],
+      orderBy: buildOrderBy(sort, INVOICE_QUEUE_SORT_COLUMNS, [{ deliveryDate: 'asc' }, { id: 'asc' }], [{ id: 'asc' }]),
       select: {
         id: true,
         deliveryNumber: true,
@@ -258,7 +281,7 @@ export class SalesInvoicesService {
   async get(id: number) {
     const invoice = await this.prisma.salesInvoice.findUnique({ where: { id }, include: salesInvoiceDetailInclude });
     if (!invoice) throw new NotFoundException('فاکتور فروش پیدا نشد');
-    return invoice;
+    return { ...withSettlementKind(invoice), totalAmountInWords: rialToPersianWords(invoice.totalAmount.toString()) };
   }
 
   history(id: number) {
@@ -487,13 +510,14 @@ export class SalesInvoicesService {
   async remove(id: number, actor: SalesInvoiceActor) {
     await this.prisma.$transaction(async (tx) => {
       await this.lockInvoice(tx, id);
-      const invoice = await tx.salesInvoice.findUnique({ where: { id }, select: { id: true, status: true, customerName: true, sourceType: true } });
+      const invoice = await tx.salesInvoice.findUnique({ where: { id }, include: { items: true } });
       if (!invoice) throw new NotFoundException('فاکتور فروش پیدا نشد');
       if (!EDITABLE_SALES_DOCUMENT_STATUSES.includes(invoice.status)) {
         throw new ConflictException(
           `فقط فاکتور «پیش‌نویس» قابل حذف است؛ این فاکتور «${SALES_DOCUMENT_STATUS_LABELS_FA[invoice.status]}» است و قابل حذف نیست.`,
         );
       }
+      await archiveDeletedRecord(tx, { entityType: AUDIT_ENTITY.SALES_INVOICE, entityId: id, label: invoice.customerName, record: invoice, userId: actor.userId });
       await tx.salesInvoice.delete({ where: { id } });
       await this.audit.log(
         {
@@ -579,9 +603,13 @@ export class SalesInvoicesService {
 
     const invoiceNumber = await nextDocumentNumber(tx, SALES_INVOICE_DOC_TYPE, invoice.invoiceDate);
     const dueDate = new Date(invoice.invoiceDate.getTime() + invoice.paymentDueDays * DAY_MS);
+    // Customer data completed between draft and posting lands on the
+    // immutable posted document (the draft's snapshot is refreshed here).
+    const buyer = await this.customerSnapshot(tx, invoice.customerId);
     await tx.salesInvoice.update({
       where: { id },
       data: {
+        ...buyer,
         status: 'POSTED',
         invoiceNumber,
         dueDate,
@@ -692,21 +720,31 @@ export class SalesInvoicesService {
     await tx.$queryRaw`SELECT id FROM sales_invoices WHERE id = ${id} FOR UPDATE`;
   }
 
-  // Customer snapshots for the invoice header: current name and economic
-  // code (B14: the economic code is snapshotted, the national ID never is),
-  // and the default active BILLING address as text (none → null).
+  // Customer snapshots for the invoice header: name, kind, legal name,
+  // economic code and registration number (B14: the national ID is NEVER
+  // snapshotted), phone, and the default active BILLING address as text plus
+  // its province/city/postal code. What counts as the billing address is
+  // Customers' rule (getCustomerInvoiceSnapshot). Taken at draft creation and
+  // refreshed when the invoice is posted.
   private async customerSnapshot(tx: Prisma.TransactionClient, customerId: number) {
-    const customer = await tx.customer.findUnique({ where: { id: customerId }, select: { name: true, economicCode: true } });
-    if (!customer) throw new ConflictException('مشتری انتخاب‌شده یافت نشد');
-    const address = await tx.customerAddress.findFirst({
-      where: { customerId, isActive: true, addressType: 'BILLING' },
-      orderBy: [{ isDefault: 'desc' }, { id: 'asc' }],
-      select: { province: true, city: true, addressLine: true, postalCode: true },
-    });
+    const customer = await getCustomerInvoiceSnapshot(tx, customerId);
+    const address = customer.billingAddress;
     return {
       customerName: customer.name,
+      customerKind: customer.customerKind,
+      customerLegalName: customer.legalName,
       customerEconomicCode: customer.economicCode ?? null,
+      customerRegistrationNumber: customer.registrationNumber,
+      customerPhone: customer.phone,
       billingAddressText: address ? formatAddress(address) : null,
+      customerProvince: address?.province ?? null,
+      customerCity: address?.city ?? null,
+      customerPostalCode: address?.postalCode ?? null,
     };
   }
+}
+
+// نقدی/غیرنقدی, derived from the invoice's snapshotted payment term.
+function withSettlementKind<T extends { paymentDueDays: number }>(invoice: T) {
+  return { ...invoice, settlementKind: invoiceSettlementKind(invoice.paymentDueDays) };
 }

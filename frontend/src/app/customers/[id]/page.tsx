@@ -11,6 +11,7 @@ import { StatusActions } from "./_sections/StatusActions";
 import { OverviewSection } from "./_sections/OverviewSection";
 import { ContactsSection } from "./_sections/ContactsSection";
 import { AddressesSection } from "./_sections/AddressesSection";
+import { BankAccountsSection } from "./_sections/BankAccountsSection";
 import { FinancialSection } from "./_sections/FinancialSection";
 import { AccountSection } from "./_sections/AccountSection";
 import { NotesSection } from "./_sections/NotesSection";
@@ -137,6 +138,7 @@ export default function CustomerDetailPage() {
         <OverviewSection customer={customer} />
         <ContactsSection customer={customer} canManage={canManage} onChanged={reloadCustomer} toasts={toastActions} />
         <AddressesSection customer={customer} canManage={canManage} onChanged={reloadCustomer} toasts={toastActions} />
+        <BankAccountsSection customer={customer} canManage={canManage} onChanged={reloadCustomer} toasts={toastActions} />
         <FinancialSection customerId={customer.id} canFinance={canFinance} onChanged={reloadCustomer} toasts={toastActions} />
         <AccountSection customerId={customer.id} canViewReceivables={canViewReceivables} />
         <NotesSection customer={customer} canManage={canManage} onChanged={reloadCustomer} toasts={toastActions} />

@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { MoneyInput } from "@/components/ui/money-input";
 import { Label } from "@/components/ui/label";
 import { JalaliDateInput } from "@/components/ui/jalali-date-input";
 import { RequiredMark, selectClass, textareaClass } from "@/components/ui/form-field";
@@ -193,7 +194,7 @@ function OpeningBalanceForm() {
                         <Input aria-label={`مقدار ردیف ${index + 1}`} className="h-8 tabular-nums" inputMode="decimal" value={line.quantity} onChange={(event) => updateLine(line.key, { quantity: event.target.value })} />
                       </td>
                       <td className="px-2 py-1.5">
-                        <Input aria-label={`مبلغ واحد ردیف ${index + 1}`} className="h-8 tabular-nums" inputMode="numeric" value={line.unitPrice} onChange={(event) => updateLine(line.key, { unitPrice: event.target.value })} />
+                        <MoneyInput aria-label={`مبلغ واحد ردیف ${index + 1}`} className="h-8 tabular-nums" value={line.unitPrice} onChange={(value) => updateLine(line.key, { unitPrice: value })} />
                       </td>
                       <td className="px-2 py-1.5">
                         <Input aria-label={`نرخ مالیات ردیف ${index + 1}`} className="h-8 tabular-nums" inputMode="decimal" placeholder="۰" value={line.taxRate} onChange={(event) => updateLine(line.key, { taxRate: event.target.value })} />

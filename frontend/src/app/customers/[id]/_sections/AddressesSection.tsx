@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { apiFetch, type ApiError } from "@/lib/api";
 import { normalizeDigits } from "@/lib/number-input";
+import { isIranCountry, isValidPostalCode } from "@/lib/iran-identifiers";
 import {
   CUSTOMER_ADDRESS_TYPES,
   RequiredMark,
@@ -20,6 +21,9 @@ import {
   type CustomerDetail,
 } from "../../shared";
 import { DetailSection, type SectionToasts } from "./DetailSection";
+import { SortHeader, useClientTable } from "@/components/ui/sortable";
+import { ListPagination } from "@/components/ui/list-pagination";
+import type { SortValue } from "@/lib/table-sort";
 
 type AddressForm = {
   addressType: CustomerAddressType;
@@ -28,6 +32,10 @@ type AddressForm = {
   city: string;
   addressLine: string;
   postalCode: string;
+  country: string;
+  cityCode: string;
+  locationNumber: string;
+  locationName: string;
   phone: string;
   deliveryInstructions: string;
   isDefault: boolean;
@@ -41,10 +49,24 @@ const emptyAddressForm: AddressForm = {
   city: "",
   addressLine: "",
   postalCode: "",
+  country: "",
+  cityCode: "",
+  locationNumber: "",
+  locationName: "",
   phone: "",
   deliveryInstructions: "",
   isDefault: false,
   isActive: true,
+};
+
+// Accessors for in-memory column sorting — each sorts by what its column shows.
+const CUSTOMERS_ID__SECTIONS_ADDRESSESSECTION_TSX_SORT_GETTERS: Record<string, (row: CustomerAddressRow) => SortValue> = {
+  addressType: (row) => addressTypeLabels[row.addressType],
+  label: (row) => row.label,
+  region: (row) => [row.country, row.province, row.city].filter(Boolean).join(" "),
+  addressLine: (row) => row.addressLine,
+  postalCode: (row) => row.postalCode,
+  isActive: (row) => row.isActive ? "فعال" : "غیرفعال",
 };
 
 // «آدرس‌ها» — POST/PATCH/DELETE /customers/:id/addresses[/:addressId]
@@ -63,6 +85,8 @@ export function AddressesSection({
   toasts: SectionToasts;
 }) {
   const { pushError, pushErrors, pushSuccess } = toasts;
+  // Sort + page the (small, already loaded) rows in memory; click a header to sort.
+  const table = useClientTable(customer.addresses, CUSTOMERS_ID__SECTIONS_ADDRESSESSECTION_TSX_SORT_GETTERS, { pageSize: 20 });
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<AddressForm>(emptyAddressForm);
@@ -89,6 +113,10 @@ export function AddressesSection({
       city: address.city ?? "",
       addressLine: address.addressLine,
       postalCode: address.postalCode ?? "",
+      country: address.country ?? "",
+      cityCode: address.cityCode ?? "",
+      locationNumber: address.locationNumber ?? "",
+      locationName: address.locationName ?? "",
       phone: address.phone ?? "",
       deliveryInstructions: address.deliveryInstructions ?? "",
       isDefault: address.isDefault,
@@ -103,6 +131,11 @@ export function AddressesSection({
       pushError("نشانی الزامی است.");
       return;
     }
+    const postalCode = normalizeDigits(form.postalCode).trim();
+    if (postalCode && isIranCountry(form.country) && !isValidPostalCode(postalCode)) {
+      pushError("کد پستی باید ۱۰ رقم باشد.");
+      return;
+    }
     setSaving(true);
     try {
       await apiFetch(editingId === null ? `/customers/${customer.id}/addresses` : `/customers/${customer.id}/addresses/${editingId}`, {
@@ -113,7 +146,11 @@ export function AddressesSection({
           province: form.province.trim(),
           city: form.city.trim(),
           addressLine: form.addressLine.trim(),
-          postalCode: normalizeDigits(form.postalCode).trim(),
+          postalCode,
+          country: form.country.trim(),
+          cityCode: form.cityCode.trim(),
+          locationNumber: form.locationNumber.trim(),
+          locationName: form.locationName.trim(),
           phone: normalizeDigits(form.phone).trim(),
           deliveryInstructions: form.deliveryInstructions.trim(),
           isDefault: form.isDefault,
@@ -163,24 +200,25 @@ export function AddressesSection({
             <table className="w-full min-w-[44rem] text-right text-sm">
               <thead className="bg-muted/40 text-xs text-muted-foreground">
                 <tr>
-                  <th className="px-3 py-2 font-medium">نوع</th>
-                  <th className="px-3 py-2 font-medium">عنوان</th>
-                  <th className="px-3 py-2 font-medium">استان / شهر</th>
-                  <th className="px-3 py-2 font-medium">نشانی</th>
-                  <th className="px-3 py-2 font-medium">کد پستی</th>
-                  <th className="px-3 py-2 font-medium">وضعیت</th>
+                  <SortHeader label="نوع" sortKey="addressType" sort={table.sort} onSort={table.onSort} className="px-3 py-2 font-medium" />
+                  <SortHeader label="عنوان" sortKey="label" sort={table.sort} onSort={table.onSort} className="px-3 py-2 font-medium" />
+                  <SortHeader label="کشور / استان / شهر" sortKey="region" sort={table.sort} onSort={table.onSort} className="px-3 py-2 font-medium" />
+                  <SortHeader label="نشانی" sortKey="addressLine" sort={table.sort} onSort={table.onSort} className="px-3 py-2 font-medium" />
+                  <SortHeader label="کد پستی" sortKey="postalCode" sort={table.sort} onSort={table.onSort} className="px-3 py-2 font-medium" />
+                  <SortHeader label="وضعیت" sortKey="isActive" sort={table.sort} onSort={table.onSort} className="px-3 py-2 font-medium" />
                   {canManage ? <th className="px-3 py-2 font-medium">عملیات</th> : null}
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
-                {customer.addresses.map((address) => (
+                {table.pageRows.map((address) => (
                   <tr key={address.id} className={address.isActive ? "" : "text-muted-foreground"}>
                     <td className="px-3 py-2 whitespace-nowrap">
                       {addressTypeLabels[address.addressType]}
                       {address.isDefault ? <span className="ms-1.5"><StatusBadge label="پیش‌فرض" tone="primary" /></span> : null}
                     </td>
                     <td className="px-3 py-2 text-muted-foreground">{address.label || "-"}</td>
-                    <td className="px-3 py-2 text-muted-foreground">{[address.province, address.city].filter(Boolean).join(" / ") || "-"}</td>
+                    <td className="px-3 py-2 text-muted-foreground">{[address.country, address.province, address.city].filter(Boolean).join(" / ") || "-"}
+                      {address.locationName || address.locationNumber ? <span className="block text-xs">محل: {[address.locationNumber, address.locationName].filter(Boolean).join(" - ")}</span> : null}</td>
                     <td className="px-3 py-2">
                       {address.addressLine}
                       {address.deliveryInstructions ? <span className="block text-xs text-muted-foreground">{address.deliveryInstructions}</span> : null}
@@ -209,6 +247,7 @@ export function AddressesSection({
             </table>
           </div>
         )}
+            {table.total > table.pageSize ? <ListPagination page={table.page} pageSize={table.pageSize} total={table.total} onPageChange={table.setPage} className="mt-3" /> : null}
       </DetailSection>
 
       <Dialog open={dialogOpen} onOpenChange={(open) => setDialogOpen(open)}>
@@ -239,12 +278,28 @@ export function AddressesSection({
                 <Label htmlFor="address-city">شهر</Label>
                 <Input id="address-city" value={form.city} onChange={(event) => update("city", event.target.value)} />
               </div>
+              <div className="flex flex-col gap-2">
+                <Label htmlFor="address-country">کشور</Label>
+                <Input id="address-country" placeholder="خالی = ایران" value={form.country} onChange={(event) => update("country", event.target.value)} />
+              </div>
+              <div className="flex flex-col gap-2">
+                <Label htmlFor="address-city-code">کد شهر</Label>
+                <Input id="address-city-code" dir="ltr" value={form.cityCode} onChange={(event) => update("cityCode", event.target.value)} />
+              </div>
+              <div className="flex flex-col gap-2">
+                <Label htmlFor="address-location-number">شماره محل</Label>
+                <Input id="address-location-number" dir="ltr" value={form.locationNumber} onChange={(event) => update("locationNumber", event.target.value)} />
+              </div>
+              <div className="flex flex-col gap-2">
+                <Label htmlFor="address-location-name">نام محل</Label>
+                <Input id="address-location-name" value={form.locationName} onChange={(event) => update("locationName", event.target.value)} />
+              </div>
               <div className="flex flex-col gap-2 md:col-span-2">
                 <Label htmlFor="address-line">نشانی<RequiredMark /></Label>
                 <Input id="address-line" value={form.addressLine} onChange={(event) => update("addressLine", event.target.value)} required />
               </div>
               <div className="flex flex-col gap-2">
-                <Label htmlFor="address-postal-code">کد پستی</Label>
+                <Label htmlFor="address-postal-code">کد پستی (۱۰ رقم)</Label>
                 <Input id="address-postal-code" dir="ltr" inputMode="numeric" value={form.postalCode} onChange={(event) => update("postalCode", event.target.value)} />
               </div>
               <div className="flex flex-col gap-2">

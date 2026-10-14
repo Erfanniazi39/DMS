@@ -2,7 +2,7 @@
 
 import { Fragment, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowDown, ArrowUp, ArrowUpDown, ChevronDown, ChevronLeft, ClipboardPen, Layers, ScrollText, Search, X } from "lucide-react";
+import { ChevronDown, ChevronLeft, ClipboardPen, Layers, ScrollText, Search, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { LIST_PAGE_SIZE, ListPagination, totalPages, type Paginated } from "@/components/ui/list-pagination";
@@ -12,6 +12,8 @@ import { apiFetch, type ApiError } from "@/lib/api";
 import { useAdminUser } from "@/app/admin/layout";
 import { NoAccess, availableQuantity, batchHasStock, formatQuantity, type InventoryLocation, type ItemBatchRow, type ItemBatches, type StockBalanceRow } from "./shared";
 import { BatchBreakdownTable } from "./_batches/BatchBreakdownTable";
+import { SortHeader, useTableSort } from "@/components/ui/sortable";
+import { sortQuery } from "@/lib/table-sort";
 
 const toolbarFieldLabel = "text-[11px] font-medium uppercase tracking-wide text-muted-foreground";
 const toolbarSelectClass = "h-8 rounded-md border border-input bg-background px-2 text-xs outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50";
@@ -39,12 +41,10 @@ export default function InventoryPage() {
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [reloadKey, setReloadKey] = useState(0);
-  // "قابل فروش" (available) is sortable in place of the deferred low-stock
-  // report (Item has no reorder-level field yet) — clicking the column the
-  // first time sorts ascending, so the lowest-stock items surface first.
-  // The default stays the plain item-name sort the page always had.
-  const [sortBy, setSortBy] = useState<"name" | "available">("name");
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+  // Every column sorts server-side; «قابل فروش» (available) is the computed
+  // one — the first click sorts ascending, so the lowest-stock items surface
+  // first. The default stays the plain item-name order the page always had.
+  const { sort, onSort } = useTableSort(null, () => setPage(1));
   const lastQueryRef = useRef(q);
   // I4: per-row batch drill-down (keyed by balance row id), loaded on first expand.
   const [expanded, setExpanded] = useState<Record<number, ItemBatchRow[] | "loading" | "error">>({});
@@ -84,13 +84,9 @@ export default function InventoryPage() {
         if (q.trim()) params.set("q", q.trim());
         if (locationId) params.set("locationId", locationId);
         if (lowStockOnly) params.set("lowStockOnly", "true");
-        if (sortBy === "available") {
-          params.set("sortBy", "available");
-          params.set("sortDir", sortDir);
-        }
         params.set("page", String(page));
         params.set("pageSize", String(LIST_PAGE_SIZE));
-        const data = await apiFetch<Paginated<StockBalanceRow>>(`/inventory/balances?${params.toString()}`);
+        const data = await apiFetch<Paginated<StockBalanceRow>>(`/inventory/balances?${params.toString()}${sortQuery(sort)}`);
         if (cancelled) return;
         if (data.items.length === 0 && data.total > 0 && page > 1) {
           setPage(totalPages(data.total, LIST_PAGE_SIZE));
@@ -112,17 +108,7 @@ export default function InventoryPage() {
       cancelled = true;
       clearTimeout(timeout);
     };
-  }, [q, locationId, lowStockOnly, page, sortBy, sortDir, reloadKey, canView]);
-
-  function toggleAvailableSort() {
-    setPage(1);
-    if (sortBy !== "available") {
-      setSortBy("available");
-      setSortDir("asc");
-    } else {
-      setSortDir((current) => (current === "asc" ? "desc" : "asc"));
-    }
-  }
+  }, [q, locationId, lowStockOnly, page, sort, reloadKey, canView]);
 
   if (!canView) return <NoAccess message="اجازه مشاهده موجودی را ندارید." />;
 
@@ -240,28 +226,14 @@ export default function InventoryPage() {
               <table className="w-full text-right text-sm">
                 <thead className="bg-muted/40 text-xs text-muted-foreground">
                   <tr>
-                    <th className="px-3 py-2.5 font-medium">کد کالا</th>
-                    <th className="px-3 py-2.5 font-medium">نام کالا</th>
-                    <th className="px-3 py-2.5 font-medium">واحد</th>
-                    <th className="px-3 py-2.5 font-medium">انبار</th>
-                    <th className="px-3 py-2.5 font-medium">موجودی انبار</th>
-                    <th className="px-3 py-2.5 font-medium">رزروشده</th>
-                    <th className="px-3 py-2.5 font-medium">کنترل کیفیت</th>
-                    <th className="px-3 py-2.5 font-medium">
-                      <button
-                        type="button"
-                        className="inline-flex items-center gap-1 hover:text-foreground"
-                        onClick={toggleAvailableSort}
-                        aria-label={`مرتب‌سازی بر اساس قابل فروش${sortBy === "available" ? (sortDir === "asc" ? " (صعودی)" : " (نزولی)") : ""}`}
-                      >
-                        قابل فروش
-                        {sortBy === "available" ? (
-                          sortDir === "asc" ? <ArrowUp className="size-3.5" aria-hidden="true" /> : <ArrowDown className="size-3.5" aria-hidden="true" />
-                        ) : (
-                          <ArrowUpDown className="size-3.5 opacity-40" aria-hidden="true" />
-                        )}
-                      </button>
-                    </th>
+                    <SortHeader label="کد کالا" sortKey="code" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="نام کالا" sortKey="name" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="واحد" sortKey="unit" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="انبار" sortKey="location" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="موجودی انبار" sortKey="onHand" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="رزروشده" sortKey="reserved" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="کنترل کیفیت" sortKey="qc" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="قابل فروش" sortKey="available" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
                     <th className="px-3 py-2.5 font-medium" />
                   </tr>
                 </thead>

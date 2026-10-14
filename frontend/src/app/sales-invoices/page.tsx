@@ -31,6 +31,8 @@ import {
   type SalesInvoiceStatus,
   type SalesSourceType,
 } from "./shared";
+import { SortHeader, useTableSort } from "@/components/ui/sortable";
+import { sortQuery } from "@/lib/table-sort";
 
 // Same dense toolbar sizing as the Deliveries / Sales Orders lists.
 const toolbarFieldLabel = "text-[11px] font-medium uppercase tracking-wide text-muted-foreground";
@@ -78,6 +80,8 @@ function QueueTab({ canInvoice, pushError }: { canInvoice: boolean; pushError: (
   const [loadError, setLoadError] = useState<string | null>(null);
   const [q, setQ] = useState("");
   const [page, setPage] = useState(1);
+  // Server-side column sorting (?sortBy=&sortDir=); a change returns to page 1.
+  const { sort, onSort } = useTableSort(null, () => setPage(1));
   const [total, setTotal] = useState(0);
   const [reloadKey, setReloadKey] = useState(0);
   const [creatingId, setCreatingId] = useState<number | null>(null);
@@ -92,7 +96,7 @@ function QueueTab({ canInvoice, pushError }: { canInvoice: boolean; pushError: (
         if (q.trim()) params.set("q", q.trim());
         params.set("page", String(page));
         params.set("pageSize", String(LIST_PAGE_SIZE));
-        const data = await apiFetch<Paginated<SalesInvoiceQueueRow>>(`/sales-invoices/queue?${params.toString()}`);
+        const data = await apiFetch<Paginated<SalesInvoiceQueueRow>>(`/sales-invoices/queue?${params.toString()}${sortQuery(sort)}`);
         if (cancelled) return;
         if (data.items.length === 0 && data.total > 0 && page > 1) {
           setPage(totalPages(data.total, LIST_PAGE_SIZE));
@@ -114,7 +118,7 @@ function QueueTab({ canInvoice, pushError }: { canInvoice: boolean; pushError: (
       cancelled = true;
       clearTimeout(timeout);
     };
-  }, [q, page, reloadKey]);
+  }, [q, page, reloadKey, sort]);
 
   async function create(event: MouseEvent, row: SalesInvoiceQueueRow) {
     event.stopPropagation();
@@ -158,10 +162,10 @@ function QueueTab({ canInvoice, pushError }: { canInvoice: boolean; pushError: (
           <table className="w-full text-right text-sm">
             <thead className="bg-muted/40 text-xs text-muted-foreground">
               <tr>
-                <th className="px-3 py-2.5 font-medium">شماره حواله</th>
-                <th className="px-3 py-2.5 font-medium">تاریخ تحویل</th>
-                <th className="px-3 py-2.5 font-medium">سفارش</th>
-                <th className="px-3 py-2.5 font-medium">مشتری</th>
+                <SortHeader label="شماره حواله" sortKey="deliveryNumber" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                <SortHeader label="تاریخ تحویل" sortKey="deliveryDate" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                <SortHeader label="سفارش" sortKey="order" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                <SortHeader label="مشتری" sortKey="customer" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
                 <th className="px-3 py-2.5 font-medium">ردیف‌های فاکتورنشده</th>
                 <th className="px-3 py-2.5 font-medium">پیش‌نویس فاکتور</th>
                 <th className="px-3 py-2.5 font-medium">عملیات</th>
@@ -222,6 +226,8 @@ function ListTab({ canInvoice, pushError, pushSuccess }: { canInvoice: boolean; 
   const [loadError, setLoadError] = useState<string | null>(null);
   const [filters, setFilters] = useState<FilterState>(emptyFilters);
   const [page, setPage] = useState(1);
+  // Server-side column sorting (?sortBy=&sortDir=); a change returns to page 1.
+  const { sort, onSort } = useTableSort(null, () => setPage(1));
   const [total, setTotal] = useState(0);
   const [reloadKey, setReloadKey] = useState(0);
   const lastQueryRef = useRef(filters.q);
@@ -241,7 +247,7 @@ function ListTab({ canInvoice, pushError, pushSuccess }: { canInvoice: boolean; 
         if (filters.dateTo) params.set("dateTo", filters.dateTo);
         params.set("page", String(page));
         params.set("pageSize", String(LIST_PAGE_SIZE));
-        const data = await apiFetch<Paginated<SalesInvoiceListItem>>(`/sales-invoices?${params.toString()}`);
+        const data = await apiFetch<Paginated<SalesInvoiceListItem>>(`/sales-invoices?${params.toString()}${sortQuery(sort)}`);
         if (cancelled) return;
         if (data.items.length === 0 && data.total > 0 && page > 1) {
           setPage(totalPages(data.total, LIST_PAGE_SIZE));
@@ -263,7 +269,7 @@ function ListTab({ canInvoice, pushError, pushSuccess }: { canInvoice: boolean; 
       cancelled = true;
       clearTimeout(timeout);
     };
-  }, [filters, page, reloadKey]);
+  }, [filters, page, reloadKey, sort]);
 
   function updateFilter<K extends keyof FilterState>(key: K, value: FilterState[K]) {
     setFilters((current) => ({ ...current, [key]: value }));
@@ -358,15 +364,15 @@ function ListTab({ canInvoice, pushError, pushSuccess }: { canInvoice: boolean; 
           <table className="w-full text-right text-sm">
             <thead className="bg-muted/40 text-xs text-muted-foreground">
               <tr>
-                <th className="px-3 py-2.5 font-medium">شماره فاکتور</th>
-                <th className="px-3 py-2.5 font-medium">تاریخ</th>
-                <th className="px-3 py-2.5 font-medium">سررسید</th>
-                <th className="px-3 py-2.5 font-medium">مشتری</th>
+                <SortHeader label="شماره فاکتور" sortKey="invoiceNumber" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                <SortHeader label="تاریخ" sortKey="invoiceDate" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                <SortHeader label="سررسید" sortKey="dueDate" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                <SortHeader label="مشتری" sortKey="customer" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
                 <th className="px-3 py-2.5 font-medium">سفارش</th>
-                <th className="px-3 py-2.5 font-medium">مبلغ کل (ریال)</th>
+                <SortHeader label="مبلغ کل (ریال)" sortKey="totalAmount" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
                 <th className="px-3 py-2.5 font-medium">مانده (ریال)</th>
-                <th className="px-3 py-2.5 font-medium">پرداخت</th>
-                <th className="px-3 py-2.5 font-medium">وضعیت</th>
+                <SortHeader label="پرداخت" sortKey="paymentStatus" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                <SortHeader label="وضعیت" sortKey="status" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
                 <th className="px-3 py-2.5 font-medium">عملیات</th>
               </tr>
             </thead>

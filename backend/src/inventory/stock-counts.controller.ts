@@ -1,10 +1,11 @@
 import { Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
-import { parsePagination } from '../common/pagination';
+import { parsePagination, parseSort } from '../common/pagination';
 import { ZodValidationPipe } from '../common/zod-validation.pipe';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { SessionAuthGuard } from '../auth/guards/session-auth.guard';
+import { RequireFeature } from '../common/feature-flags';
 import type { CountAccess } from './stock-counts.service';
 import { StockCountsService } from './stock-counts.service';
 import {
@@ -41,6 +42,7 @@ export function countAccessOf(req: Request): CountAccess {
 // inventory.approve (the approving role, never the submitter — B10 reused).
 @Controller('inventory/stock-counts')
 @UseGuards(SessionAuthGuard, PermissionsGuard)
+@RequireFeature('inventoryStockCounts')
 export class StockCountsController {
   constructor(private readonly countsService: StockCountsService) {}
 
@@ -55,7 +57,7 @@ export class StockCountsController {
   @RequirePermissions('inventory.view')
   list(@Query(new ZodValidationPipe(stockCountListQuerySchema)) query: StockCountListQuery) {
     return this.countsService.list(
-      { q: query.q?.trim() || undefined, status: query.status, scope: query.scope, locationId: query.locationId },
+      { q: query.q?.trim() || undefined, status: query.status, scope: query.scope, locationId: query.locationId, sort: parseSort(query.sortBy, query.sortDir) },
       parsePagination(query.page, query.pageSize),
     );
   }

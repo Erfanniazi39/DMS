@@ -170,10 +170,27 @@ export type CustomerAddressRow = {
   city: string | null;
   addressLine: string;
   postalCode: string | null;
+  country: string | null;
+  cityCode: string | null;
+  locationNumber: string | null;
+  locationName: string | null;
   phone: string | null;
   deliveryInstructions: string | null;
   isDefault: boolean;
   isActive: boolean;
+};
+
+// Numbers are masked server-side (last 4 digits) for callers without
+// customers.manage / customers.finance.
+export type CustomerBankAccountRow = {
+  id: number;
+  bankName: string | null;
+  accountNumber: string | null;
+  shebaNumber: string | null;
+  accountHolderName: string | null;
+  isDefault: boolean;
+  isActive: boolean;
+  note: string | null;
 };
 
 export type CustomerNoteRow = {
@@ -225,8 +242,17 @@ export type CustomerDetail = {
   nationalId: string | null;
   economicCode: string | null;
   legacyCode: string | null;
+  title: string | null;
+  registrationNumber: string | null;
   phone: string;
+  phone2: string | null;
+  mobile: string | null;
+  fax: string | null;
+  telex: string | null;
+  website: string | null;
   email: string | null;
+  taxOfficeProvince: string | null;
+  taxOfficeCity: string | null;
   customerGroupId: number;
   territoryId: number | null;
   status: CustomerStatus;
@@ -240,6 +266,10 @@ export type CustomerDetail = {
   createdByUser: UserRef;
   contacts: CustomerContactRow[];
   addresses: CustomerAddressRow[];
+  bankAccounts: CustomerBankAccountRow[];
+  // Identity fields this (old) record fails today; the next header edit is
+  // rejected until they are fixed. Empty = complete.
+  missingIdentityFields: string[];
   notes: CustomerNoteRow[];
   documents: CustomerDocumentRow[];
   complaints: CustomerComplaintRow[];

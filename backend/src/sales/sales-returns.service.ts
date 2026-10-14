@@ -1,12 +1,31 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { nextDocumentNumber } from '../common/document-sequence';
-import { isSameVersion, recordModifiedConflict } from '../common/optimistic-lock';
-import { toSkipTake, type PaginationParams } from '../common/pagination';
+import {
+  isSameVersion,
+  recordModifiedConflict,
+} from '../common/optimistic-lock';
+import {
+  toSkipTake,
+  type PaginationParams,
+  buildOrderBy,
+  type SortParams,
+} from '../common/pagination';
 import { AUDIT_ENTITY, AuditService } from '../audit/audit.service';
-import { getItemBatchSettings, listIssuedBatches, type IssuedBatch, type ItemBatchSettings } from '../inventory/inventory-queries';
+import {
+  getItemBatchSettings,
+  listIssuedBatches,
+  type IssuedBatch,
+  type ItemBatchSettings,
+} from '../inventory/inventory-queries';
 import { resolveBatches } from '../inventory/stock-batches';
 import { inspectReturn, receiveReturn } from '../inventory/stock-ledger';
+import { isFeatureEnabled } from '../common/feature-flags';
 import { PrismaService } from '../prisma/prisma.service';
 import { applyReturnedQuantities } from './sales-progress';
 import {
@@ -36,10 +55,12 @@ export type SalesReturnListFilters = {
   deliveryId?: number;
   dateFrom?: Date;
   dateTo?: Date;
+  sort?: SortParams;
 };
 
 const userSelect = { select: { id: true, username: true } } as const;
-const dec = (value: Prisma.Decimal | number | string) => new Prisma.Decimal(value);
+const dec = (value: Prisma.Decimal | number | string) =>
+  new Prisma.Decimal(value);
 
 const salesReturnDetailInclude = {
   customer: { select: { id: true, customerNumber: true, name: true } },
@@ -52,12 +73,25 @@ const salesReturnDetailInclude = {
   inspectedByUser: userSelect,
   items: {
     include: {
-      deliveryItem: { select: { id: true, quantity: true, returnedQty: true, salesOrderItemId: true } },
+      deliveryItem: {
+        select: {
+          id: true,
+          quantity: true,
+          returnedQty: true,
+          salesOrderItemId: true,
+        },
+      },
     },
   },
   creditNotes: {
     orderBy: { id: 'asc' },
-    select: { id: true, creditNoteNumber: true, status: true, totalAmount: true, createdAt: true },
+    select: {
+      id: true,
+      creditNoteNumber: true,
+      status: true,
+      totalAmount: true,
+      createdAt: true,
+    },
   },
 } satisfies Prisma.SalesReturnInclude;
 
@@ -75,7 +109,14 @@ type DeliveryForReturn = {
     quantity: Prisma.Decimal;
     returnedQty: Prisma.Decimal;
     salesOrderItemId: number;
-    salesOrderItem: { id: number; lineNo: number; itemCode: string; itemName: string; unitName: string; unitPrice: Prisma.Decimal };
+    salesOrderItem: {
+      id: number;
+      lineNo: number;
+      itemCode: string;
+      itemName: string;
+      unitName: string;
+      unitPrice: Prisma.Decimal;
+    };
   }[];
 };
 
@@ -94,10 +135,33 @@ const deliveryForReturnSelect = {
       quantity: true,
       returnedQty: true,
       salesOrderItemId: true,
-      salesOrderItem: { select: { id: true, lineNo: true, itemCode: true, itemName: true, unitName: true, unitPrice: true } },
+      salesOrderItem: {
+        select: {
+          id: true,
+          lineNo: true,
+          itemCode: true,
+          itemName: true,
+          unitName: true,
+          unitPrice: true,
+        },
+      },
     },
   },
 } satisfies Prisma.DeliverySelect;
+
+// Columns the sales-returns table can be sorted by (the line count is derived).
+const SALES_RETURN_SORT_COLUMNS: Record<
+  string,
+  (dir: 'asc' | 'desc') => Prisma.SalesReturnOrderByWithRelationInput
+> = {
+  returnNumber: (dir) => ({ returnNumber: { sort: dir, nulls: 'last' } }),
+  requestDate: (dir) => ({ requestDate: dir }),
+  delivery: (dir) => ({ delivery: { deliveryNumber: dir } }),
+  // The table shows the customer NUMBER here, so that is what sorts.
+  customer: (dir) => ({ customer: { customerNumber: dir } }),
+  reason: (dir) => ({ reason: dir }),
+  status: (dir) => ({ status: dir }),
+};
 
 // مرجوعی فروش (RMA) — lifecycle per docs/sales-module-build-plan.md §5:
 //
@@ -139,12 +203,19 @@ export class SalesReturnsService {
     private readonly audit: AuditService,
   ) {}
 
-  async list(filters: SalesReturnListFilters = {}, pagination?: PaginationParams) {
+  async list(
+    filters: SalesReturnListFilters = {},
+    pagination?: PaginationParams,
+  ) {
     const where: Prisma.SalesReturnWhereInput = {};
     if (filters.q) {
       where.OR = [
         { returnNumber: { contains: filters.q, mode: 'insensitive' } },
-        { delivery: { deliveryNumber: { contains: filters.q, mode: 'insensitive' } } },
+        {
+          delivery: {
+            deliveryNumber: { contains: filters.q, mode: 'insensitive' },
+          },
+        },
         { customer: { name: { contains: filters.q, mode: 'insensitive' } } },
       ];
     }
@@ -160,7 +231,12 @@ export class SalesReturnsService {
     }
     const query = {
       where,
-      orderBy: [{ requestDate: 'desc' }, { id: 'desc' }],
+      orderBy: buildOrderBy(
+        filters.sort,
+        SALES_RETURN_SORT_COLUMNS,
+        [{ requestDate: 'desc' }, { id: 'desc' }],
+        [{ id: 'desc' }],
+      ),
       include: {
         customer: { select: { id: true, customerNumber: true } },
         delivery: { select: { id: true, deliveryNumber: true } },
@@ -174,11 +250,19 @@ export class SalesReturnsService {
       this.prisma.salesReturn.findMany({ ...query, ...toSkipTake(pagination) }),
       this.prisma.salesReturn.count({ where }),
     ]);
-    return { items, total, page: pagination.page, pageSize: pagination.pageSize };
+    return {
+      items,
+      total,
+      page: pagination.page,
+      pageSize: pagination.pageSize,
+    };
   }
 
   async get(id: number) {
-    const salesReturn = await this.prisma.salesReturn.findUnique({ where: { id }, include: salesReturnDetailInclude });
+    const salesReturn = await this.prisma.salesReturn.findUnique({
+      where: { id },
+      include: salesReturnDetailInclude,
+    });
     if (!salesReturn) throw new NotFoundException('مرجوعی پیدا نشد');
     return salesReturn;
   }
@@ -196,17 +280,40 @@ export class SalesReturnsService {
   async receiveOptions(id: number) {
     const salesReturn = await this.prisma.salesReturn.findUnique({
       where: { id },
-      select: { id: true, deliveryId: true, items: { select: { id: true, itemId: true, itemName: true, deliveryItemId: true, requestedQty: true, receivedQty: true } } },
+      select: {
+        id: true,
+        deliveryId: true,
+        items: {
+          select: {
+            id: true,
+            itemId: true,
+            itemName: true,
+            deliveryItemId: true,
+            requestedQty: true,
+            receivedQty: true,
+          },
+        },
+      },
     });
     if (!salesReturn) throw new NotFoundException('مرجوعی پیدا نشد');
 
-    const settingsByItem = await getItemBatchSettings(this.prisma, salesReturn.items.map((line) => line.itemId));
+    const settingsByItem = await getItemBatchSettings(
+      this.prisma,
+      salesReturn.items.map((line) => line.itemId),
+    );
     const lines = await Promise.all(
       salesReturn.items.map(async (line) => {
-        const batchTracked = settingsByItem.get(line.itemId)?.batchTracked ?? false;
+        const batchTracked =
+          settingsByItem.get(line.itemId)?.batchTracked ?? false;
         const batches =
-          batchTracked && line.deliveryItemId !== null && salesReturn.deliveryId !== null
-            ? await listIssuedBatches(this.prisma, salesReturn.deliveryId, line.deliveryItemId)
+          batchTracked &&
+          line.deliveryItemId !== null &&
+          salesReturn.deliveryId !== null
+            ? await listIssuedBatches(
+                this.prisma,
+                salesReturn.deliveryId,
+                line.deliveryItemId,
+              )
             : [];
         return {
           salesReturnItemId: line.id,
@@ -234,7 +341,9 @@ export class SalesReturnsService {
       customerId: delivery.customerId,
       salesOrderId: delivery.salesOrderId,
       locationId: delivery.locationId,
-      returnable: RETURNABLE_DELIVERY_STATUSES.includes(delivery.status as never),
+      returnable: RETURNABLE_DELIVERY_STATUSES.includes(
+        delivery.status as never,
+      ),
       items: delivery.items.map((line) => ({
         id: line.id,
         itemId: line.itemId,
@@ -252,14 +361,25 @@ export class SalesReturnsService {
   async request(dto: RequestSalesReturnDto, actor: SalesReturnActor) {
     const delivery = await this.loadDelivery(this.prisma, dto.deliveryId);
     this.ensureDeliveryReturnable(delivery);
+    if (dto.requestDate.getTime() < delivery.deliveryDate.getTime())
+      throw new BadRequestException(
+        'تاریخ مرجوعی نمی‌تواند پیش از تاریخ تحویل باشد',
+      );
 
     const lines = dto.items.map((entry, index) => {
       const label = `ردیف ${index + 1}`;
-      const line = delivery.items.find((item) => item.id === entry.deliveryItemId);
-      if (!line) throw new BadRequestException(`${label}: ردیف انتخاب‌شده متعلق به این حواله نیست`);
+      const line = delivery.items.find(
+        (item) => item.id === entry.deliveryItemId,
+      );
+      if (!line)
+        throw new BadRequestException(
+          `${label}: ردیف انتخاب‌شده متعلق به این حواله نیست`,
+        );
       const open = this.returnable(line);
       if (dec(entry.quantity).greaterThan(open)) {
-        throw new BadRequestException(`${label} («${line.salesOrderItem.itemName}»): مقدار درخواستی (${entry.quantity}) از مقدار قابل مرجوع این ردیف (${open.toString()}) بیشتر است`);
+        throw new BadRequestException(
+          `${label} («${line.salesOrderItem.itemName}»): مقدار درخواستی (${entry.quantity}) از مقدار قابل مرجوع این ردیف (${open.toString()}) بیشتر است`,
+        );
       }
       return {
         deliveryItemId: line.id,
@@ -305,15 +425,29 @@ export class SalesReturnsService {
 
   // REQUESTED → APPROVED (RMA number assigned here, per build plan §4.2's
   // comment "assigned at APPROVED").
-  async approve(id: number, dto: ApproveSalesReturnDto, actor: SalesReturnActor) {
+  async approve(
+    id: number,
+    dto: ApproveSalesReturnDto,
+    actor: SalesReturnActor,
+  ) {
     await this.prisma.$transaction(async (tx) => {
       const salesReturn = await this.loadLocked(tx, id);
-      if (!isSameVersion(salesReturn.updatedAt, dto.updatedAt)) throw recordModifiedConflict();
+      if (!isSameVersion(salesReturn.updatedAt, dto.updatedAt))
+        throw recordModifiedConflict();
       ensureSalesReturnTransition(salesReturn.status, 'APPROVED');
-      const returnNumber = await nextDocumentNumber(tx, SALES_RETURN_DOC_TYPE, salesReturn.requestDate);
+      const returnNumber = await nextDocumentNumber(
+        tx,
+        SALES_RETURN_DOC_TYPE,
+        salesReturn.requestDate,
+      );
       await tx.salesReturn.update({
         where: { id },
-        data: { status: 'APPROVED', returnNumber, approvedByUserId: actor.userId, approvedAt: new Date() },
+        data: {
+          status: 'APPROVED',
+          returnNumber,
+          approvedByUserId: actor.userId,
+          approvedAt: new Date(),
+        },
       });
       await this.audit.log(
         {
@@ -334,11 +468,22 @@ export class SalesReturnsService {
   async reject(id: number, dto: RejectSalesReturnDto, actor: SalesReturnActor) {
     await this.prisma.$transaction(async (tx) => {
       const salesReturn = await this.loadLocked(tx, id);
-      if (!isSameVersion(salesReturn.updatedAt, dto.updatedAt)) throw recordModifiedConflict();
+      if (!isSameVersion(salesReturn.updatedAt, dto.updatedAt))
+        throw recordModifiedConflict();
       ensureSalesReturnTransition(salesReturn.status, 'REJECTED');
-      await tx.salesReturn.update({ where: { id }, data: { status: 'REJECTED', rejectReason: dto.reason } });
+      await tx.salesReturn.update({
+        where: { id },
+        data: { status: 'REJECTED', rejectReason: dto.reason },
+      });
       await this.audit.log(
-        { userId: actor.userId, ipAddress: actor.ipAddress, action: 'SALES_RETURN_REJECTED', entityType: AUDIT_ENTITY.SALES_RETURN, entityId: id, details: `علت: ${dto.reason}` },
+        {
+          userId: actor.userId,
+          ipAddress: actor.ipAddress,
+          action: 'SALES_RETURN_REJECTED',
+          entityType: AUDIT_ENTITY.SALES_RETURN,
+          entityId: id,
+          details: `علت: ${dto.reason}`,
+        },
         tx,
       );
     });
@@ -350,11 +495,22 @@ export class SalesReturnsService {
   async cancel(id: number, dto: CancelSalesReturnDto, actor: SalesReturnActor) {
     await this.prisma.$transaction(async (tx) => {
       const salesReturn = await this.loadLocked(tx, id);
-      if (!isSameVersion(salesReturn.updatedAt, dto.updatedAt)) throw recordModifiedConflict();
+      if (!isSameVersion(salesReturn.updatedAt, dto.updatedAt))
+        throw recordModifiedConflict();
       ensureSalesReturnTransition(salesReturn.status, 'CANCELLED');
-      await tx.salesReturn.update({ where: { id }, data: { status: 'CANCELLED' } });
+      await tx.salesReturn.update({
+        where: { id },
+        data: { status: 'CANCELLED' },
+      });
       await this.audit.log(
-        { userId: actor.userId, ipAddress: actor.ipAddress, action: 'SALES_RETURN_CANCELLED', entityType: AUDIT_ENTITY.SALES_RETURN, entityId: id, details: `علت: ${dto.reason}` },
+        {
+          userId: actor.userId,
+          ipAddress: actor.ipAddress,
+          action: 'SALES_RETURN_CANCELLED',
+          entityType: AUDIT_ENTITY.SALES_RETURN,
+          entityId: id,
+          details: `علت: ${dto.reason}`,
+        },
         tx,
       );
     });
@@ -368,48 +524,87 @@ export class SalesReturnsService {
   // CURRENT returnedQty under a lock on the delivery row — another return
   // on the same delivery item may have been received since this one was
   // requested/approved.
-  async receive(id: number, dto: ReceiveSalesReturnDto, actor: SalesReturnActor) {
+  async receive(
+    id: number,
+    dto: ReceiveSalesReturnDto,
+    actor: SalesReturnActor,
+  ) {
     await this.prisma.$transaction(async (tx) => {
       const salesReturn = await this.loadLocked(tx, id);
-      if (!isSameVersion(salesReturn.updatedAt, dto.updatedAt)) throw recordModifiedConflict();
+      if (!isSameVersion(salesReturn.updatedAt, dto.updatedAt))
+        throw recordModifiedConflict();
       ensureSalesReturnTransition(salesReturn.status, 'RECEIVED');
 
-      const byItemId = new Map(dto.items?.map((entry) => [entry.salesReturnItemId, entry]) ?? []);
-      if (dto.items && salesReturn.items.some((line) => !byItemId.has(line.id))) {
-        throw new BadRequestException('تمام ردیف‌های این مرجوعی باید در دریافت مشخص شوند');
+      const byItemId = new Map(
+        dto.items?.map((entry) => [entry.salesReturnItemId, entry]) ?? [],
+      );
+      if (
+        dto.items &&
+        salesReturn.items.some((line) => !byItemId.has(line.id))
+      ) {
+        throw new BadRequestException(
+          'تمام ردیف‌های این مرجوعی باید در دریافت مشخص شوند',
+        );
       }
 
       await tx.$queryRaw`SELECT id FROM deliveries WHERE id = ${salesReturn.deliveryId} FOR UPDATE`;
-      const deliveryItemIds = salesReturn.items.map((line) => line.deliveryItemId).filter((value): value is number => value !== null);
+      const deliveryItemIds = salesReturn.items
+        .map((line) => line.deliveryItemId)
+        .filter((value): value is number => value !== null);
       const deliveryItems = await tx.deliveryItem.findMany({
         where: { id: { in: deliveryItemIds } },
-        select: { id: true, quantity: true, returnedQty: true, salesOrderItemId: true },
+        select: {
+          id: true,
+          quantity: true,
+          returnedQty: true,
+          salesOrderItemId: true,
+        },
       });
-      const deliveryItemById = new Map(deliveryItems.map((row) => [row.id, row]));
+      const deliveryItemById = new Map(
+        deliveryItems.map((row) => [row.id, row]),
+      );
       const salesOrderItems = await tx.salesOrderItem.findMany({
         where: { id: { in: deliveryItems.map((row) => row.salesOrderItemId) } },
         select: { id: true, returnedQty: true },
       });
-      const salesOrderItemById = new Map(salesOrderItems.map((row) => [row.id, row]));
+      const salesOrderItemById = new Map(
+        salesOrderItems.map((row) => [row.id, row]),
+      );
 
       // I4 (§5.4a R7/B22/B24): a batch-tracked item's return must land in a
       // specific batch's QC bucket. Never read Inventory's tables directly
       // (CLAUDE.md rule 11) — only through its exported query helpers
       // (getItemBatchSettings()/listIssuedBatches()) and stock-batches.ts
       // resolveBatches() for the B22 (pre-cutover delivery) case.
-      const settingsByItem = await getItemBatchSettings(tx, salesReturn.items.map((line) => line.itemId));
+      const settingsByItem = await getItemBatchSettings(
+        tx,
+        salesReturn.items.map((line) => line.itemId),
+      );
 
       const prepared = await Promise.all(
         salesReturn.items.map(async (line) => {
           const requested = dec(line.requestedQty);
           const entry = byItemId.get(line.id);
-          const receivedQty = entry?.receivedQty !== undefined ? dec(entry.receivedQty) : requested;
+          const receivedQty =
+            entry?.receivedQty !== undefined
+              ? dec(entry.receivedQty)
+              : requested;
           if (receivedQty.greaterThan(requested)) {
-            throw new BadRequestException(`ردیف «${line.itemName}»: مقدار دریافت‌شده (${receivedQty.toString()}) از مقدار درخواستی (${requested.toString()}) بیشتر است`);
+            throw new BadRequestException(
+              `ردیف «${line.itemName}»: مقدار دریافت‌شده (${receivedQty.toString()}) از مقدار درخواستی (${requested.toString()}) بیشتر است`,
+            );
           }
-          const deliveryItem = line.deliveryItemId === null ? undefined : deliveryItemById.get(line.deliveryItemId);
-          if (!deliveryItem) throw new ConflictException(`ردیف «${line.itemName}»: ردیف حواله مربوط پیدا نشد`);
-          const capacity = dec(deliveryItem.quantity).minus(dec(deliveryItem.returnedQty));
+          const deliveryItem =
+            line.deliveryItemId === null
+              ? undefined
+              : deliveryItemById.get(line.deliveryItemId);
+          if (!deliveryItem)
+            throw new ConflictException(
+              `ردیف «${line.itemName}»: ردیف حواله مربوط پیدا نشد`,
+            );
+          const capacity = dec(deliveryItem.quantity).minus(
+            dec(deliveryItem.returnedQty),
+          );
           if (receivedQty.greaterThan(capacity)) {
             throw new ConflictException(
               `ردیف «${line.itemName}»: مقدار دریافت (${receivedQty.toString()}) از مقدار قابل مرجوع فعلی این ردیف حواله (${capacity.toString()}) بیشتر است — احتمالاً مرجوعی دیگری برای همین ردیف دریافت شده است.`,
@@ -417,37 +612,60 @@ export class SalesReturnsService {
           }
 
           let batchId: number | null = null;
-          if (receivedQty.greaterThan(0) && settingsByItem.get(line.itemId)?.batchTracked) {
+          if (
+            receivedQty.greaterThan(0) &&
+            settingsByItem.get(line.itemId)?.batchTracked
+          ) {
             // Every return reaching receive() today references a delivery
             // (B8's unreferenced returns don't exist yet) — deliveryId stays
             // nullable in the schema only for that future case.
             if (salesReturn.deliveryId === null) {
-              throw new ConflictException(`ردیف «${line.itemName}»: این مرجوعی به هیچ حواله‌ای مرتبط نیست؛ امکان تعیین بچ وجود ندارد`);
+              throw new ConflictException(
+                `ردیف «${line.itemName}»: این مرجوعی به هیچ حواله‌ای مرتبط نیست؛ امکان تعیین بچ وجود ندارد`,
+              );
             }
-            batchId = await this.resolveReceiveBatch(tx, line, salesReturn.deliveryId, deliveryItem.id, entry, receivedQty, settingsByItem, actor.userId);
+            batchId = await this.resolveReceiveBatch(
+              tx,
+              line,
+              salesReturn.deliveryId,
+              deliveryItem.id,
+              entry,
+              receivedQty,
+              settingsByItem,
+              actor.userId,
+            );
           }
 
           return { line, deliveryItem, receivedQty, batchId };
         }),
       );
 
-      await receiveReturn(
-        tx,
-        {
-          locationId: salesReturn.locationId,
-          movementDate: new Date(),
-          referenceType: 'SALES_RETURN',
-          referenceId: salesReturn.id,
-          referenceNumber: salesReturn.returnNumber,
-          createdByUserId: actor.userId,
-        },
-        prepared
-          .filter((entry) => entry.receivedQty.greaterThan(0))
-          .map((entry) => ({ referenceLineId: entry.line.id, itemId: entry.line.itemId, quantity: entry.receivedQty, batchId: entry.batchId })),
-      );
+      if (isFeatureEnabled('salesStockEffects'))
+        await receiveReturn(
+          tx,
+          {
+            locationId: salesReturn.locationId,
+            movementDate: new Date(),
+            referenceType: 'SALES_RETURN',
+            referenceId: salesReturn.id,
+            referenceNumber: salesReturn.returnNumber,
+            createdByUserId: actor.userId,
+          },
+          prepared
+            .filter((entry) => entry.receivedQty.greaterThan(0))
+            .map((entry) => ({
+              referenceLineId: entry.line.id,
+              itemId: entry.line.itemId,
+              quantity: entry.receivedQty,
+              batchId: entry.batchId,
+            })),
+        );
 
       for (const entry of prepared) {
-        await tx.salesReturnItem.update({ where: { id: entry.line.id }, data: { receivedQty: entry.receivedQty, batchId: entry.batchId } });
+        await tx.salesReturnItem.update({
+          where: { id: entry.line.id },
+          data: { receivedQty: entry.receivedQty, batchId: entry.batchId },
+        });
       }
       await applyReturnedQuantities(
         tx,
@@ -457,12 +675,21 @@ export class SalesReturnsService {
             deliveryItemId: entry.deliveryItem.id,
             deliveryItemReturnedQty: entry.deliveryItem.returnedQty,
             salesOrderItemId: entry.deliveryItem.salesOrderItemId,
-            salesOrderItemReturnedQty: salesOrderItemById.get(entry.deliveryItem.salesOrderItemId)?.returnedQty ?? 0,
+            salesOrderItemReturnedQty:
+              salesOrderItemById.get(entry.deliveryItem.salesOrderItemId)
+                ?.returnedQty ?? 0,
             quantity: entry.receivedQty,
           })),
       );
 
-      await tx.salesReturn.update({ where: { id }, data: { status: 'RECEIVED', receivedByUserId: actor.userId, receivedAt: new Date() } });
+      await tx.salesReturn.update({
+        where: { id },
+        data: {
+          status: 'RECEIVED',
+          receivedByUserId: actor.userId,
+          receivedAt: new Date(),
+        },
+      });
       await this.audit.log(
         {
           userId: actor.userId,
@@ -482,16 +709,28 @@ export class SalesReturnsService {
   // restockQty + writeOffQty + damagedQty must equal that line's receivedQty
   // exactly (I8, B9: "to damaged" joins restock/write-off as a third
   // disposition).
-  async inspect(id: number, dto: InspectSalesReturnDto, actor: SalesReturnActor) {
+  async inspect(
+    id: number,
+    dto: InspectSalesReturnDto,
+    actor: SalesReturnActor,
+  ) {
     await this.prisma.$transaction(async (tx) => {
       const salesReturn = await this.loadLocked(tx, id);
-      if (!isSameVersion(salesReturn.updatedAt, dto.updatedAt)) throw recordModifiedConflict();
+      if (!isSameVersion(salesReturn.updatedAt, dto.updatedAt))
+        throw recordModifiedConflict();
       ensureSalesReturnTransition(salesReturn.status, 'INSPECTED');
 
-      const byItemId = new Map(dto.items.map((entry) => [entry.salesReturnItemId, entry]));
-      const receivedLines = salesReturn.items.filter((line) => dec(line.receivedQty).greaterThan(0));
+      const byItemId = new Map(
+        dto.items.map((entry) => [entry.salesReturnItemId, entry]),
+      );
+      const receivedLines = salesReturn.items.filter((line) =>
+        dec(line.receivedQty).greaterThan(0),
+      );
       const missing = receivedLines.find((line) => !byItemId.has(line.id));
-      if (missing) throw new BadRequestException(`ردیف «${missing.itemName}»: باید در بازرسی مشخص شود`);
+      if (missing)
+        throw new BadRequestException(
+          `ردیف «${missing.itemName}»: باید در بازرسی مشخص شود`,
+        );
 
       const prepared = receivedLines.map((line) => {
         const entry = byItemId.get(line.id)!;
@@ -507,38 +746,50 @@ export class SalesReturnsService {
         return { line, restockQty, writeOffQty, damagedQty };
       });
 
-      await inspectReturn(
-        tx,
-        {
-          locationId: salesReturn.locationId,
-          movementDate: new Date(),
-          referenceType: 'SALES_RETURN',
-          referenceId: salesReturn.id,
-          referenceNumber: salesReturn.returnNumber,
-          createdByUserId: actor.userId,
-        },
-        // I4 (§5.4a R7): the same batch the line's QC stock was received
-        // into (receive() resolved and stored it on the line) — restock
-        // re-enters ON_HAND, write-off and "to damaged" (I8) both leave QC,
-        // from that same batch.
-        prepared.map((entry) => ({
-          referenceLineId: entry.line.id,
-          itemId: entry.line.itemId,
-          restockQty: entry.restockQty,
-          writeOffQty: entry.writeOffQty,
-          damagedQty: entry.damagedQty,
-          batchId: entry.line.batchId,
-        })),
-      );
+      if (isFeatureEnabled('salesStockEffects'))
+        await inspectReturn(
+          tx,
+          {
+            locationId: salesReturn.locationId,
+            movementDate: new Date(),
+            referenceType: 'SALES_RETURN',
+            referenceId: salesReturn.id,
+            referenceNumber: salesReturn.returnNumber,
+            createdByUserId: actor.userId,
+          },
+          // I4 (§5.4a R7): the same batch the line's QC stock was received
+          // into (receive() resolved and stored it on the line) — restock
+          // re-enters ON_HAND, write-off and "to damaged" (I8) both leave QC,
+          // from that same batch.
+          prepared.map((entry) => ({
+            referenceLineId: entry.line.id,
+            itemId: entry.line.itemId,
+            restockQty: entry.restockQty,
+            writeOffQty: entry.writeOffQty,
+            damagedQty: entry.damagedQty,
+            batchId: entry.line.batchId,
+          })),
+        );
 
       for (const entry of prepared) {
         await tx.salesReturnItem.update({
           where: { id: entry.line.id },
-          data: { restockQty: entry.restockQty, writeOffQty: entry.writeOffQty, damagedQty: entry.damagedQty },
+          data: {
+            restockQty: entry.restockQty,
+            writeOffQty: entry.writeOffQty,
+            damagedQty: entry.damagedQty,
+          },
         });
       }
 
-      await tx.salesReturn.update({ where: { id }, data: { status: 'INSPECTED', inspectedByUserId: actor.userId, inspectedAt: new Date() } });
+      await tx.salesReturn.update({
+        where: { id },
+        data: {
+          status: 'INSPECTED',
+          inspectedByUserId: actor.userId,
+          inspectedAt: new Date(),
+        },
+      });
       await this.audit.log(
         {
           userId: actor.userId,
@@ -556,12 +807,20 @@ export class SalesReturnsService {
 
   // INSPECTED → COMPLETED, an explicit no-credit close (reason required) —
   // the alternative to markCredited() (build plan §5).
-  async completeWithoutCredit(id: number, dto: CompleteReturnWithoutCreditDto, actor: SalesReturnActor) {
+  async completeWithoutCredit(
+    id: number,
+    dto: CompleteReturnWithoutCreditDto,
+    actor: SalesReturnActor,
+  ) {
     await this.prisma.$transaction(async (tx) => {
       const salesReturn = await this.loadLocked(tx, id);
-      if (!isSameVersion(salesReturn.updatedAt, dto.updatedAt)) throw recordModifiedConflict();
+      if (!isSameVersion(salesReturn.updatedAt, dto.updatedAt))
+        throw recordModifiedConflict();
       ensureSalesReturnTransition(salesReturn.status, 'COMPLETED');
-      await tx.salesReturn.update({ where: { id }, data: { status: 'COMPLETED' } });
+      await tx.salesReturn.update({
+        where: { id },
+        data: { status: 'COMPLETED' },
+      });
       await this.audit.log(
         {
           userId: actor.userId,
@@ -582,19 +841,41 @@ export class SalesReturnsService {
   // module exposes for Receivables, same role as
   // SalesInvoicesService.applySettlement(). INSPECTED → COMPLETED;
   // creditedQty is written per line.
-  async markCredited(tx: Prisma.TransactionClient, salesReturnId: number, creditedLines: { salesReturnItemId: number; quantity: Prisma.Decimal }[], actor: SalesReturnActor) {
+  async markCredited(
+    tx: Prisma.TransactionClient,
+    salesReturnId: number,
+    creditedLines: { salesReturnItemId: number; quantity: Prisma.Decimal }[],
+    actor: SalesReturnActor,
+  ) {
     await tx.$queryRaw`SELECT id FROM sales_returns WHERE id = ${salesReturnId} FOR UPDATE`;
-    const salesReturn = await tx.salesReturn.findUnique({ where: { id: salesReturnId }, select: { id: true, status: true, returnNumber: true, items: { select: { id: true, creditedQty: true } } } });
+    const salesReturn = await tx.salesReturn.findUnique({
+      where: { id: salesReturnId },
+      select: {
+        id: true,
+        status: true,
+        returnNumber: true,
+        items: { select: { id: true, creditedQty: true } },
+      },
+    });
     if (!salesReturn) throw new NotFoundException('مرجوعی پیدا نشد');
     ensureSalesReturnTransition(salesReturn.status, 'COMPLETED');
-    const currentByItem = new Map(salesReturn.items.map((line) => [line.id, line.creditedQty]));
+    const currentByItem = new Map(
+      salesReturn.items.map((line) => [line.id, line.creditedQty]),
+    );
     for (const entry of creditedLines) {
       await tx.salesReturnItem.update({
         where: { id: entry.salesReturnItemId },
-        data: { creditedQty: dec(currentByItem.get(entry.salesReturnItemId) ?? 0).plus(entry.quantity) },
+        data: {
+          creditedQty: dec(
+            currentByItem.get(entry.salesReturnItemId) ?? 0,
+          ).plus(entry.quantity),
+        },
       });
     }
-    await tx.salesReturn.update({ where: { id: salesReturnId }, data: { status: 'COMPLETED' } });
+    await tx.salesReturn.update({
+      where: { id: salesReturnId },
+      data: { status: 'COMPLETED' },
+    });
     await this.audit.log(
       {
         userId: actor.userId,
@@ -637,7 +918,13 @@ export class SalesReturnsService {
       }
       const [resolved] = await resolveBatches(
         tx,
-        [{ itemId: line.itemId, batchNumber: entry.batchNumber, expiryDate: entry.expiryDate ?? null }],
+        [
+          {
+            itemId: line.itemId,
+            batchNumber: entry.batchNumber,
+            expiryDate: entry.expiryDate ?? null,
+          },
+        ],
         settingsByItem,
         userId,
       );
@@ -648,15 +935,21 @@ export class SalesReturnsService {
     if (issued.length === 1) {
       chosen = issued[0];
       if (entry?.batchId && entry.batchId !== chosen.batchId) {
-        throw new BadRequestException(`ردیف «${line.itemName}»: بچ انتخاب‌شده با بچ صادرشدهٔ این ردیف مطابقت ندارد`);
+        throw new BadRequestException(
+          `ردیف «${line.itemName}»: بچ انتخاب‌شده با بچ صادرشدهٔ این ردیف مطابقت ندارد`,
+        );
       }
     } else {
       if (!entry?.batchId) {
-        throw new BadRequestException(`ردیف «${line.itemName}»: این ردیف از چند بچ صادر شده است؛ بچ مرجوعی را مشخص کنید`);
+        throw new BadRequestException(
+          `ردیف «${line.itemName}»: این ردیف از چند بچ صادر شده است؛ بچ مرجوعی را مشخص کنید`,
+        );
       }
       const match = issued.find((batch) => batch.batchId === entry.batchId);
       if (!match) {
-        throw new BadRequestException(`ردیف «${line.itemName}»: بچ انتخاب‌شده جزو بچ‌های صادرشدهٔ این ردیف نیست`);
+        throw new BadRequestException(
+          `ردیف «${line.itemName}»: بچ انتخاب‌شده جزو بچ‌های صادرشدهٔ این ردیف نیست`,
+        );
       }
       chosen = match;
     }
@@ -668,7 +961,10 @@ export class SalesReturnsService {
       where: { deliveryItemId, batchId: chosen.batchId, id: { not: line.id } },
       select: { receivedQty: true },
     });
-    const alreadyReceived = others.reduce((sum, row) => sum.plus(dec(row.receivedQty)), new Prisma.Decimal(0));
+    const alreadyReceived = others.reduce(
+      (sum, row) => sum.plus(dec(row.receivedQty)),
+      new Prisma.Decimal(0),
+    );
     const remaining = dec(chosen.quantity).minus(alreadyReceived);
     if (receivedQty.greaterThan(remaining)) {
       throw new ConflictException(
@@ -678,25 +974,39 @@ export class SalesReturnsService {
     return chosen.batchId;
   }
 
-  private async loadDelivery(client: Prisma.TransactionClient | PrismaService, deliveryId: number): Promise<DeliveryForReturn> {
-    const delivery = await client.delivery.findUnique({ where: { id: deliveryId }, select: deliveryForReturnSelect });
+  private async loadDelivery(
+    client: Prisma.TransactionClient | PrismaService,
+    deliveryId: number,
+  ): Promise<DeliveryForReturn> {
+    const delivery = await client.delivery.findUnique({
+      where: { id: deliveryId },
+      select: deliveryForReturnSelect,
+    });
     if (!delivery) throw new NotFoundException('حواله تحویل پیدا نشد');
     return delivery as unknown as DeliveryForReturn;
   }
 
   private ensureDeliveryReturnable(delivery: DeliveryForReturn) {
     if (!RETURNABLE_DELIVERY_STATUSES.includes(delivery.status as never)) {
-      throw new ConflictException('فقط برای حوالهٔ «ثبت‌شده» می‌توان درخواست مرجوعی ثبت کرد');
+      throw new ConflictException(
+        'فقط برای حوالهٔ «ثبت‌شده» می‌توان درخواست مرجوعی ثبت کرد',
+      );
     }
   }
 
-  private returnable(line: { quantity: Prisma.Decimal; returnedQty: Prisma.Decimal }): Prisma.Decimal {
+  private returnable(line: {
+    quantity: Prisma.Decimal;
+    returnedQty: Prisma.Decimal;
+  }): Prisma.Decimal {
     return dec(line.quantity).minus(dec(line.returnedQty));
   }
 
   private async loadLocked(tx: Prisma.TransactionClient, id: number) {
     await tx.$queryRaw`SELECT id FROM sales_returns WHERE id = ${id} FOR UPDATE`;
-    const salesReturn = await tx.salesReturn.findUnique({ where: { id }, include: { items: true } });
+    const salesReturn = await tx.salesReturn.findUnique({
+      where: { id },
+      include: { items: true },
+    });
     if (!salesReturn) throw new NotFoundException('مرجوعی پیدا نشد');
     return salesReturn;
   }

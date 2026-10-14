@@ -4,6 +4,7 @@ import { CustomerFilesController } from './customer-files.controller';
 import { CustomersService } from './customers.service';
 import { CustomerContactsService } from './customer-contacts.service';
 import { CustomerAddressesService } from './customer-addresses.service';
+import { CustomerBankAccountsService } from './customer-bank-accounts.service';
 import { CustomerNotesService } from './customer-notes.service';
 import { CustomerDocumentsService } from './customer-documents.service';
 import { CustomerComplaintsService } from './customer-complaints.service';
@@ -21,6 +22,7 @@ import { CustomerFinancialService } from './customer-financial.service';
     CustomersService,
     CustomerContactsService,
     CustomerAddressesService,
+    CustomerBankAccountsService,
     CustomerNotesService,
     CustomerDocumentsService,
     CustomerComplaintsService,

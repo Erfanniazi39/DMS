@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { apiFetch, type ApiError } from "@/lib/api";
 import { roleLabel } from "@/lib/roles";
 import PermissionsSection from "@/components/admin/permissions-section";
+import { PermissionPicker } from "@/components/admin/permission-picker";
 import UserPermissionsSection from "@/components/admin/user-permissions-section";
 
 type RoleRecord = { id: number; name: string; userCount: number; permissions: string[] };
@@ -50,16 +51,6 @@ function RoleSection() {
   }, []);
 
   const selectedRole = roles.find((role) => role.id === selectedId);
-  const grouped = permissions.reduce<Record<string, PermissionRecord[]>>((groups, permission) => {
-    (groups[permission.module] ??= []).push(permission);
-    return groups;
-  }, {});
-
-  function togglePermission(code: string) {
-    setSelectedPermissions((current) => current.includes(code)
-      ? current.filter((item) => item !== code)
-      : [...current, code]);
-  }
 
   async function savePermissions() {
     if (selectedId === null) return;
@@ -127,7 +118,7 @@ function RoleSection() {
           <CardHeader><CardTitle className="text-base">{selectedRole ? roleLabel(selectedRole.name) : "دسترسی‌های نقش"}</CardTitle></CardHeader>
           <CardContent>
             {selectedRole ? <div className="space-y-5">
-              {Object.entries(grouped).map(([module, items]) => <fieldset key={module} className="space-y-2"><legend className="mb-2 text-sm font-medium">{module}</legend>{items.map((permission) => <label className="flex items-center gap-3 rounded-md px-2 py-2 text-sm hover:bg-muted" key={permission.code}><input type="checkbox" checked={selectedPermissions.includes(permission.code)} onChange={() => togglePermission(permission.code)} /><span>{permission.label}</span><span className="ms-auto text-xs text-muted-foreground">{permission.code}</span></label>)}</fieldset>)}
+              <PermissionPicker permissions={permissions} selected={selectedPermissions} onChange={setSelectedPermissions} />
               <Button onClick={savePermissions} disabled={saving}>{saving ? "در حال ذخیره..." : "ذخیره دسترسی‌ها"}</Button>
               {message ? <p className="text-sm text-muted-foreground" role="status">{message}</p> : null}
             </div> : <p className="text-sm text-muted-foreground">نقشی برای نمایش وجود ندارد.</p>}
@@ -146,7 +137,7 @@ export default function RolesAndPermissionsPage() {
 
   return (
     <div className="p-4 sm:p-6 lg:p-8 scroll-smooth">
-      <div className="mx-auto max-w-6xl space-y-8">
+      <div className="mx-auto max-w-7xl space-y-8">
         <nav className="sticky top-16 z-10 flex flex-wrap gap-2 rounded-lg border border-border bg-card p-3 shadow-sm" aria-label="بخش‌های نقش‌ها و دسترسی‌ها">
           <a className="rounded-md px-3 py-2 text-sm text-primary hover:bg-accent" href="#roles-section" onClick={(event) => scrollToSection(event, "roles-section")}>نقش‌ها</a>
           <a className="rounded-md px-3 py-2 text-sm text-primary hover:bg-accent" href="#permissions-section" onClick={(event) => scrollToSection(event, "permissions-section")}>دسترسی‌ها</a>

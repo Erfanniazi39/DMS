@@ -1,14 +1,27 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { ItemStatus, Prisma } from '@prisma/client';
-import { toSkipTake, type PaginationParams } from '../common/pagination';
+import { toSkipTake, type PaginationParams, buildOrderBy, type SortParams } from '../common/pagination';
+import { suggestNextCode } from '../common/next-code';
 import { PrismaService } from '../prisma/prisma.service';
 import { AUDIT_ENTITY, AuditService, diffChanges } from '../audit/audit.service';
+import { archiveDeletedRecord } from '../audit/deleted-records';
 // Plain function import (no module dependency) — see inventory-queries.ts's
 // header comment and build plan §4's DI-cycle note.
 import { hasStockHistory } from '../inventory/inventory-queries';
 import type { CreateItemDto, UpdateItemDto } from './dto/item.dto';
 
-export type ItemListFilters = { q?: string; status?: string; categoryId?: string };
+export type ItemListFilters = { q?: string; status?: string; categoryId?: string; sort?: SortParams };
+
+// Columns the items table can be sorted by.
+const ITEM_SORT_COLUMNS: Record<string, (dir: 'asc' | 'desc') => Prisma.ItemOrderByWithRelationInput> = {
+  name: (dir) => ({ name: dir }),
+  code: (dir) => ({ code: dir }),
+  category: (dir) => ({ category: { nameFa: dir } }),
+  unit: (dir) => ({ unit: { nameFa: dir } }),
+  itemKind: (dir) => ({ itemKind: dir }),
+  sellingPrice: (dir) => ({ sellingPrice: { sort: dir, nulls: 'last' } }),
+  status: (dir) => ({ status: dir }),
+};
 
 // Category and unit are returned alongside every item so the list/detail
 // can show their Persian labels without a second lookup.
@@ -49,11 +62,12 @@ export class ItemsService {
       where.categoryId = categoryId;
     }
 
-    if (!pagination) return this.prisma.item.findMany({ where, include: itemInclude, orderBy: { name: 'asc' } });
+    const orderBy = buildOrderBy(filters.sort, ITEM_SORT_COLUMNS, [{ name: 'asc' }, { id: 'asc' }], [{ id: 'asc' }]);
+    if (!pagination) return this.prisma.item.findMany({ where, include: itemInclude, orderBy });
 
     const [items, total] = await Promise.all([
       // id as a tiebreaker keeps page boundaries stable.
-      this.prisma.item.findMany({ where, include: itemInclude, orderBy: [{ name: 'asc' }, { id: 'asc' }], ...toSkipTake(pagination) }),
+      this.prisma.item.findMany({ where, include: itemInclude, orderBy, ...toSkipTake(pagination) }),
       this.prisma.item.count({ where }),
     ]);
     return { items, total, page: pagination.page, pageSize: pagination.pageSize };
@@ -63,6 +77,11 @@ export class ItemsService {
     const item = await this.prisma.item.findUnique({ where: { id }, include: itemInclude });
     if (!item) throw new NotFoundException('کالا پیدا نشد');
     return item;
+  }
+
+  // The suggested code for the create form (PREFIX-000001, editable there).
+  nextCode() {
+    return suggestNextCode('ITM', (startsWith) => this.prisma.item.findMany({ where: { code: { startsWith } }, select: { code: true } }));
   }
 
   async create(dto: CreateItemDto, userId: number | null = null, ipAddress?: string) {
@@ -133,7 +152,10 @@ export class ItemsService {
   async remove(id: number, userId: number | null = null, ipAddress?: string) {
     const item = await this.get(id);
     try {
-      await this.prisma.item.delete({ where: { id } });
+      await this.prisma.$transaction(async (tx) => {
+        await archiveDeletedRecord(tx, { entityType: AUDIT_ENTITY.ITEM, entityId: id, label: item.code, record: item, userId });
+        await tx.item.delete({ where: { id } });
+      });
     } catch (error) {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003') {
         throw new ConflictException('این کالا در اسناد دیگر استفاده شده است و قابل حذف نیست؛ به‌جای حذف، آن را غیرفعال کنید.');

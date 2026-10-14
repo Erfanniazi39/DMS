@@ -219,7 +219,7 @@ describe('InventoryService', () => {
       ]);
       const service = buildInventoryService(db);
 
-      const result = (await service.listBalances({ sortBy: 'available' })) as { id: number }[];
+      const result = (await service.listBalances({ sort: { sortBy: 'available', sortDir: 'asc' } })) as { id: number }[];
       expect(result.map((row) => row.id)).toEqual([3, 2, 1]);
     });
 
@@ -232,7 +232,7 @@ describe('InventoryService', () => {
       ]);
       const service = buildInventoryService(db);
 
-      const result = (await service.listBalances({ sortBy: 'available', sortDir: 'desc' }, { page: 1, pageSize: 2 })) as {
+      const result = (await service.listBalances({ sort: { sortBy: 'available', sortDir: 'desc' } }, { page: 1, pageSize: 2 })) as {
         items: { id: number }[];
         total: number;
       };

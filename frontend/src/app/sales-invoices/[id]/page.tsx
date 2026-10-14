@@ -18,12 +18,14 @@ import {
   salesInvoiceStatusLabels,
   salesInvoiceStatusTone,
   salesInvoiceTitle,
+  invoiceSettlementLabels,
   salesSourceTypeLabels,
   type SalesInvoiceDetail,
 } from "../shared";
 import { StatusActions } from "./_sections/StatusActions";
 import { ItemsSection } from "./_sections/ItemsSection";
 import { HistorySection } from "./_sections/HistorySection";
+import { PaymentsSection } from "./_sections/PaymentsSection";
 
 function Field({ label, children, wide }: { label: string; children: ReactNode; wide?: boolean }) {
   return (
@@ -48,6 +50,8 @@ export default function SalesInvoiceDetailPage() {
   const user = useAdminUser();
   const canView = user?.permissions.includes("sales.view") ?? false;
   const canInvoice = user?.permissions.includes("sales.invoice") ?? false;
+  const canViewReceivables = user?.permissions.includes("receivables.view") ?? false;
+  const canManageReceivables = user?.permissions.includes("receivables.manage") ?? false;
 
   const [invoice, setInvoice] = useState<SalesInvoiceDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -81,6 +85,14 @@ export default function SalesInvoiceDetailPage() {
       ignore = true;
     };
   }, [invoiceId, canView]);
+
+  async function reloadInvoice() {
+    try {
+      setInvoice(await apiFetch<SalesInvoiceDetail>(`/sales-invoices/${invoiceId}`));
+    } catch (reason) {
+      pushError((reason as ApiError).message ?? "بازخوانی فاکتور ناموفق بود.");
+    }
+  }
 
   function onUpdated(updated: SalesInvoiceDetail) {
     setInvoice(updated);
@@ -177,11 +189,20 @@ export default function SalesInvoiceDetailPage() {
             <Field label="شرایط پرداخت">
               {invoice.paymentTermName || "نقدی"} <span className="text-xs text-muted-foreground">({invoice.paymentDueDays.toLocaleString("fa-IR")} روز)</span>
             </Field>
+            <Field label="شرایط و نحوه فروش">
+              <StatusBadge label={invoiceSettlementLabels[invoice.settlementKind]} tone={invoice.settlementKind === "CASH" ? "success" : "warning"} />
+            </Field>
             <Field label="مشتری">
               <Link href={`/customers/${invoice.customer.id}`} className="text-primary hover:underline"><bdi>{invoice.customerName}</bdi></Link>{" "}
               <bdi className="font-mono text-xs text-muted-foreground">{invoice.customer.customerNumber}</bdi>
             </Field>
+            {invoice.customerKind ? <Field label="نوع شخص">{invoice.customerKind === "ORGANIZATION" ? "حقوقی" : "حقیقی"}</Field> : null}
+            {invoice.customerLegalName ? <Field label="نام ثبتی">{invoice.customerLegalName}</Field> : null}
             <Field label="کد اقتصادی">{invoice.customerEconomicCode || "-"}</Field>
+            {invoice.customerRegistrationNumber ? <Field label="شماره ثبت">{invoice.customerRegistrationNumber}</Field> : null}
+            {invoice.customerPhone ? <Field label="تلفن">{invoice.customerPhone}</Field> : null}
+            {invoice.customerProvince || invoice.customerCity ? <Field label="استان / شهر">{[invoice.customerProvince, invoice.customerCity].filter(Boolean).join(" / ")}</Field> : null}
+            {invoice.customerPostalCode ? <Field label="کد پستی">{invoice.customerPostalCode}</Field> : null}
             <Field label="سفارش فروش">
               {order ? (
                 <>
@@ -212,11 +233,25 @@ export default function SalesInvoiceDetailPage() {
 
         <ItemsSection invoice={invoice} />
 
+        <p className="rounded-lg border border-border bg-card px-4 py-2.5 text-sm">
+          <span className="text-muted-foreground">جمع کل به حروف: </span>
+          {invoice.totalAmountInWords}
+        </p>
+
         {invoice.note ? (
           <FormSection title="یادداشت">
             <p className="whitespace-pre-wrap text-sm">{invoice.note}</p>
           </FormSection>
         ) : null}
+
+        <PaymentsSection
+          invoice={invoice}
+          canView={canViewReceivables}
+          canManage={canManageReceivables}
+          reloadKey={historyKey}
+          onChanged={reloadInvoice}
+          toasts={{ pushError, pushErrors, pushSuccess }}
+        />
 
         <HistorySection invoiceId={invoice.id} reloadKey={historyKey} />
       </div>

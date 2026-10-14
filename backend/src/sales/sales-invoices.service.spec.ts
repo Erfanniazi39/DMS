@@ -152,6 +152,34 @@ describe('SalesInvoicesService', () => {
       expect(db.state.sequences.size).toBe(0);
     });
 
+    it('snapshots the full buyer block (kind, legal name, registration no., phone, billing province/city/postal) — and never the national ID (B14)', async () => {
+      const db = createSalesDb();
+      const order = confirmedOrder();
+      world(db, { order, delivery: postedDelivery(order, { items: [deliveryLine(order.items[0], { invoicedQty: dec(0) })] }) });
+      db.customer.findUnique.mockResolvedValue({
+        id: 9, status: 'ACTIVE', name: 'فروشگاه نمونه', customerKind: 'ORGANIZATION', legalName: 'شرکت نمونه (سهامی خاص)', economicCode: '411234567890',
+        registrationNumber: '12345', phone: '02100000000', nationalId: '10101234567', financialProfile: { creditHold: false },
+      });
+      db.customerAddress.findFirst.mockResolvedValue({ province: 'تهران', city: 'ری', addressLine: 'خیابان نمونه', postalCode: '1234567890', phone: '02122223333' });
+
+      await db.$transaction((tx: any) => buildSalesInvoicesService(db).createFromDelivery(tx, 31, { invoiceDate: ORDER_DATE }, ACTOR));
+
+      const data = db.salesInvoice.create.mock.calls[0][0].data;
+      expect(data).toEqual(
+        expect.objectContaining({
+          customerKind: 'ORGANIZATION',
+          customerLegalName: 'شرکت نمونه (سهامی خاص)',
+          customerRegistrationNumber: '12345',
+          customerPhone: '02122223333',
+          customerProvince: 'تهران',
+          customerCity: 'ری',
+          customerPostalCode: '1234567890',
+        }),
+      );
+      expect(JSON.stringify(data)).not.toContain('10101234567');
+      expect(data).not.toHaveProperty('customerNationalId');
+    });
+
     it('skips delivery lines already fully invoiced and invoices only the remainder of a partly invoiced one', async () => {
       const db = createSalesDb();
       const order = confirmedOrder();
@@ -275,6 +303,26 @@ describe('SalesInvoicesService', () => {
       expect(state.order.invoicingStatus).toBe('PARTIALLY_INVOICED');
       expect(state.order.status).toBe('CONFIRMED');
       expect(actions(db)).toEqual(['SALES_INVOICE_POSTED', 'SALES_ORDER_INVOICE_POSTED', 'DELIVERY_INVOICE_POSTED']);
+    });
+
+    it('refreshes the buyer snapshot at posting, and the detail derives نقدی/غیرنقدی and the total in words', async () => {
+      const db = createSalesDb();
+      const state = world(db);
+      db.customer.findUnique.mockResolvedValue({
+        id: 9, status: 'ACTIVE', name: 'نام تکمیل‌شده', customerKind: 'INDIVIDUAL', legalName: null, economicCode: null, registrationNumber: null, phone: '09120000000',
+        financialProfile: { creditHold: false },
+      });
+      db.customerAddress.findFirst.mockResolvedValue(null);
+
+      await buildSalesInvoicesService(db).post(51, postDto, ACTOR);
+
+      expect(state.invoice).toEqual(
+        expect.objectContaining({ status: 'POSTED', customerName: 'نام تکمیل‌شده', customerKind: 'INDIVIDUAL', customerPhone: '09120000000', billingAddressText: null, customerCity: null }),
+      );
+      const detail = await buildSalesInvoicesService(db).get(51);
+      expect(detail.settlementKind).toBe('CREDIT');
+      expect(typeof detail.totalAmountInWords).toBe('string');
+      expect(detail.totalAmountInWords).toMatch(/ریال$/);
     });
 
     it('locks invoice → sales order', async () => {

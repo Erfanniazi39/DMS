@@ -7,6 +7,24 @@ import { useToasts, ToastViewport } from "@/components/ui/toast";
 import { apiFetch, type ApiError } from "@/lib/api";
 import { useAdminUser } from "@/app/admin/layout";
 import { NoAccess, formatQuantity, type LowStockRow } from "../../shared";
+import { SortHeader, useClientTable } from "@/components/ui/sortable";
+import { ListPagination } from "@/components/ui/list-pagination";
+import type { SortValue } from "@/lib/table-sort";
+
+// Accessors for in-memory column sorting — each sorts by what its column shows.
+const INVENTORY_REPORTS_LOW_STOCK_SORT_GETTERS: Record<string, (row: LowStockRow) => SortValue> = {
+  code: (row) => row.item.code,
+  name: (row) => row.item.name,
+  unit: (row) => row.item.unit.nameFa,
+  location: (row) => row.location.name,
+  available: (row) => Number(row.available),
+  minQty: (row) => Number(row.minQty),
+  shortfall: (row) => Number(row.shortfall),
+  reorderQty: (row) => row.reorderQty === null ? null : Number(row.reorderQty),
+};
+
+// Stable empty list while the report is still loading.
+const NO_ROWS: LowStockRow[] = [];
 
 // گزارش کمبود موجودی (I3, B14): فقط کالاهایی که کاربر خودش برایشان آستانه
 // تعیین کرده و «موجودی قابل فروش» (موجودی انبار منهای رزروشده) آن‌ها از آن
@@ -19,6 +37,8 @@ export default function LowStockReportPage() {
   const canView = user?.permissions.includes("inventory.view") ?? false;
 
   const [rows, setRows] = useState<LowStockRow[] | null>(null);
+  // Sort + page the (small, already loaded) rows in memory; click a header to sort.
+  const table = useClientTable(rows ?? NO_ROWS, INVENTORY_REPORTS_LOW_STOCK_SORT_GETTERS, { pageSize: 20 });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
@@ -83,18 +103,18 @@ export default function LowStockReportPage() {
             <table className="w-full text-right text-sm">
               <thead className="bg-muted/40 text-xs text-muted-foreground">
                 <tr>
-                  <th className="px-3 py-2.5 font-medium">کد کالا</th>
-                  <th className="px-3 py-2.5 font-medium">نام کالا</th>
-                  <th className="px-3 py-2.5 font-medium">واحد</th>
-                  <th className="px-3 py-2.5 font-medium">انبار</th>
-                  <th className="px-3 py-2.5 font-medium">موجودی قابل فروش</th>
-                  <th className="px-3 py-2.5 font-medium">حداقل موجودی</th>
-                  <th className="px-3 py-2.5 font-medium">کسری</th>
-                  <th className="px-3 py-2.5 font-medium">مقدار سفارش مجدد</th>
+                  <SortHeader label="کد کالا" sortKey="code" sort={table.sort} onSort={table.onSort} className="px-3 py-2.5 font-medium" />
+                  <SortHeader label="نام کالا" sortKey="name" sort={table.sort} onSort={table.onSort} className="px-3 py-2.5 font-medium" />
+                  <SortHeader label="واحد" sortKey="unit" sort={table.sort} onSort={table.onSort} className="px-3 py-2.5 font-medium" />
+                  <SortHeader label="انبار" sortKey="location" sort={table.sort} onSort={table.onSort} className="px-3 py-2.5 font-medium" />
+                  <SortHeader label="موجودی قابل فروش" sortKey="available" sort={table.sort} onSort={table.onSort} className="px-3 py-2.5 font-medium" />
+                  <SortHeader label="حداقل موجودی" sortKey="minQty" sort={table.sort} onSort={table.onSort} className="px-3 py-2.5 font-medium" />
+                  <SortHeader label="کسری" sortKey="shortfall" sort={table.sort} onSort={table.onSort} className="px-3 py-2.5 font-medium" />
+                  <SortHeader label="مقدار سفارش مجدد" sortKey="reorderQty" sort={table.sort} onSort={table.onSort} className="px-3 py-2.5 font-medium" />
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
-                {rows.map((row) => (
+                {table.pageRows.map((row) => (
                   <tr key={row.id} className="hover:bg-muted/40">
                     <td className="px-3 py-2 font-mono text-xs">{row.item.code}</td>
                     <td className="px-3 py-2">{row.item.name}</td>
@@ -115,6 +135,7 @@ export default function LowStockReportPage() {
             </table>
           </div>
         )}
+            {table.total > table.pageSize ? <ListPagination page={table.page} pageSize={table.pageSize} total={table.total} onPageChange={table.setPage} className="mt-3" /> : null}
       </div>
     </div>
   );

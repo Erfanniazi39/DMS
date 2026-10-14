@@ -110,6 +110,10 @@ const PERMISSIONS = [
   // I6 (2026-10-11, B13): stock counts. Keep in sync with PERMISSION_CATALOG
   // in src/access/access.service.ts.
   'inventory.count',
+  // Keep in sync with PERMISSION_CATALOG; granted to every role below.
+  'letters.use',
+  // Granted to ADMIN only (via PERMISSIONS); other roles via the roles screen.
+  'letters.readAll',
   'documents.upload',
   'reports.view',
 ] as const;
@@ -146,25 +150,25 @@ async function main() {
     ADMIN: PERMISSIONS,
     // Sales narrowed to sales.view only (business decision 2026-10-06,
     // separation of duties) — sales.manage/sales.edit are revoked below.
-    DATA_OPERATOR: ['suppliers.view', 'suppliers.manage', 'customers.view', 'customers.manage', 'employees.view', 'employees.manage', 'purchases.view', 'purchases.manage', 'purchases.edit', 'items.view', 'items.manage', 'sales.view', 'documents.upload', 'reports.view'],
+    DATA_OPERATOR: ['suppliers.view', 'suppliers.manage', 'customers.view', 'customers.manage', 'employees.view', 'employees.manage', 'purchases.view', 'purchases.manage', 'purchases.edit', 'items.view', 'items.manage', 'sales.view', 'documents.upload', 'reports.view', 'letters.use'],
     // employees.view (without employees.manage) is deliberate: the Purchase and
     // Purchase Request forms load GET /employees for buyer/requester dropdowns.
-    PURCHASE_MANAGER: ['suppliers.view', 'suppliers.manage', 'employees.view', 'purchases.view', 'purchases.manage', 'purchases.edit', 'documents.upload', 'reports.view'],
+    PURCHASE_MANAGER: ['suppliers.view', 'suppliers.manage', 'employees.view', 'purchases.view', 'purchases.manage', 'purchases.edit', 'documents.upload', 'reports.view', 'letters.use'],
     // items.* granted ahead of Sales: SalesItem will reference Item.
     // customers.* granted ahead of Sales too: Customer is sales-side master data.
     // Sales batch 1: + sales.view/approve/invoice, receivables.view,
     // inventory.view. NOT receivables.manage — a manager sees money owed but
     // doesn't record/allocate payments (separation of duties).
-    SALES_MANAGER: ['customers.view', 'customers.manage', 'items.view', 'items.manage', 'sales.view', 'sales.manage', 'sales.edit', 'sales.approve', 'sales.invoice', 'receivables.view', 'inventory.view', 'documents.upload', 'reports.view'],
-    VIEWER: ['reports.view'],
+    SALES_MANAGER: ['customers.view', 'customers.manage', 'items.view', 'items.manage', 'sales.view', 'sales.manage', 'sales.edit', 'sales.approve', 'sales.invoice', 'receivables.view', 'inventory.view', 'documents.upload', 'reports.view', 'letters.use'],
+    VIEWER: ['reports.view', 'letters.use'],
     // New roles, Sales batch 1 (2026-10-06).
-    SALESPERSON: ['sales.view', 'sales.manage', 'customers.view', 'items.view', 'inventory.view'],
+    SALESPERSON: ['sales.view', 'sales.manage', 'customers.view', 'items.view', 'inventory.view', 'letters.use'],
     // I6 (2026-10-11, B13 — flagged for confirmation): + inventory.count.
     // Mirrors the existing inventory.adjust/inventory.approve split exactly
     // — WAREHOUSE does the physical counting (create/start/enter/submit),
     // INVENTORY_MANAGER approves the variances. Never inventory.approve.
-    WAREHOUSE: ['sales.view', 'sales.deliver', 'inventory.view', 'inventory.adjust', 'inventory.count'],
-    ACCOUNTANT: ['sales.view', 'sales.invoice', 'receivables.view', 'receivables.manage', 'customers.finance'],
+    WAREHOUSE: ['sales.view', 'sales.deliver', 'inventory.view', 'inventory.adjust', 'inventory.count', 'letters.use'],
+    ACCOUNTANT: ['sales.view', 'sales.invoice', 'receivables.view', 'receivables.manage', 'customers.finance', 'letters.use'],
     // I2 (2026-10-10, B20): a manager-level superset of WAREHOUSE that can
     // also approve/reject — the only role with inventory.approve.
     // I3 (2026-10-10): + inventory.manage — editing stock levels (and the
@@ -177,7 +181,7 @@ async function main() {
     // so it both runs counts and approves their variances — fine today with
     // one inventory role, but no-self-approval (B10's rule, reused for
     // counts) still refuses approving a count the same user submitted.
-    INVENTORY_MANAGER: ['inventory.view', 'inventory.adjust', 'inventory.approve', 'inventory.manage', 'inventory.receive', 'inventory.count'],
+    INVENTORY_MANAGER: ['inventory.view', 'inventory.adjust', 'inventory.approve', 'inventory.manage', 'inventory.receive', 'inventory.count', 'letters.use'],
   } as const;
 
   // The grants above are upserted (additive) — that alone can never take a
@@ -238,7 +242,7 @@ async function main() {
     await prisma.unit.upsert({
       where: { code: unit.code },
       update: {},
-      create: { ...unit, sortOrder: index },
+      create: { ...unit, sortOrder: index + 1 },
     });
   }
 

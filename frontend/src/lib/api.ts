@@ -69,8 +69,10 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}): Prom
 // e.g. uploading an employee photo. Deliberately separate from apiFetch,
 // which always sends "Content-Type: application/json"; a FormData body
 // needs the browser to set its own multipart boundary instead.
-export async function apiUpload<T>(path: string, file: File, fieldName = "file"): Promise<T> {
+export async function apiUpload<T>(path: string, file: File, fieldName = "file", fields: Record<string, string> = {}): Promise<T> {
   const formData = new FormData();
+  // Text fields go BEFORE the file so the server sees them with the upload.
+  for (const [name, value] of Object.entries(fields)) formData.append(name, value);
   formData.append(fieldName, file);
 
   const res = await fetch(`/api${path}`, {

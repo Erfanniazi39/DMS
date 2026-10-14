@@ -26,6 +26,8 @@ import {
   type PurchaseRequestPriority,
   type PurchaseRequestStatus,
 } from "./shared";
+import { SortHeader, useTableSort } from "@/components/ui/sortable";
+import { sortQuery } from "@/lib/table-sort";
 
 type FilterState = {
   q: string;
@@ -57,6 +59,8 @@ export default function PurchaseRequestsPage() {
   // Server-side pagination (GET /purchase-requests?page=&pageSize=), same
   // pattern as the Purchases list. Any filter change resets to page 1.
   const [page, setPage] = useState(1);
+  // Server-side column sorting (?sortBy=&sortDir=); a change returns to page 1.
+  const { sort, onSort } = useTableSort(null, () => setPage(1));
   const [total, setTotal] = useState(0);
 
   useEffect(() => {
@@ -85,7 +89,7 @@ export default function PurchaseRequestsPage() {
         if (filters.requesterDepartmentId) params.set("requesterDepartmentId", filters.requesterDepartmentId);
         params.set("page", String(page));
         params.set("pageSize", String(LIST_PAGE_SIZE));
-        const data = await apiFetch<Paginated<PurchaseRequestListItem>>(`/purchase-requests?${params.toString()}`);
+        const data = await apiFetch<Paginated<PurchaseRequestListItem>>(`/purchase-requests?${params.toString()}${sortQuery(sort)}`);
         if (cancelled) return;
         // Current page fell past the end (e.g. the last row on it moved off
         // after a filter change) — jump to the new last page instead of
@@ -108,7 +112,7 @@ export default function PurchaseRequestsPage() {
       clearTimeout(timeout);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filters, page, canView]);
+  }, [filters, page, canView, sort]);
 
   function updateFilter<K extends keyof FilterState>(key: K, value: FilterState[K]) {
     setFilters((current) => ({ ...current, [key]: value }));
@@ -241,13 +245,13 @@ export default function PurchaseRequestsPage() {
                 <table className="w-full text-right text-sm">
                   <thead className="bg-muted/50 text-muted-foreground">
                     <tr>
-                      <th className="px-4 py-3 font-medium">تاریخ درخواست</th>
-                      <th className="px-4 py-3 font-medium">شماره درخواست</th>
-                      <th className="px-4 py-3 font-medium">دپارتمان درخواست‌کننده</th>
-                      <th className="px-4 py-3 font-medium">درخواست‌کننده</th>
+                      <SortHeader label="تاریخ درخواست" sortKey="requestDate" sort={sort} onSort={onSort} className="px-4 py-3 font-medium" />
+                      <SortHeader label="شماره درخواست" sortKey="requestNumber" sort={sort} onSort={onSort} className="px-4 py-3 font-medium" />
+                      <SortHeader label="دپارتمان درخواست‌کننده" sortKey="department" sort={sort} onSort={onSort} className="px-4 py-3 font-medium" />
+                      <SortHeader label="درخواست‌کننده" sortKey="requestedBy" sort={sort} onSort={onSort} className="px-4 py-3 font-medium" />
                       <th className="px-4 py-3 font-medium">قلم</th>
-                      <th className="px-4 py-3 font-medium">اولویت</th>
-                      <th className="px-4 py-3 font-medium">وضعیت</th>
+                      <SortHeader label="اولویت" sortKey="priority" sort={sort} onSort={onSort} className="px-4 py-3 font-medium" />
+                      <SortHeader label="وضعیت" sortKey="status" sort={sort} onSort={onSort} className="px-4 py-3 font-medium" />
                       <th className="px-4 py-3 font-medium">خریدهای مرتبط</th>
                       <th className="px-4 py-3 font-medium">عملیات</th>
                     </tr>

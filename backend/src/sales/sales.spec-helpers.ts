@@ -38,6 +38,7 @@ export const CATALOG: Record<
 
 export function createSalesDb() {
   const db = createInventoryDb();
+  db.itemCategory = { findMany: jest.fn().mockResolvedValue([{ id: 1, nameFa: 'لبنیات' }]) };
   const inventoryRaw = db.$queryRaw;
   db.$queryRaw = jest.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
     const sql = strings.join('?');

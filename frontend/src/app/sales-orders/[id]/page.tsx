@@ -1,5 +1,6 @@
 "use client";
 
+import { useFeature } from "@/lib/session";
 import { useEffect, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
@@ -32,6 +33,7 @@ import { ItemsSection } from "./_sections/ItemsSection";
 import { HistorySection } from "./_sections/HistorySection";
 import { DeliveriesSection } from "./_sections/DeliveriesSection";
 import { InvoicesSection } from "./_sections/InvoicesSection";
+import { PaymentsSection } from "./_sections/PaymentsSection";
 
 function Field({ label, children, wide }: { label: string; children: ReactNode; wide?: boolean }) {
   return (
@@ -57,10 +59,14 @@ export default function SalesOrderDetailPage() {
   const orderId = Number(params.id);
   const { toasts, pushError, pushErrors, pushSuccess, dismiss } = useToasts();
   const user = useAdminUser();
+  const paymentTermsOn = useFeature("paymentTerms");
   const canView = user?.permissions.includes("sales.view") ?? false;
   const canManage = user?.permissions.includes("sales.manage") ?? false;
   const canApprove = user?.permissions.includes("sales.approve") ?? false;
   const canDeliver = user?.permissions.includes("sales.deliver") ?? false;
+  const canInvoice = user?.permissions.includes("sales.invoice") ?? false;
+  const canViewReceivables = user?.permissions.includes("receivables.view") ?? false;
+  const canManageReceivables = user?.permissions.includes("receivables.manage") ?? false;
 
   const [order, setOrder] = useState<SalesOrderDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -97,6 +103,17 @@ export default function SalesOrderDetailPage() {
       ignore = true;
     };
   }, [orderId, canView]);
+
+  // After an invoice / payment is added from this page: re-read the order (its
+  // invoicing / payment status are derived) and refresh the sections below.
+  async function reloadOrder() {
+    try {
+      setOrder(await apiFetch<SalesOrderDetail>(`/sales-orders/${orderId}`));
+    } catch (reason) {
+      pushError((reason as ApiError).message ?? "بازخوانی سفارش ناموفق بود.");
+    }
+    setHistoryKey((current) => current + 1);
+  }
 
   function onUpdated(updated: SalesOrderDetail, nextBackorders?: SalesOrderBackorder[]) {
     setOrder(updated);
@@ -221,9 +238,9 @@ export default function SalesOrderDetailPage() {
               <bdi className="font-mono text-xs text-muted-foreground">{order.customer.customerNumber}</bdi>
             </Field>
             <Field label="کد اقتصادی">{order.customerEconomicCode || "-"}</Field>
-            <Field label="شرایط پرداخت">
+            {paymentTermsOn ? <Field label="شرایط پرداخت">
               {order.paymentTermName ? `${order.paymentTermName} (${order.paymentDueDays.toLocaleString("fa-IR")} روز)` : "تعریف نشده"}
-            </Field>
+            </Field> : null}
             <Field label="فروشنده">{order.salespersonEmployee ? employeeFullName(order.salespersonEmployee) : "-"}</Field>
             <Field label="شماره مرجع مشتری">{order.customerReference || "-"}</Field>
             <Field label="تاریخ تحویل درخواستی">{order.requestedDeliveryDate ? formatJalali(order.requestedDeliveryDate) : "-"}</Field>
@@ -249,7 +266,20 @@ export default function SalesOrderDetailPage() {
 
         {confirmed ? <DeliveriesSection order={order} canDeliver={canDeliver} reloadKey={historyKey} /> : null}
 
-        {confirmed ? <InvoicesSection orderId={order.id} reloadKey={historyKey} /> : null}
+        {confirmed ? (
+          <InvoicesSection order={order} reloadKey={historyKey} canInvoice={canInvoice} onChanged={() => void reloadOrder()} toasts={{ pushError, pushErrors, pushSuccess }} />
+        ) : null}
+
+        {confirmed ? (
+          <PaymentsSection
+            order={order}
+            canView={canViewReceivables}
+            canManage={canManageReceivables}
+            reloadKey={historyKey}
+            onChanged={() => void reloadOrder()}
+            toasts={{ pushError, pushErrors, pushSuccess }}
+          />
+        ) : null}
 
         {order.customerNote || order.internalNote ? (
           <FormSection title="یادداشت‌ها">

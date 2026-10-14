@@ -23,6 +23,8 @@ import {
   type SalesReturnListItem,
   type SalesReturnStatus,
 } from "./shared";
+import { SortHeader, useClientTable, useTableSort } from "@/components/ui/sortable";
+import { sortQuery, type SortState, type SortValue } from "@/lib/table-sort";
 
 const toolbarFieldLabel = "text-[11px] font-medium uppercase tracking-wide text-muted-foreground";
 const toolbarSelectClass = "h-8 rounded-md border border-input bg-background px-2 text-xs outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50";
@@ -32,20 +34,31 @@ type Tab = "queue" | "list";
 type FilterState = { q: string; status: "" | SalesReturnStatus; dateFrom: string; dateTo: string };
 const emptyFilters: FilterState = { q: "", status: "", dateFrom: "", dateTo: "" };
 
-function ReturnsTable({ rows, loading }: { rows: SalesReturnListItem[]; loading: boolean }) {
+// Accessors for sorting the in-memory approval queue (the full list is sorted
+// by the server instead). Each sorts by what its column displays.
+const RETURN_SORT_GETTERS: Record<string, (row: SalesReturnListItem) => SortValue> = {
+  returnNumber: (row) => row.returnNumber,
+  requestDate: (row) => row.requestDate,
+  delivery: (row) => row.delivery?.deliveryNumber ?? null,
+  customer: (row) => row.customer.customerNumber,
+  reason: (row) => returnReasonLabels[row.reason],
+  status: (row) => salesReturnStatusLabels[row.status],
+};
+
+function ReturnsTable({ rows, loading, sort, onSort }: { rows: SalesReturnListItem[]; loading: boolean; sort: SortState; onSort: (key: string) => void }) {
   const router = useRouter();
   return (
     <div className={`overflow-x-auto transition-opacity ${loading ? "pointer-events-none opacity-60" : ""}`} aria-busy={loading}>
       <table className="w-full text-right text-sm">
         <thead className="bg-muted/40 text-xs text-muted-foreground">
           <tr>
-            <th className="px-3 py-2.5 font-medium">شماره مرجوعی</th>
-            <th className="px-3 py-2.5 font-medium">تاریخ درخواست</th>
-            <th className="px-3 py-2.5 font-medium">حواله</th>
-            <th className="px-3 py-2.5 font-medium">مشتری</th>
-            <th className="px-3 py-2.5 font-medium">علت</th>
+            <SortHeader label="شماره مرجوعی" sortKey="returnNumber" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+            <SortHeader label="تاریخ درخواست" sortKey="requestDate" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+            <SortHeader label="حواله" sortKey="delivery" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+            <SortHeader label="مشتری" sortKey="customer" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+            <SortHeader label="علت" sortKey="reason" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
             <th className="px-3 py-2.5 font-medium">ردیف</th>
-            <th className="px-3 py-2.5 font-medium">وضعیت</th>
+            <SortHeader label="وضعیت" sortKey="status" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
           </tr>
         </thead>
         <tbody className="divide-y divide-border">
@@ -74,6 +87,7 @@ function ReturnsTable({ rows, loading }: { rows: SalesReturnListItem[]; loading:
 // approval queue (build plan's "approval queue section").
 function QueueTab() {
   const [rows, setRows] = useState<SalesReturnListItem[]>([]);
+  const { sort, onSort, sortedRows } = useClientTable(rows, RETURN_SORT_GETTERS);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
@@ -111,7 +125,7 @@ function QueueTab() {
       ) : rows.length === 0 ? (
         <p className="py-14 text-center text-sm text-muted-foreground">مرجوعی در انتظار تأیید وجود ندارد.</p>
       ) : (
-        <ReturnsTable rows={rows} loading={loading} />
+        <ReturnsTable rows={sortedRows} loading={loading} sort={sort} onSort={onSort} />
       )}
     </>
   );
@@ -125,6 +139,8 @@ function ListTab() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [filters, setFilters] = useState<FilterState>(emptyFilters);
   const [page, setPage] = useState(1);
+  // Server-side column sorting (?sortBy=&sortDir=); a change returns to page 1.
+  const { sort, onSort } = useTableSort(null, () => setPage(1));
   const [total, setTotal] = useState(0);
   const [reloadKey, setReloadKey] = useState(0);
   const lastQueryRef = useRef(filters.q);
@@ -141,7 +157,7 @@ function ListTab() {
         if (filters.dateTo) params.set("dateTo", filters.dateTo);
         params.set("page", String(page));
         params.set("pageSize", String(LIST_PAGE_SIZE));
-        const data = await apiFetch<Paginated<SalesReturnListItem>>(`/sales-returns?${params.toString()}`);
+        const data = await apiFetch<Paginated<SalesReturnListItem>>(`/sales-returns?${params.toString()}${sortQuery(sort)}`);
         if (cancelled) return;
         if (data.items.length === 0 && data.total > 0 && page > 1) {
           setPage(totalPages(data.total, LIST_PAGE_SIZE));
@@ -163,7 +179,7 @@ function ListTab() {
       cancelled = true;
       clearTimeout(timeout);
     };
-  }, [filters, page, reloadKey]);
+  }, [filters, page, reloadKey, sort]);
 
   function updateFilter<K extends keyof FilterState>(key: K, value: FilterState[K]) {
     setFilters((current) => ({ ...current, [key]: value }));
@@ -223,7 +239,7 @@ function ListTab() {
       ) : rows.length === 0 ? (
         <p className="py-14 text-center text-sm text-muted-foreground">{hasActiveFilters ? "مرجوعی‌ای با این مشخصات یافت نشد." : "هنوز مرجوعی‌ای ثبت نشده است."}</p>
       ) : (
-        <ReturnsTable rows={rows} loading={loading} />
+        <ReturnsTable rows={rows} loading={loading} sort={sort} onSort={onSort} />
       )}
       {rows.length > 0 ? <ListPagination className="border-t border-border px-4 py-2.5" page={page} pageSize={LIST_PAGE_SIZE} total={total} loading={loading} onPageChange={setPage} /> : null}
     </>

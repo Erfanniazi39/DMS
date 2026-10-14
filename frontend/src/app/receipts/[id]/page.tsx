@@ -24,6 +24,7 @@ import {
 } from "../shared";
 import { StatusActions } from "./_sections/StatusActions";
 import { AllocationsSection } from "./_sections/AllocationsSection";
+import { DocumentsSection } from "./_sections/DocumentsSection";
 import { HistorySection } from "./_sections/HistorySection";
 
 function Field({ label, children, wide }: { label: string; children: ReactNode; wide?: boolean }) {
@@ -155,7 +156,14 @@ export default function CustomerPaymentDetailPage() {
             </Field>
             <Field label="مبلغ">{formatMoney(payment.amount)} ریال</Field>
             <Field label="روش پرداخت">{paymentMethodLabels[payment.method]}</Field>
-            <Field label="شماره مرجع">{payment.referenceNumber || "-"}</Field>
+            <Field label={payment.method === "CHECK" ? "شماره چک" : "کد پیگیری / شماره مرجع"}>{payment.referenceNumber || "-"}</Field>
+            <Field label="نوع تراکنش">{payment.transactionType || "-"}</Field>
+            <Field label="ساعت تراکنش">{payment.transactionTime || "-"}</Field>
+            <Field label="شناسه واریز">{payment.depositId || "-"}</Field>
+            <Field label="شناسه برداشت">{payment.withdrawalId || "-"}</Field>
+            <Field label="حساب مبدأ">{payment.sourceAccount || "-"}</Field>
+            <Field label="حساب مقصد">{payment.destinationAccount || "-"}</Field>
+            <Field label="صاحب حساب مقصد">{payment.destinationAccountHolder || "-"}</Field>
             {payment.method === "CHECK" ? (
               <>
                 <Field label="سررسید چک">{payment.chequeDueDate ? formatJalali(payment.chequeDueDate) : "-"}</Field>
@@ -177,6 +185,8 @@ export default function CustomerPaymentDetailPage() {
         </FormSection>
 
         <AllocationsSection payment={payment} canManage={canManage} onChanged={reload} toasts={{ pushError, pushErrors, pushSuccess }} />
+
+        <DocumentsSection paymentId={payment.id} canManage={canManage} toasts={{ pushError, pushSuccess }} />
 
         <HistorySection paymentId={payment.id} reloadKey={historyKey} />
       </div>

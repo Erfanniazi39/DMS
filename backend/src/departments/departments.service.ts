@@ -1,4 +1,5 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { suggestNextCode } from '../common/next-code';
 import { PrismaService } from '../prisma/prisma.service';
 import type { CreateDepartmentDto, UpdateDepartmentDto } from './dto/department.dto';
 
@@ -20,6 +21,11 @@ export class DepartmentsService {
     });
     if (!department) throw new NotFoundException('واحد سازمانی پیدا نشد');
     return department;
+  }
+
+  // The suggested code for the create form (PREFIX-000001, editable there).
+  nextCode() {
+    return suggestNextCode('DEP', (startsWith) => this.prisma.department.findMany({ where: { code: { startsWith } }, select: { code: true } }));
   }
 
   async create(dto: CreateDepartmentDto) {

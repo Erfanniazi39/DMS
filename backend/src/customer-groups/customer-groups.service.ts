@@ -1,4 +1,5 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { suggestNextCode } from '../common/next-code';
 import { PrismaService } from '../prisma/prisma.service';
 import { AUDIT_ENTITY, AuditService } from '../audit/audit.service';
 import type { CreateCustomerGroupDto, UpdateCustomerGroupDto } from './dto/customer-group.dto';
@@ -28,13 +29,18 @@ export class CustomerGroupsService {
     });
   }
 
+  // The suggested code for the create form (PREFIX-000001, editable there).
+  nextCode() {
+    return suggestNextCode('CGR', (startsWith) => this.prisma.customerGroup.findMany({ where: { code: { startsWith } }, select: { code: true } }));
+  }
+
   async create(dto: CreateCustomerGroupDto, userId: number | null = null, ipAddress?: string) {
     await this.ensureUnique(dto.code, dto.nameFa);
 
     let sortOrder = dto.sortOrder;
     if (sortOrder === undefined) {
       const { _max } = await this.prisma.customerGroup.aggregate({ _max: { sortOrder: true } });
-      sortOrder = (_max.sortOrder ?? -1) + 1;
+      sortOrder = (_max.sortOrder ?? 0) + 1;
     }
 
     const created = await this.prisma.customerGroup.create({

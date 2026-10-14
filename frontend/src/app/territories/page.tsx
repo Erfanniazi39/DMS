@@ -1,5 +1,6 @@
 "use client";
 
+import { RequireFeature } from "@/components/require-feature";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { Plus, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -9,7 +10,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToasts, ToastViewport } from "@/components/ui/toast";
 import { apiFetch, type ApiError } from "@/lib/api";
+import { fillSuggestedCode } from "@/lib/suggested-code";
 import { useAdminUser } from "@/app/admin/layout";
+import { SortHeader, useClientTable } from "@/components/ui/sortable";
+import { ListPagination } from "@/components/ui/list-pagination";
+import type { SortValue } from "@/lib/table-sort";
 
 // Sales territories — optional classification on a customer (dropdown
 // reads the active-only GET /territories). This page reads
@@ -22,7 +27,16 @@ type StatusFilter = "all" | "active" | "inactive";
 
 const emptyForm: FormState = { code: "", nameEn: "", nameFa: "", isActive: true, sortOrder: "" };
 
-export default function TerritoryPage() {
+// Accessors for in-memory column sorting — each sorts by what its column shows.
+const TERRITORIES_SORT_GETTERS: Record<string, (row: Territory) => SortValue> = {
+  sortOrder: (row) => row.sortOrder,
+  nameFa: (row) => row.nameFa,
+  nameEn: (row) => row.nameEn,
+  code: (row) => row.code,
+  isActive: (row) => row.isActive ? "فعال" : "غیرفعال",
+};
+
+function TerritoryPageContent() {
   const user = useAdminUser();
   const canView = user?.permissions.includes("customers.view") ?? false;
   // Write actions (create/edit) are hidden without customers.manage — the
@@ -75,6 +89,8 @@ export default function TerritoryPage() {
       return matchesQuery && matchesStatus;
     });
   }, [rows, query, statusFilter]);
+  // Sort + page the (small, already loaded) rows in memory; click a header to sort.
+  const table = useClientTable(filteredRows, TERRITORIES_SORT_GETTERS, { pageSize: 20 });
 
   function update<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((current) => ({ ...current, [key]: value }));
@@ -83,6 +99,7 @@ export default function TerritoryPage() {
   function openCreateForm() {
     setEditingId(null);
     setForm(emptyForm);
+    fillSuggestedCode("/territories/next-code", (code) => setForm((current) => (current.code === "" ? { ...current, code } : current)));
     setFormOpen(true);
   }
 
@@ -118,8 +135,8 @@ export default function TerritoryPage() {
       return;
     }
     const sortOrder = sortOrderText === "" ? undefined : Number(sortOrderText);
-    if (sortOrder !== undefined && (!Number.isInteger(sortOrder) || sortOrder < 0)) {
-      pushError("ترتیب نمایش باید عدد صحیح و نامنفی باشد.");
+    if (sortOrder !== undefined && (!Number.isInteger(sortOrder) || sortOrder < 1)) {
+      pushError("ترتیب نمایش باید عدد صحیح و حداقل ۱ باشد.");
       return;
     }
 
@@ -233,23 +250,23 @@ export default function TerritoryPage() {
                 <table className="w-full min-w-[42rem] text-right text-sm">
                   <thead className="bg-muted/50 text-muted-foreground">
                     <tr>
-                      <th className="px-4 py-3 font-medium">نام فارسی</th>
-                      <th className="px-4 py-3 font-medium">نام انگلیسی</th>
-                      <th className="px-4 py-3 font-medium">کد</th>
-                      <th className="px-4 py-3 font-medium">ترتیب نمایش</th>
-                      <th className="px-4 py-3 font-medium">وضعیت</th>
+                      <SortHeader label="ترتیب نمایش" sortKey="sortOrder" sort={table.sort} onSort={table.onSort} className="px-4 py-3 font-medium" />
+                      <SortHeader label="نام فارسی" sortKey="nameFa" sort={table.sort} onSort={table.onSort} className="px-4 py-3 font-medium" />
+                      <SortHeader label="نام انگلیسی" sortKey="nameEn" sort={table.sort} onSort={table.onSort} className="px-4 py-3 font-medium" />
+                      <SortHeader label="کد" sortKey="code" sort={table.sort} onSort={table.onSort} className="px-4 py-3 font-medium" />
+                      <SortHeader label="وضعیت" sortKey="isActive" sort={table.sort} onSort={table.onSort} className="px-4 py-3 font-medium" />
                       {canManage ? <th className="px-4 py-3 font-medium">عملیات</th> : null}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">
-                    {filteredRows.map((row) => (
+                    {table.pageRows.map((row) => (
                       <tr key={row.id} className={row.isActive ? "hover:bg-muted/30" : "text-muted-foreground hover:bg-muted/30"}>
+                        <td className="px-4 py-3">{row.sortOrder.toLocaleString("fa-IR")}</td>
                         <td className="px-4 py-3 font-medium">{row.nameFa}</td>
                         <td className="px-4 py-3" dir="ltr">
                           <span className="block text-right">{row.nameEn}</span>
                         </td>
                         <td className="px-4 py-3 font-mono text-xs text-muted-foreground">{row.code}</td>
-                        <td className="px-4 py-3">{row.sortOrder.toLocaleString("fa-IR")}</td>
                         <td className="px-4 py-3">
                           <span
                             className={`inline-flex rounded px-2 py-0.5 text-xs ${
@@ -272,6 +289,7 @@ export default function TerritoryPage() {
                 </table>
               </div>
             )}
+            {table.total > table.pageSize ? <ListPagination page={table.page} pageSize={table.pageSize} total={table.total} onPageChange={table.setPage} className="mt-3" /> : null}
           </CardContent>
         </Card>
       </div>
@@ -340,5 +358,13 @@ export default function TerritoryPage() {
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+export default function TerritoryPage() {
+  return (
+    <RequireFeature feature="customerTerritories">
+      <TerritoryPageContent />
+    </RequireFeature>
   );
 }

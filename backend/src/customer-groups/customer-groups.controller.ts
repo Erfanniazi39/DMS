@@ -26,6 +26,13 @@ export class CustomerGroupsController {
     return this.customerGroupsService.list();
   }
 
+  // Suggested code for a new record — declared before any ':id' route.
+  @Get('next-code')
+  @RequirePermissions('customers.manage')
+  nextCode() {
+    return this.customerGroupsService.nextCode();
+  }
+
   // Every group including inactive ones, for the /customer-groups page.
   @Get('all')
   @RequirePermissions('customers.view')

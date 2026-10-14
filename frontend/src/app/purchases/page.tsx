@@ -34,6 +34,8 @@ import {
   type PurchaseTypeOption,
   type SupplierOption,
 } from "./shared";
+import { SortHeader, useTableSort } from "@/components/ui/sortable";
+import { sortQuery } from "@/lib/table-sort";
 
 // Purchases-list-only control sizing — a touch more compact than the shared
 // selectClass/textareaClass in ./shared (also used by the Purchase Request
@@ -82,6 +84,8 @@ export default function PurchasesPage() {
   // Server-side pagination (GET /purchases?page=&pageSize=). Any filter
   // change resets to page 1 — see updateFilter()/clearFilters().
   const [page, setPage] = useState(1);
+  // Server-side column sorting (?sortBy=&sortDir=); a change returns to page 1.
+  const { sort, onSort } = useTableSort(null, () => setPage(1));
   const [total, setTotal] = useState(0);
   // Bumped to re-fetch the current page in place (e.g. after a delete).
   const [reloadKey, setReloadKey] = useState(0);
@@ -129,7 +133,7 @@ export default function PurchasesPage() {
         if (filters.dateTo) params.set("dateTo", filters.dateTo);
         params.set("page", String(page));
         params.set("pageSize", String(LIST_PAGE_SIZE));
-        const data = await apiFetch<Paginated<PurchaseListItem>>(`/purchases?${params.toString()}`);
+        const data = await apiFetch<Paginated<PurchaseListItem>>(`/purchases?${params.toString()}${sortQuery(sort)}`);
         if (cancelled) return;
         // Current page fell past the end (e.g. its last row was deleted) —
         // jump to the new last page instead of showing an empty table.
@@ -153,7 +157,7 @@ export default function PurchasesPage() {
       clearTimeout(timeout);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filters, page, reloadKey, canView]);
+  }, [filters, page, reloadKey, canView, sort]);
 
   function updateFilter<K extends keyof FilterState>(key: K, value: FilterState[K]) {
     setFilters((current) => ({ ...current, [key]: value }));
@@ -207,10 +211,15 @@ export default function PurchasesPage() {
             <p className="mt-1 text-sm text-muted-foreground">مدیریت و پیگیری خریدهای شرکت</p>
           </div>
           {canCreate ? (
-            <Button onClick={() => router.push("/purchases/new")}>
-              <Plus className="size-4" aria-hidden="true" />
-              خرید جدید
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button variant="outline" onClick={() => router.push("/purchases/historical")}>
+                ثبت خرید تاریخی
+              </Button>
+              <Button onClick={() => router.push("/purchases/new")}>
+                <Plus className="size-4" aria-hidden="true" />
+                خرید جدید
+              </Button>
+            </div>
           ) : null}
         </div>
 
@@ -351,16 +360,16 @@ export default function PurchasesPage() {
               <table className="w-full text-right text-sm">
                 <thead className="bg-muted/40 text-xs text-muted-foreground">
                   <tr>
-                    <th className="px-3 py-2.5 font-medium">شماره خرید</th>
-                    <th className="px-3 py-2.5 font-medium">تاریخ</th>
-                    <th className="px-3 py-2.5 font-medium">تأمین‌کننده</th>
-                    <th className="px-3 py-2.5 font-medium">نوع خرید</th>
+                    <SortHeader label="شماره خرید" sortKey="purchaseNumber" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="تاریخ" sortKey="purchaseDate" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="تأمین‌کننده" sortKey="supplier" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="نوع خرید" sortKey="purchaseType" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
                     <th className="px-3 py-2.5 font-medium">قلم</th>
-                    <th className="px-3 py-2.5 font-medium">خریدار</th>
-                    <th className="px-3 py-2.5 font-medium">مبلغ کل</th>
-                    <th className="px-3 py-2.5 font-medium">پرداخت</th>
-                    <th className="px-3 py-2.5 font-medium">وضعیت</th>
-                    <th className="px-3 py-2.5 font-medium">نوع ثبت</th>
+                    <SortHeader label="خریدار" sortKey="buyer" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="مبلغ کل" sortKey="totalAmount" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="پرداخت" sortKey="paymentStatus" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="وضعیت" sortKey="status" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="نوع ثبت" sortKey="sourceType" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
                     <th className="px-3 py-2.5 font-medium">عملیات</th>
                   </tr>
                 </thead>

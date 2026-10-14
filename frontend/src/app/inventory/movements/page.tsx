@@ -31,6 +31,8 @@ import {
   type StockMovementType,
   type StockReferenceType,
 } from "../shared";
+import { SortHeader, useTableSort } from "@/components/ui/sortable";
+import { sortQuery } from "@/lib/table-sort";
 
 const toolbarFieldLabel = "text-[11px] font-medium uppercase tracking-wide text-muted-foreground";
 const toolbarSelectClass = "h-8 rounded-md border border-input bg-background px-2 text-xs outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50";
@@ -63,6 +65,8 @@ export default function StockMovementsPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [filters, setFilters] = useState<FilterState>(emptyFilters);
   const [page, setPage] = useState(1);
+  // Server-side column sorting (?sortBy=&sortDir=); a change returns to page 1.
+  const { sort, onSort } = useTableSort(null, () => setPage(1));
   const [total, setTotal] = useState(0);
   const [reloadKey, setReloadKey] = useState(0);
 
@@ -116,7 +120,7 @@ export default function StockMovementsPage() {
         if (filters.dateTo) params.set("dateTo", filters.dateTo);
         params.set("page", String(page));
         params.set("pageSize", String(LIST_PAGE_SIZE));
-        const data = await apiFetch<Paginated<StockMovementRow>>(`/inventory/movements?${params.toString()}`);
+        const data = await apiFetch<Paginated<StockMovementRow>>(`/inventory/movements?${params.toString()}${sortQuery(sort)}`);
         if (cancelled) return;
         if (data.items.length === 0 && data.total > 0 && page > 1) {
           setPage(totalPages(data.total, LIST_PAGE_SIZE));
@@ -135,7 +139,7 @@ export default function StockMovementsPage() {
     return () => {
       cancelled = true;
     };
-  }, [canView, filters, page, reloadKey]);
+  }, [canView, filters, page, reloadKey, sort]);
 
   const missingBatchItemsKey = useMemo(
     () => [...new Set(rows.filter((row) => row.batchId !== null && !batchItemsLoaded.has(row.itemId)).map((row) => row.itemId))].join(","),
@@ -287,15 +291,15 @@ export default function StockMovementsPage() {
               <table className="w-full text-right text-sm">
                 <thead className="bg-muted/40 text-xs text-muted-foreground">
                   <tr>
-                    <th className="px-3 py-2.5 font-medium">تاریخ</th>
-                    <th className="px-3 py-2.5 font-medium">کالا</th>
-                    <th className="px-3 py-2.5 font-medium">انبار</th>
-                    <th className="px-3 py-2.5 font-medium">نوع موجودی</th>
-                    <th className="px-3 py-2.5 font-medium">نوع رویداد</th>
-                    <th className="px-3 py-2.5 font-medium">مقدار</th>
+                    <SortHeader label="تاریخ" sortKey="movementDate" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="کالا" sortKey="item" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="انبار" sortKey="location" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="نوع موجودی" sortKey="bucket" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="نوع رویداد" sortKey="movementType" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="مقدار" sortKey="quantity" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
                     {hasBatchRows ? <th className="px-3 py-2.5 font-medium">بچ</th> : null}
-                    <th className="px-3 py-2.5 font-medium">سند مرجع</th>
-                    <th className="px-3 py-2.5 font-medium">کاربر</th>
+                    <SortHeader label="سند مرجع" sortKey="referenceType" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="کاربر" sortKey="createdBy" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">

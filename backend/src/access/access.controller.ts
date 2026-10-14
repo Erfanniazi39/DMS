@@ -1,4 +1,5 @@
-import { Body, Controller, Get, Param, ParseIntPipe, Patch, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, ParseIntPipe, Patch, Post, Req, UseGuards } from '@nestjs/common';
+import type { Request } from 'express';
 import { z } from 'zod';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
@@ -19,13 +20,13 @@ export class AccessController {
   listRoles() { return this.accessService.listRoles(); }
 
   @Post('roles')
-  createRole(@Body(new ZodValidationPipe(roleSchema)) body: z.infer<typeof roleSchema>) {
-    return this.accessService.createRole(body.name, body.permissionCodes);
+  createRole(@Body(new ZodValidationPipe(roleSchema)) body: z.infer<typeof roleSchema>, @Req() req: Request) {
+    return this.accessService.createRole(body.name, body.permissionCodes, req.session.userId ?? null, req.ip);
   }
 
   @Patch('roles/:id')
-  updateRole(@Param('id', ParseIntPipe) id: number, @Body(new ZodValidationPipe(permissionSchema)) body: z.infer<typeof permissionSchema>) {
-    return this.accessService.updateRole(id, body.permissionCodes);
+  updateRole(@Param('id', ParseIntPipe) id: number, @Body(new ZodValidationPipe(permissionSchema)) body: z.infer<typeof permissionSchema>, @Req() req: Request) {
+    return this.accessService.updateRole(id, body.permissionCodes, req.session.userId ?? null, req.ip);
   }
 
   @Get('permissions')
@@ -35,7 +36,7 @@ export class AccessController {
   listUserPermissions() { return this.accessService.listUserPermissions(); }
 
   @Patch('user-permissions/:id')
-  setUserPermissions(@Param('id', ParseIntPipe) id: number, @Body(new ZodValidationPipe(permissionSchema)) body: z.infer<typeof permissionSchema>) {
-    return this.accessService.setUserPermissions(id, body.permissionCodes);
+  setUserPermissions(@Param('id', ParseIntPipe) id: number, @Body(new ZodValidationPipe(permissionSchema)) body: z.infer<typeof permissionSchema>, @Req() req: Request) {
+    return this.accessService.setUserPermissions(id, body.permissionCodes, req.session.userId ?? null, req.ip);
   }
 }

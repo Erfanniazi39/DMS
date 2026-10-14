@@ -5,6 +5,7 @@ import { Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogBody, DialogCloseButton, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { MoneyInput } from "@/components/ui/money-input";
 import { Label } from "@/components/ui/label";
 import { JalaliDateInput } from "@/components/ui/jalali-date-input";
 import { formatJalali } from "@/lib/jalali";
@@ -372,11 +373,10 @@ export function ReturnsSection({
                               />
                             </td>
                             <td className="px-3 py-2">
-                              <Input
+                              <MoneyInput
                                 aria-label="مبلغ اعتبار"
-                                inputMode="decimal"
                                 value={line.creditAmount}
-                                onChange={(event) => updateReturnLine(line.key, { creditAmount: event.target.value })}
+                                onChange={(value) => updateReturnLine(line.key, { creditAmount: value })}
                               />
                             </td>
                             <td className="px-3 py-2">

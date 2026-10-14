@@ -1,5 +1,6 @@
 "use client";
 
+import { useFeature } from "@/lib/session";
 import { useEffect, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
@@ -8,16 +9,14 @@ import { Label } from "@/components/ui/label";
 import { useToasts, ToastViewport } from "@/components/ui/toast";
 import { apiFetch, type ApiError } from "@/lib/api";
 import { normalizeDigits } from "@/lib/number-input";
+import { identityErrors, isValidPostalCode, normalizeSheba, shebaProblem } from "@/lib/iran-identifiers";
 import {
-  CUSTOMER_ADDRESS_TYPES,
   CUSTOMER_KINDS,
   RequiredMark,
-  addressTypeLabels,
   customerKindLabels,
   nationalIdLabel,
   nationalIdLength,
   selectClass,
-  type CustomerAddressType,
   type CustomerDetail,
   type CustomerKind,
   type DuplicateCandidate,
@@ -25,6 +24,8 @@ import {
 } from "./shared";
 import { FormSection } from "./_form/FormSection";
 import { DuplicateCandidates } from "./_form/DuplicateCandidates";
+import { ordinal } from "./_form/ChildDrafts";
+import { AddressDrafts, BankDrafts, ContactDrafts, emptyAddress, emptyBank, emptyContact, type AddressDraft, type BankDraft, type ContactDraft } from "./_form/ChildDrafts";
 
 // Create/edit form for a customer's identity, classification and
 // communication fields. Status is NOT here — it changes only through the
@@ -45,20 +46,19 @@ type FormState = {
   legalName: string;
   nationalId: string;
   economicCode: string;
+  title: string;
+  registrationNumber: string;
   customerGroupId: string;
   territoryId: string;
   phone: string;
+  phone2: string;
+  mobile: string;
+  fax: string;
+  telex: string;
+  website: string;
   email: string;
-  // create mode only
-  addressType: CustomerAddressType;
-  province: string;
-  city: string;
-  addressLine: string;
-  postalCode: string;
-  contactName: string;
-  contactRoleTitle: string;
-  contactMobile: string;
-  contactEmail: string;
+  taxOfficeProvince: string;
+  taxOfficeCity: string;
 };
 
 const emptyForm: FormState = {
@@ -67,20 +67,48 @@ const emptyForm: FormState = {
   legalName: "",
   nationalId: "",
   economicCode: "",
+  title: "",
+  registrationNumber: "",
   customerGroupId: "",
   territoryId: "",
   phone: "",
+  phone2: "",
+  mobile: "",
+  fax: "",
+  telex: "",
+  website: "",
   email: "",
-  addressType: "DELIVERY",
-  province: "",
-  city: "",
-  addressLine: "",
-  postalCode: "",
-  contactName: "",
-  contactRoleTitle: "",
-  contactMobile: "",
-  contactEmail: "",
+  taxOfficeProvince: "",
+  taxOfficeCity: "",
 };
+
+const isBlankAddress = (a: AddressDraft) => [a.province, a.city, a.addressLine, a.postalCode, a.country, a.cityCode, a.locationNumber, a.locationName].every((value) => value.trim() === "");
+const isBlankBank = (b: BankDraft) => [b.bankName, b.accountNumber, b.sheba, b.holder].every((value) => value.trim() === "");
+const isBlankContact = (c: ContactDraft) => [c.name, c.roleTitle, c.mobile, c.email].every((value) => value.trim() === "");
+
+const toAddressPayload = (a: AddressDraft) => ({
+  addressType: a.addressType,
+  province: a.province.trim(),
+  city: a.city.trim(),
+  addressLine: a.addressLine.trim(),
+  postalCode: normalizeDigits(a.postalCode).trim(),
+  country: a.country.trim(),
+  cityCode: a.cityCode.trim(),
+  locationNumber: a.locationNumber.trim(),
+  locationName: a.locationName.trim(),
+});
+const toBankPayload = (b: BankDraft) => ({
+  bankName: b.bankName.trim(),
+  accountNumber: normalizeDigits(b.accountNumber).trim(),
+  shebaNumber: b.sheba.trim(),
+  accountHolderName: b.holder.trim(),
+});
+const toContactPayload = (c: ContactDraft) => ({
+  name: c.name.trim(),
+  roleTitle: c.roleTitle.trim(),
+  mobile: normalizeDigits(c.mobile).trim(),
+  email: c.email.trim(),
+});
 
 type Props = { mode: "create" } | { mode: "edit"; customerId: number };
 
@@ -89,10 +117,16 @@ export function CustomerForm(props: Props) {
   const { toasts, pushError, pushErrors, pushSuccess, dismiss } = useToasts();
 
   const [form, setForm] = useState<FormState>(emptyForm);
+  // Create mode: first (and further) address / bank account / contact. Entry 0 is the default/primary one.
+  const [addresses, setAddresses] = useState<AddressDraft[]>([emptyAddress()]);
+  const [banks, setBanks] = useState<BankDraft[]>([emptyBank()]);
+  const [contacts, setContacts] = useState<ContactDraft[]>([emptyContact()]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [groups, setGroups] = useState<ReferenceOption[]>([]);
   const [territories, setTerritories] = useState<ReferenceOption[]>([]);
+  // Territories are hidden in v1 (feature flag): no picker, no request; an existing value is left untouched.
+  const territoriesOn = useFeature("customerTerritories");
   // Edit mode: the record as loaded (number, legacy code, current
   // group/territory for the "keep a since-deactivated option" rule) and its
   // updatedAt — the optimistic-locking token sent back on save.
@@ -110,7 +144,7 @@ export function CustomerForm(props: Props) {
       try {
         const [groupsData, territoriesData, customer] = await Promise.all([
           apiFetch<ReferenceOption[]>("/customer-groups"),
-          apiFetch<ReferenceOption[]>("/territories"),
+          territoriesOn ? apiFetch<ReferenceOption[]>("/territories") : Promise.resolve([] as ReferenceOption[]),
           editId !== null ? apiFetch<CustomerDetail>(`/customers/${editId}`) : Promise.resolve(null),
         ]);
         if (ignore) return;
@@ -129,10 +163,19 @@ export function CustomerForm(props: Props) {
             legalName: customer.legalName ?? "",
             nationalId: customer.nationalId ?? "",
             economicCode: customer.economicCode ?? "",
+            title: customer.title ?? "",
+            registrationNumber: customer.registrationNumber ?? "",
             customerGroupId: String(customer.customerGroupId),
             territoryId: customer.territoryId ? String(customer.territoryId) : "",
             phone: customer.phone,
+            phone2: customer.phone2 ?? "",
+            mobile: customer.mobile ?? "",
+            fax: customer.fax ?? "",
+            telex: customer.telex ?? "",
+            website: customer.website ?? "",
             email: customer.email ?? "",
+            taxOfficeProvince: customer.taxOfficeProvince ?? "",
+            taxOfficeCity: customer.taxOfficeCity ?? "",
           });
         }
       } catch (reason) {
@@ -145,7 +188,7 @@ export function CustomerForm(props: Props) {
     return () => {
       ignore = true;
     };
-  }, [editId, pushError]);
+  }, [editId, pushError, territoriesOn]);
 
   function update<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((current) => ({ ...current, [key]: value }));
@@ -159,18 +202,37 @@ export function CustomerForm(props: Props) {
     const phone = normalizeDigits(form.phone).trim();
     if (!phone) errors.push("تلفن الزامی است.");
     else if (!/^[0-9]{6,15}$/.test(phone)) errors.push("تلفن معتبر نیست (۶ تا ۱۵ رقم).");
-    const nationalId = normalizeDigits(form.nationalId).trim();
-    if (nationalId) {
-      const length = nationalIdLength[form.customerKind];
-      if (!/^[0-9]+$/.test(nationalId) || nationalId.length !== length) {
-        errors.push(`${nationalIdLabel[form.customerKind]} باید ${length.toLocaleString("fa-IR")} رقم باشد.`);
-      }
-    }
+    errors.push(
+      ...identityErrors({
+        kind: form.customerKind,
+        nationalId: normalizeDigits(form.nationalId).trim(),
+        economicCode: normalizeDigits(form.economicCode).trim(),
+      }),
+    );
     if (props.mode === "create") {
-      const anyAddressField = [form.province, form.city, form.postalCode].some((value) => value.trim() !== "");
-      if (anyAddressField && !form.addressLine.trim()) errors.push("برای ثبت آدرس اول، نشانی الزامی است.");
-      const anyContactField = [form.contactRoleTitle, form.contactMobile, form.contactEmail].some((value) => value.trim() !== "");
-      if (anyContactField && !form.contactName.trim()) errors.push("برای ثبت مخاطب اول، نام مخاطب الزامی است.");
+      addresses.forEach((address, index) => {
+        if (isBlankAddress(address)) return;
+        const label = `آدرس ${ordinal(index)}`;
+        const postalCode = normalizeDigits(address.postalCode).trim();
+        if (!address.addressLine.trim()) errors.push(`برای ثبت ${label}، نشانی الزامی است.`);
+        if (postalCode && !address.country.trim() && !isValidPostalCode(postalCode)) errors.push(`${label}: کد پستی باید ۱۰ رقم باشد.`);
+      });
+      banks.forEach((bank, index) => {
+        if (isBlankBank(bank)) return;
+        const label = `حساب بانکی ${ordinal(index)}`;
+        const sheba = normalizeSheba(normalizeDigits(bank.sheba));
+        if (!bank.accountNumber.trim() && !sheba) errors.push(`برای ثبت ${label}، شماره حساب یا شماره شبا الزامی است.`);
+        const shebaIssue = sheba ? shebaProblem(sheba) : null;
+        if (shebaIssue) errors.push(`${label}: ${shebaIssue}`);
+      });
+      contacts.forEach((contact, index) => {
+        if (isBlankContact(contact)) return;
+        if (!contact.name.trim()) errors.push(`برای ثبت مخاطب ${ordinal(index)}، نام مخاطب الزامی است.`);
+      });
+      // A second entry needs the first one filled in (the first is the default/primary).
+      if (addresses.length > 1 && isBlankAddress(addresses[0]) && addresses.slice(1).some((a) => !isBlankAddress(a))) errors.push("برای ثبت آدرس دوم، ابتدا آدرس اول را کامل کنید.");
+      if (banks.length > 1 && isBlankBank(banks[0]) && banks.slice(1).some((b) => !isBlankBank(b))) errors.push("برای ثبت حساب بانکی دوم، ابتدا حساب اول را کامل کنید.");
+      if (contacts.length > 1 && isBlankContact(contacts[0]) && contacts.slice(1).some((c) => !isBlankContact(c))) errors.push("برای ثبت مخاطب دوم، ابتدا مخاطب اول را کامل کنید.");
     }
     return errors;
   }
@@ -188,29 +250,30 @@ export function CustomerForm(props: Props) {
       legalName: form.legalName.trim(),
       nationalId: normalizeDigits(form.nationalId).trim(),
       economicCode: normalizeDigits(form.economicCode).trim(),
+      title: form.title.trim(),
+      registrationNumber: normalizeDigits(form.registrationNumber).trim(),
       customerGroupId: Number(form.customerGroupId),
       territoryId: form.territoryId ? Number(form.territoryId) : undefined,
       phone: normalizeDigits(form.phone).trim(),
+      phone2: normalizeDigits(form.phone2).trim(),
+      mobile: normalizeDigits(form.mobile).trim(),
+      fax: normalizeDigits(form.fax).trim(),
+      telex: form.telex.trim(),
+      website: form.website.trim(),
       email: form.email.trim(),
+      taxOfficeProvince: form.taxOfficeProvince.trim(),
+      taxOfficeCity: form.taxOfficeCity.trim(),
     };
     if (props.mode === "create") {
-      if (form.addressLine.trim()) {
-        payload.firstAddress = {
-          addressType: form.addressType,
-          province: form.province.trim(),
-          city: form.city.trim(),
-          addressLine: form.addressLine.trim(),
-          postalCode: normalizeDigits(form.postalCode).trim(),
-        };
-      }
-      if (form.contactName.trim()) {
-        payload.firstContact = {
-          name: form.contactName.trim(),
-          roleTitle: form.contactRoleTitle.trim(),
-          mobile: normalizeDigits(form.contactMobile).trim(),
-          email: form.contactEmail.trim(),
-        };
-      }
+      const addressPayloads = addresses.filter((address) => !isBlankAddress(address)).map(toAddressPayload);
+      const bankPayloads = banks.filter((bank) => !isBlankBank(bank)).map(toBankPayload);
+      const contactPayloads = contacts.filter((contact) => !isBlankContact(contact)).map(toContactPayload);
+      if (addressPayloads.length > 0) payload.firstAddress = addressPayloads[0];
+      if (addressPayloads.length > 1) payload.additionalAddresses = addressPayloads.slice(1);
+      if (bankPayloads.length > 0) payload.firstBankAccount = bankPayloads[0];
+      if (bankPayloads.length > 1) payload.additionalBankAccounts = bankPayloads.slice(1);
+      if (contactPayloads.length > 0) payload.firstContact = contactPayloads[0];
+      if (contactPayloads.length > 1) payload.additionalContacts = contactPayloads.slice(1);
     } else {
       payload.updatedAt = loaded?.updatedAt;
     }
@@ -316,6 +379,10 @@ export function CustomerForm(props: Props) {
                 </select>
               </div>
               <div className="flex flex-col gap-1.5">
+                <Label htmlFor="customer-title">عنوان</Label>
+                <Input id="customer-title" placeholder="مثلاً شرکت، فروشگاه، آقای" value={form.title} onChange={(event) => update("title", event.target.value)} />
+              </div>
+              <div className="flex flex-col gap-1.5">
                 <Label htmlFor="customer-name">نام مشتری<RequiredMark /></Label>
                 <Input id="customer-name" value={form.name} onChange={(event) => update("name", event.target.value)} required />
               </div>
@@ -324,7 +391,7 @@ export function CustomerForm(props: Props) {
                 <Input id="customer-legal-name" value={form.legalName} onChange={(event) => update("legalName", event.target.value)} />
               </div>
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="customer-national-id">{nationalIdLabel[form.customerKind]}</Label>
+                <Label htmlFor="customer-national-id">{nationalIdLabel[form.customerKind]}<RequiredMark /></Label>
                 <Input
                   id="customer-national-id"
                   dir="ltr"
@@ -336,15 +403,22 @@ export function CustomerForm(props: Props) {
                 />
               </div>
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="customer-economic-code">کد اقتصادی</Label>
+                <Label htmlFor="customer-economic-code">کد اقتصادی{form.customerKind === "ORGANIZATION" ? <RequiredMark /> : null}</Label>
                 <Input
                   id="customer-economic-code"
                   dir="ltr"
                   inputMode="numeric"
+                  placeholder="۱۲ یا ۱۴ رقم"
                   value={form.economicCode}
                   onChange={(event) => update("economicCode", event.target.value)}
                 />
               </div>
+              {form.customerKind === "ORGANIZATION" ? (
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="customer-registration-number">شماره ثبت</Label>
+                  <Input id="customer-registration-number" dir="ltr" inputMode="numeric" value={form.registrationNumber} onChange={(event) => update("registrationNumber", event.target.value)} />
+                </div>
+              ) : null}
             </div>
           </FormSection>
 
@@ -365,7 +439,7 @@ export function CustomerForm(props: Props) {
                   ))}
                 </select>
               </div>
-              <div className="flex flex-col gap-1.5">
+              {territoriesOn ? <div className="flex flex-col gap-1.5">
                 <Label htmlFor="customer-territory">منطقه فروش</Label>
                 <select
                   id="customer-territory"
@@ -378,79 +452,61 @@ export function CustomerForm(props: Props) {
                     <option key={territory.id} value={territory.id}>{territory.nameFa}{territory.isActive ? "" : " (غیرفعال)"}</option>
                   ))}
                 </select>
-              </div>
+              </div> : null}
             </div>
           </FormSection>
 
           <FormSection title="ارتباطات">
             <div className="grid gap-x-3 gap-y-2.5 sm:grid-cols-2 lg:grid-cols-3">
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="customer-phone">تلفن<RequiredMark /></Label>
+                <Label htmlFor="customer-phone">تلفن ۱<RequiredMark /></Label>
                 <Input id="customer-phone" dir="ltr" inputMode="tel" value={form.phone} onChange={(event) => update("phone", event.target.value)} required />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="customer-phone2">تلفن ۲</Label>
+                <Input id="customer-phone2" dir="ltr" inputMode="tel" value={form.phone2} onChange={(event) => update("phone2", event.target.value)} />
               </div>
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="customer-email">ایمیل</Label>
                 <Input id="customer-email" dir="ltr" type="email" value={form.email} onChange={(event) => update("email", event.target.value)} />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="customer-mobile">موبایل</Label>
+                <Input id="customer-mobile" dir="ltr" inputMode="tel" value={form.mobile} onChange={(event) => update("mobile", event.target.value)} />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="customer-fax">فکس</Label>
+                <Input id="customer-fax" dir="ltr" inputMode="tel" value={form.fax} onChange={(event) => update("fax", event.target.value)} />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="customer-telex">تلکس</Label>
+                <Input id="customer-telex" dir="ltr" value={form.telex} onChange={(event) => update("telex", event.target.value)} />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="customer-website">وب‌سایت</Label>
+                <Input id="customer-website" dir="ltr" value={form.website} onChange={(event) => update("website", event.target.value)} />
+              </div>
+            </div>
+          </FormSection>
+
+          <FormSection title="اداره دارایی" description="استان و شهر مطابق اداره امور مالیاتی (متن آزاد)">
+            <div className="grid gap-x-3 gap-y-2.5 sm:grid-cols-2 lg:grid-cols-3">
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="customer-tax-province">استان (دارایی)</Label>
+                <Input id="customer-tax-province" value={form.taxOfficeProvince} onChange={(event) => update("taxOfficeProvince", event.target.value)} />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="customer-tax-city">شهر (دارایی)</Label>
+                <Input id="customer-tax-city" value={form.taxOfficeCity} onChange={(event) => update("taxOfficeCity", event.target.value)} />
               </div>
             </div>
           </FormSection>
 
           {props.mode === "create" ? (
             <div className="grid gap-3 lg:grid-cols-2">
-              <FormSection title="آدرس اول" description="اختیاری — به‌عنوان آدرس پیش‌فرض ثبت می‌شود">
-                <div className="grid gap-x-3 gap-y-2.5 sm:grid-cols-2">
-                  <div className="flex flex-col gap-1.5">
-                    <Label htmlFor="first-address-type">نوع آدرس</Label>
-                    <select
-                      id="first-address-type"
-                      className={selectClass}
-                      value={form.addressType}
-                      onChange={(event) => update("addressType", event.target.value as CustomerAddressType)}
-                    >
-                      {CUSTOMER_ADDRESS_TYPES.map((type) => (
-                        <option key={type} value={type}>{addressTypeLabels[type]}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="flex flex-col gap-1.5">
-                    <Label htmlFor="first-address-province">استان</Label>
-                    <Input id="first-address-province" value={form.province} onChange={(event) => update("province", event.target.value)} />
-                  </div>
-                  <div className="flex flex-col gap-1.5">
-                    <Label htmlFor="first-address-city">شهر</Label>
-                    <Input id="first-address-city" value={form.city} onChange={(event) => update("city", event.target.value)} />
-                  </div>
-                  <div className="flex flex-col gap-1.5">
-                    <Label htmlFor="first-address-postal-code">کد پستی</Label>
-                    <Input id="first-address-postal-code" dir="ltr" inputMode="numeric" value={form.postalCode} onChange={(event) => update("postalCode", event.target.value)} />
-                  </div>
-                  <div className="flex flex-col gap-1.5 sm:col-span-2">
-                    <Label htmlFor="first-address-line">نشانی</Label>
-                    <Input id="first-address-line" value={form.addressLine} onChange={(event) => update("addressLine", event.target.value)} />
-                  </div>
-                </div>
-              </FormSection>
-
-              <FormSection title="مخاطب اول" description="اختیاری — به‌عنوان مخاطب اصلی ثبت می‌شود">
-                <div className="grid gap-x-3 gap-y-2.5 sm:grid-cols-2">
-                  <div className="flex flex-col gap-1.5">
-                    <Label htmlFor="first-contact-name">نام مخاطب</Label>
-                    <Input id="first-contact-name" value={form.contactName} onChange={(event) => update("contactName", event.target.value)} />
-                  </div>
-                  <div className="flex flex-col gap-1.5">
-                    <Label htmlFor="first-contact-role">سمت</Label>
-                    <Input id="first-contact-role" value={form.contactRoleTitle} onChange={(event) => update("contactRoleTitle", event.target.value)} />
-                  </div>
-                  <div className="flex flex-col gap-1.5">
-                    <Label htmlFor="first-contact-mobile">موبایل</Label>
-                    <Input id="first-contact-mobile" dir="ltr" inputMode="tel" value={form.contactMobile} onChange={(event) => update("contactMobile", event.target.value)} />
-                  </div>
-                  <div className="flex flex-col gap-1.5">
-                    <Label htmlFor="first-contact-email">ایمیل</Label>
-                    <Input id="first-contact-email" dir="ltr" type="email" value={form.contactEmail} onChange={(event) => update("contactEmail", event.target.value)} />
-                  </div>
-                </div>
-              </FormSection>
+              <AddressDrafts drafts={addresses} onChange={setAddresses} />
+              <ContactDrafts drafts={contacts} onChange={setContacts} />
+              <BankDrafts drafts={banks} onChange={setBanks} />
             </div>
           ) : null}
         </form>

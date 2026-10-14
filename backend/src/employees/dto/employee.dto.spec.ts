@@ -1,4 +1,4 @@
-import { createEmployeeSchema, updateEmployeeSchema } from './employee.dto';
+import { createEmployeeContractSchema, createEmployeeSchema, terminateEmployeeSchema, updateEmployeeSchema } from './employee.dto';
 
 // Characterization tests — pin the current validation behavior of the
 // Employee DTO (blank optional fields → undefined, regex/format checks, the
@@ -75,7 +75,62 @@ describe('createEmployeeSchema', () => {
 
 describe('updateEmployeeSchema', () => {
   it('requires a valid status', () => {
-    expect(updateEmployeeSchema.safeParse({ ...validEmployee, status: 'active' }).success).toBe(true);
+    expect(updateEmployeeSchema.safeParse({ ...validEmployee, status: 'active', code: 'IT-0007' }).success).toBe(true);
     expect(updateEmployeeSchema.safeParse(validEmployee).success).toBe(false);
+  });
+});
+
+describe('education rules', () => {
+  const update = { ...validEmployee, status: 'active', code: 'IT-0007' };
+
+  it('under_diploma needs only the grade and drops the field of study', () => {
+    expect(updateEmployeeSchema.safeParse({ ...update, educationLevel: 'under_diploma' }).success).toBe(false);
+    const ok = updateEmployeeSchema.safeParse({ ...update, educationLevel: 'under_diploma', belowDiplomaGrade: 'نهم', fieldOfStudy: 'برق' });
+    expect(ok.success).toBe(true);
+    if (ok.success) expect([ok.data.belowDiplomaGrade, ok.data.fieldOfStudy]).toEqual(['نهم', null]);
+  });
+
+  it('diploma has neither grade nor field; associate and above keep an optional field', () => {
+    const diploma = updateEmployeeSchema.safeParse({ ...update, educationLevel: 'diploma', belowDiplomaGrade: 'نهم', fieldOfStudy: 'برق' });
+    expect(diploma.success && [diploma.data.belowDiplomaGrade, diploma.data.fieldOfStudy]).toEqual([null, null]);
+    const bachelor = createEmployeeSchema.safeParse({ ...validEmployee, educationLevel: 'bachelor', fieldOfStudy: 'حسابداری' });
+    expect(bachelor.success && [bachelor.data.belowDiplomaGrade, bachelor.data.fieldOfStudy]).toEqual([null, 'حسابداری']);
+    const bare = createEmployeeSchema.safeParse({ ...validEmployee, educationLevel: 'master' });
+    expect(bare.success && bare.data.fieldOfStudy).toBeNull();
+  });
+});
+
+describe('contract + termination schemas', () => {
+  it('a temporary contract needs an end date no earlier than the start; a permanent one never keeps an end date', () => {
+    expect(createEmployeeContractSchema.safeParse({ contractType: 'temporary', startDate: '2024-01-01' }).success).toBe(false);
+    expect(createEmployeeContractSchema.safeParse({ contractType: 'temporary', startDate: '2024-02-01', endDate: '2024-01-01' }).success).toBe(false);
+    expect(createEmployeeContractSchema.safeParse({ contractType: 'fixed_task', startDate: '2024-01-01', endDate: '2024-03-01' }).success).toBe(true);
+    const permanent = createEmployeeContractSchema.safeParse({ contractType: 'permanent', startDate: '2024-01-01', endDate: '2030-01-01' });
+    expect(permanent.success && (permanent.data as { endDate: Date | null }).endDate).toBeNull();
+  });
+
+  it('the initial contract on create follows the same rules', () => {
+    expect(createEmployeeSchema.safeParse({ ...validEmployee, contractType: 'temporary', contractStartDate: '2024-01-01' }).success).toBe(false);
+    expect(createEmployeeSchema.safeParse({ ...validEmployee, contractType: 'permanent', contractStartDate: '2024-01-01' }).success).toBe(true);
+    expect(createEmployeeSchema.safeParse({ ...validEmployee, contractType: 'permanent' }).success).toBe(false);
+  });
+
+  it('termination needs a date, a type and a written reason', () => {
+    const ok = { terminationDate: '2025-06-01', terminationType: 'fired', terminationReason: 'غیبت مکرر' };
+    expect(terminateEmployeeSchema.safeParse(ok).success).toBe(true);
+    expect(terminateEmployeeSchema.safeParse({ ...ok, terminationReason: '  ' }).success).toBe(false);
+    expect(terminateEmployeeSchema.safeParse({ ...ok, terminationType: 'vacation' }).success).toBe(false);
+    expect(terminateEmployeeSchema.safeParse({ ...ok, terminationDate: '' }).success).toBe(false);
+  });
+});
+
+describe('employee code on update', () => {
+  const base = { ...validEmployee, status: 'active' };
+  it('is required and limited to Latin letters, digits, dash and underscore', () => {
+    expect(updateEmployeeSchema.safeParse(base).success).toBe(false);
+    expect(updateEmployeeSchema.safeParse({ ...base, code: ' IT-0100 ' }).success).toBe(true);
+    expect(updateEmployeeSchema.safeParse({ ...base, code: 'کد' }).success).toBe(false);
+    expect(updateEmployeeSchema.safeParse({ ...base, code: 'A' }).success).toBe(false);
+    expect(updateEmployeeSchema.safeParse({ ...base, code: 'IT 0100' }).success).toBe(false);
   });
 });

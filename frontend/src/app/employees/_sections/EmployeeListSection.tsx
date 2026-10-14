@@ -1,23 +1,27 @@
 "use client";
 
-import { Fragment, type Dispatch, type SetStateAction } from "react";
-import { ChevronDown, ChevronUp, Search, User } from "lucide-react";
+import type { Dispatch, SetStateAction } from "react";
+import Link from "next/link";
+import { Search, User } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
-import { EmployeeDetailRow } from "./EmployeeDetailRow";
-import { PAGE_SIZE, sortFieldLabels, statusLabels, type Employee, type PageToken, type SortDirection, type SortField } from "./shared";
+import { StatusBadge, type BadgeTone } from "@/components/ui/status-badge";
+import { formatExpiry, formatTenure } from "./tenure";
+import { PAGE_SIZE, sortFieldLabels, statusLabels, type Employee, type EmployeeStatus, type PageToken, type SortDirection, type SortField } from "./shared";
 
-// «فهرست کارکنان»: search + sort controls, the table (with each row's
-// expandable detail), and the page-number footer. All state — query,
-// sort, page, expanded row — and the filter/sort/paging computation
-// (including buildPageNumbers) live in page.tsx and are passed in.
+// «فهرست کارکنان»: search + sort controls, the table and the page-number
+// footer. All state — query, sort, page — and the filter/sort/paging
+// computation (including buildPageNumbers) live in page.tsx and are passed in.
+// A row opens the employee's own page (/employees/:id) — details, contracts
+// and editing live there, not in the list.
+const statusTone: Record<EmployeeStatus, BadgeTone> = { active: "success", on_leave: "warning", terminated: "destructive" };
+
 export function EmployeeListSection({
   employees,
   sortedEmployees,
   pagedEmployees,
   loading,
-  canManage,
   query,
   setQuery,
   sortField,
@@ -28,15 +32,11 @@ export function EmployeeListSection({
   setPage,
   totalPages,
   pageNumbers,
-  expandedId,
-  setExpandedId,
-  onEdit,
 }: {
   employees: Employee[];
   sortedEmployees: Employee[];
   pagedEmployees: Employee[];
   loading: boolean;
-  canManage: boolean;
   query: string;
   setQuery: (query: string) => void;
   sortField: SortField;
@@ -47,9 +47,6 @@ export function EmployeeListSection({
   setPage: Dispatch<SetStateAction<number>>;
   totalPages: number;
   pageNumbers: PageToken[];
-  expandedId: number | null;
-  setExpandedId: (id: number | null) => void;
-  onEdit: (employee: Employee) => void;
 }) {
   return (
     <Card>
@@ -115,50 +112,52 @@ export function EmployeeListSection({
                   <th className="px-4 py-3 font-medium">واحد</th>
                   <th className="px-4 py-3 font-medium">سمت</th>
                   <th className="px-4 py-3 font-medium">وضعیت</th>
-                  {canManage ? <th className="px-4 py-3 font-medium">عملیات</th> : null}
+                  <th className="px-4 py-3 font-medium">سابقه کار</th>
+                  <th className="px-4 py-3 font-medium">قرارداد فعلی</th>
                   <th className="px-4 py-3 font-medium">جزئیات</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
-                {pagedEmployees.map((employee) => {
-                  const expanded = expandedId === employee.id;
-                  return (
-                    <Fragment key={employee.id}>
-                      <tr className="hover:bg-muted/30">
-                        <td className="px-4 py-3">
-                          <div className="flex size-14 items-center justify-center overflow-hidden rounded-full border border-border bg-muted">
-                            {employee.photoPath ? (
-                              // eslint-disable-next-line @next/next/no-img-element
-                              <img src={`/api${employee.photoPath}`} alt="" className="size-full object-cover" />
-                            ) : (
-                              <User className="size-6 text-muted-foreground" aria-hidden="true" />
-                            )}
-                          </div>
-                        </td>
-                        <td className="px-4 py-3 font-medium">{employee.code}</td>
-                        <td className="px-4 py-3">{employee.firstName} {employee.lastName}</td>
-                        <td className="px-4 py-3">{employee.department.name}</td>
-                        <td className="px-4 py-3">{employee.position || "-"}</td>
-                        <td className="px-4 py-3 text-muted-foreground">{statusLabels[employee.status]}</td>
-                        {canManage ? (
-                          <td className="px-4 py-3"><Button variant="link" size="sm" onClick={() => onEdit(employee)}>ویرایش</Button></td>
-                        ) : null}
-                        <td className="px-4 py-3">
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            aria-label={expanded ? "بستن جزئیات" : "نمایش جزئیات بیشتر"}
-                            aria-expanded={expanded}
-                            onClick={() => setExpandedId(expanded ? null : employee.id)}
-                          >
-                            {expanded ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}
-                          </Button>
-                        </td>
-                      </tr>
-                      {expanded ? <EmployeeDetailRow employee={employee} colSpan={canManage ? 8 : 7} /> : null}
-                    </Fragment>
-                  );
-                })}
+                {pagedEmployees.map((employee) => (
+                  <tr key={employee.id} className={employee.status === "terminated" ? "text-muted-foreground hover:bg-muted/30" : "hover:bg-muted/30"}>
+                    <td className="px-4 py-3">
+                      <div className="flex size-14 items-center justify-center overflow-hidden rounded-full border border-border bg-muted">
+                        {employee.photoPath ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img src={`/api${employee.photoPath}`} alt="" className="size-full object-cover" />
+                        ) : (
+                          <User className="size-6 text-muted-foreground" aria-hidden="true" />
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 font-medium">{employee.code}</td>
+                    <td className="px-4 py-3">
+                      <Link href={`/employees/${employee.id}`} className="text-primary hover:underline">{employee.firstName} {employee.lastName}</Link>
+                    </td>
+                    <td className="px-4 py-3">{employee.department.name}</td>
+                    <td className="px-4 py-3">{employee.position || "-"}</td>
+                    <td className="px-4 py-3"><StatusBadge label={statusLabels[employee.status]} tone={statusTone[employee.status]} /></td>
+                    <td className="px-4 py-3 whitespace-nowrap">{formatTenure(employee.tenure)}</td>
+                    <td className="px-4 py-3 text-xs">
+                      {employee.status === "terminated" ? (
+                        "-"
+                      ) : employee.currentContract ? (
+                        employee.contractExpired ? (
+                          <StatusBadge label="منقضی‌شده" tone="destructive" />
+                        ) : employee.daysToExpiry !== null && employee.daysToExpiry <= 30 ? (
+                          <StatusBadge label={formatExpiry(employee.daysToExpiry)} tone="warning" />
+                        ) : (
+                          <span className="text-muted-foreground">{formatExpiry(employee.daysToExpiry)}</span>
+                        )
+                      ) : (
+                        <span className="text-muted-foreground">ثبت نشده</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3">
+                      <Link href={`/employees/${employee.id}`} className="text-sm text-primary hover:underline">مشاهده</Link>
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>

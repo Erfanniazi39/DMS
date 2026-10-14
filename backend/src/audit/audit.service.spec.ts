@@ -107,3 +107,26 @@ describe('diffChanges', () => {
     ]);
   });
 });
+
+describe('AuditService.listActivity', () => {
+  it('filters by user/action/entity/date range, paginates, and never selects ipAddress', async () => {
+    const prisma = { auditLog: { count: jest.fn().mockResolvedValue(45), findMany: jest.fn().mockResolvedValue([]) } };
+    const service = new AuditService(prisma as never);
+    const from = new Date('2026-10-01');
+    const to = new Date('2026-10-05');
+    const result = await service.listActivity({ userId: 7, action: 'LOGIN', entityType: 'User', from, to, page: 3, pageSize: 20 });
+
+    const args = prisma.auditLog.findMany.mock.calls[0][0];
+    expect(args.where).toEqual({ userId: 7, OR: [{ action: 'LOGIN' }, { action: { startsWith: 'LOGIN:' } }], entityType: 'User', createdAt: { gte: from, lt: to } });
+    expect(args.skip).toBe(40);
+    expect(args.take).toBe(20);
+    expect(args.select).not.toHaveProperty('ipAddress');
+    expect(result).toEqual({ items: [], total: 45, page: 3, pageSize: 20 });
+  });
+
+  it('applies no filters when none are given', async () => {
+    const prisma = { auditLog: { count: jest.fn().mockResolvedValue(0), findMany: jest.fn().mockResolvedValue([]) } };
+    await new AuditService(prisma as never).listActivity({ page: 1, pageSize: 20 });
+    expect(prisma.auditLog.findMany.mock.calls[0][0].where).toEqual({});
+  });
+});

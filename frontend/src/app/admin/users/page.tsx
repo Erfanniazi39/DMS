@@ -1,14 +1,18 @@
 "use client";
 
 import { Fragment, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Search, UserPlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { USERNAME_HINT, isValidUsername, sanitizeUsername } from "@/lib/username";
 import { apiFetch, type ApiError } from "@/lib/api";
 import { ROLE_LABELS, roleLabel, type RoleName } from "@/lib/roles";
+import { SortHeader, useTableSort } from "@/components/ui/sortable";
+import { sortRows, type SortValue } from "@/lib/table-sort";
 
 type UserStatus = "ACTIVE" | "DISABLED" | "LOCKED";
 type UserRole = RoleName;
@@ -16,6 +20,7 @@ type UserRole = RoleName;
 type UserRecord = {
   id: number;
   username: string;
+  fullName: string | null;
   email: string | null;
   phone: string | null;
   role: string;
@@ -30,6 +35,16 @@ const statusLabels: Record<UserStatus, string> = {
   LOCKED: "قفل‌شده",
 };
 
+// Accessors for sorting the users table — each sorts by what its column shows.
+const USER_SORT_GETTERS: Record<string, (row: UserRecord) => SortValue> = {
+  username: (row) => row.username,
+  email: (row) => row.email,
+  phone: (row) => row.phone,
+  role: (row) => row.role,
+  lastLoginAt: (row) => row.lastLoginAt,
+  status: (row) => statusLabels[row.status],
+};
+
 const roleOptions = Object.keys(ROLE_LABELS) as UserRole[];
 const statusOptions: UserStatus[] = ["ACTIVE", "DISABLED", "LOCKED"];
 
@@ -40,6 +55,7 @@ function formatDate(value: string | null) {
 
 type EditForm = {
   username: string;
+  fullName: string;
   password: string;
   roleName: UserRole;
   status: UserStatus;
@@ -57,7 +73,7 @@ export default function UsersPage() {
   const pageSize = 8;
 
   const [editingId, setEditingId] = useState<number | null>(null);
-  const [editForm, setEditForm] = useState<EditForm>({ username: "", password: "", roleName: "VIEWER", status: "ACTIVE" });
+  const [editForm, setEditForm] = useState<EditForm>({ username: "", fullName: "", password: "", roleName: "VIEWER", status: "ACTIVE" });
   const [editSaving, setEditSaving] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
 
@@ -75,14 +91,17 @@ export default function UsersPage() {
   const filteredUsers = useMemo(() => {
     const normalizedQuery = query.trim().toLocaleLowerCase();
     return users.filter((user) => {
-      const haystack = `${user.username} ${user.email ?? ""} ${user.phone ?? ""}`.toLocaleLowerCase();
+      const haystack = `${user.username} ${user.fullName ?? ""} ${user.email ?? ""} ${user.phone ?? ""}`.toLocaleLowerCase();
       const matchesQuery = !normalizedQuery || haystack.includes(normalizedQuery);
       return matchesQuery && (role === "all" || user.role === role) && (status === "all" || user.status === status);
     });
   }, [query, role, status, users]);
 
-  const pageCount = Math.max(1, Math.ceil(filteredUsers.length / pageSize));
-  const visibleUsers = filteredUsers.slice((page - 1) * pageSize, page * pageSize);
+  // Column sorting happens in memory (the whole list is already loaded and filtered here).
+  const { sort, onSort } = useTableSort(null, () => setPage(1));
+  const sortedUsers = useMemo(() => sortRows(filteredUsers, USER_SORT_GETTERS, sort), [filteredUsers, sort]);
+  const pageCount = Math.max(1, Math.ceil(sortedUsers.length / pageSize));
+  const visibleUsers = sortedUsers.slice((page - 1) * pageSize, page * pageSize);
 
   function updateFilter(setter: (value: string) => void, value: string) {
     setter(value);
@@ -91,7 +110,7 @@ export default function UsersPage() {
 
   function startEdit(user: UserRecord) {
     setEditingId(user.id);
-    setEditForm({ username: user.username, password: "", roleName: user.role as UserRole, status: user.status });
+    setEditForm({ username: user.username, fullName: user.fullName ?? "", password: "", roleName: user.role as UserRole, status: user.status });
     setEditError(null);
   }
 
@@ -103,7 +122,14 @@ export default function UsersPage() {
   async function saveEdit(user: UserRecord) {
     const payload: Record<string, string> = {};
     if (editForm.username.trim() && editForm.username.trim() !== user.username) {
+      if (!isValidUsername(editForm.username.trim())) {
+        setEditError("نام کاربری باید حداقل ۳ کاراکتر انگلیسی باشد و با حرف انگلیسی شروع شود.");
+        return;
+      }
       payload.username = editForm.username.trim();
+    }
+    if (editForm.fullName.trim() && editForm.fullName.trim() !== (user.fullName ?? "")) {
+      payload.fullName = editForm.fullName.trim();
     }
     if (editForm.password) {
       if (editForm.password.length < 8) {
@@ -178,12 +204,12 @@ export default function UsersPage() {
                   <thead className="bg-muted/50 text-muted-foreground">
                     <tr>
                       <th className="px-4 py-3 font-medium">وضعیت</th>
-                      <th className="px-4 py-3 font-medium">نام کاربری</th>
-                      <th className="px-4 py-3 font-medium">ایمیل</th>
-                      <th className="px-4 py-3 font-medium">شماره تلفن</th>
-                      <th className="px-4 py-3 font-medium">نقش</th>
-                      <th className="px-4 py-3 font-medium">آخرین ورود</th>
-                      <th className="px-4 py-3 font-medium">وضعیت حساب</th>
+                      <SortHeader label="نام کاربری" sortKey="username" sort={sort} onSort={onSort} className="px-4 py-3 font-medium" />
+                      <SortHeader label="ایمیل" sortKey="email" sort={sort} onSort={onSort} className="px-4 py-3 font-medium" />
+                      <SortHeader label="شماره تلفن" sortKey="phone" sort={sort} onSort={onSort} className="px-4 py-3 font-medium" />
+                      <SortHeader label="نقش" sortKey="role" sort={sort} onSort={onSort} className="px-4 py-3 font-medium" />
+                      <SortHeader label="آخرین ورود" sortKey="lastLoginAt" sort={sort} onSort={onSort} className="px-4 py-3 font-medium" />
+                      <SortHeader label="وضعیت حساب" sortKey="status" sort={sort} onSort={onSort} className="px-4 py-3 font-medium" />
                       <th className="px-4 py-3 font-medium">اقدامات</th>
                     </tr>
                   </thead>
@@ -192,7 +218,10 @@ export default function UsersPage() {
                       <Fragment key={user.id}>
                         <tr className="hover:bg-muted/30">
                           <td className="px-4 py-3 text-muted-foreground">نامشخص</td>
-                          <td className="px-4 py-3">{user.username}</td>
+                          <td className="px-4 py-3">
+                            <Link href={`/admin/users/${user.id}`} className="font-medium text-primary hover:underline" dir="ltr">{user.username}</Link>
+                            {user.fullName ? <span className="block text-xs text-muted-foreground">{user.fullName}</span> : null}
+                          </td>
                           <td className="px-4 py-3 text-muted-foreground">{user.email || "وارد نشده"}</td>
                           <td className="px-4 py-3 text-muted-foreground">{user.phone || "وارد نشده"}</td>
                           <td className="px-4 py-3">{roleLabel(user.role)}</td>
@@ -222,8 +251,21 @@ export default function UsersPage() {
                                     id={`edit-username-${user.id}`}
                                     name={`edit-username-${user.id}`}
                                     autoComplete="off"
+                                    dir="ltr"
                                     value={editForm.username}
-                                    onChange={(event) => setEditForm((current) => ({ ...current, username: event.target.value }))}
+                                    onChange={(event) => setEditForm((current) => ({ ...current, username: sanitizeUsername(event.target.value) }))}
+                                  />
+                                  <p className="text-xs text-muted-foreground">{USERNAME_HINT}</p>
+                                </div>
+                                <div className="flex flex-col gap-2">
+                                  <Label htmlFor={`edit-fullname-${user.id}`}>نام و نام خانوادگی</Label>
+                                  <Input
+                                    id={`edit-fullname-${user.id}`}
+                                    name={`edit-fullname-${user.id}`}
+                                    autoComplete="off"
+                                    maxLength={100}
+                                    value={editForm.fullName}
+                                    onChange={(event) => setEditForm((current) => ({ ...current, fullName: event.target.value }))}
                                   />
                                 </div>
                                 <div className="flex flex-col gap-2">

@@ -227,4 +227,19 @@ describe('PurchasePaymentsService', () => {
     await expect(svc(prisma).updatePayment(8, 4, { amount: 1, status: 'COMPLETED', paymentDate: PAY_DATE, method: 'CASH' } as never, 9, undefined)).rejects.toBeInstanceOf(ConflictException);
     expect(prisma.purchasePayment.update).not.toHaveBeenCalled();
   });
+
+  it('updatePayment() is a full replace: receipt-info fields are saved, and omitted optionals are cleared (not kept)', async () => {
+    const prisma = createPrismaMock();
+    prisma.purchase.findUnique.mockResolvedValue({ id: 8, totalAmount: 10000, ...fullGet, ...PAYABLE });
+    prisma.purchasePayment.findFirst.mockResolvedValue({ id: 4, purchaseId: 8, amount: 2000, status: 'PENDING', referenceNumber: 'OLD', transactionTime: '08:00' });
+    prisma.purchasePayment.update.mockResolvedValue({ id: 4, amount: 2000, status: 'COMPLETED' });
+    prisma.purchasePayment.findMany.mockResolvedValue([]);
+
+    await svc(prisma).updatePayment(8, 4, { amount: 2000, status: 'COMPLETED', paymentDate: PAY_DATE, method: 'BANK_TRANSFER', transactionTime: '14:30', transactionType: 'پایا', sourceAccount: 'A', destinationAccountHolder: 'ب' } as never, 9, undefined);
+
+    const data = prisma.purchasePayment.update.mock.calls[0][0].data;
+    expect(data).toMatchObject({ transactionTime: '14:30', transactionType: 'پایا', sourceAccount: 'A', destinationAccountHolder: 'ب', referenceNumber: null, note: null, depositId: null, withdrawalId: null, destinationAccount: null });
+    // Rule 6: the derived totals still come only from the recompute.
+    expect(prisma.purchase.update).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ paidAmount: expect.anything() }) }));
+  });
 });

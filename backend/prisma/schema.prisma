@@ -49,6 +49,16 @@ enum ContractType {
   fixed_task
 }
 
+// Why an employee's cooperation ended (2026-10-14). Set only through
+// EmployeesService.terminate(), together with a free-text reason.
+enum EmployeeExitType {
+  resigned
+  fired
+  contract_ended
+  retired
+  other
+}
+
 enum UserStatus {
   ACTIVE
   DISABLED
@@ -218,6 +228,12 @@ model Employee {
   // --- اطلاعات استخدام و قرارداد (employment & contract) ---
   workLocation         String?       @map("work_location")
   workingHours         String?       @map("working_hours")
+  // LEGACY (2026-10-14): the single-contract columns contract_type /
+  // contract_start_date / contract_end_date / contract_document_path were
+  // replaced by the employee_contracts history (EmployeeContract) — their data
+  // was copied there by the migration and the app no longer reads or writes
+  // them. Dropping them is a separate future migration that needs explicit
+  // confirmation.
   contractType         ContractType? @map("contract_type")
   contractStartDate    DateTime?     @map("contract_start_date")
   contractEndDate      DateTime?     @map("contract_end_date")
@@ -237,6 +253,18 @@ model Employee {
   // --- اطلاعات تماس و سایر (contact & other) ---
   address String?
 
+  // --- پایان همکاری (termination, 2026-10-14) ---
+  // status = terminated is only ever set by EmployeesService.terminate(),
+  // which requires all three. Cleared by reactivate(). Employees terminated
+  // before this existed keep them null (reason "not recorded").
+  terminationDate   DateTime?         @map("termination_date")
+  terminationType   EmployeeExitType? @map("termination_type")
+  terminationReason String?           @map("termination_reason")
+
+  // Contract history — the current contract is the latest one; tenure is
+  // computed from these periods (employees/employee-tenure.ts).
+  contracts EmployeeContract[]
+
   // Purchases this employee bought (Purchase.buyerEmployee).
   purchasesAsBuyer            Purchase[]
   // Purchase Requests this employee personally raised (PurchaseRequest.requestedByEmployee) — optional, distinct from purchasesAsBuyer.
@@ -250,29 +278,103 @@ model Employee {
   @@map("employees")
 }
 
+// One contract period of an employee (2026-10-14). A contract is typically
+// monthly first, then yearly and so on — each extension is a new row, so the
+// whole history is kept. endDate is null only for a permanent contract.
+// Periods of one employee never overlap (checked in EmployeesService).
+model EmployeeContract {
+  id           Int          @id @default(autoincrement())
+  employeeId   Int          @map("employee_id")
+  employee     Employee     @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  contractType ContractType @map("contract_type")
+  startDate    DateTime     @map("start_date")
+  endDate      DateTime?    @map("end_date")
+  note         String?
+  // Scanned contract (PDF/image) — uploaded through its own endpoint.
+  documentPath String?      @map("document_path")
+  createdAt    DateTime     @default(now()) @map("created_at")
+  updatedAt    DateTime     @default(now()) @updatedAt @map("updated_at")
+
+  @@index([employeeId, startDate])
+  @@map("employee_contracts")
+}
+
 // Master data: a company the business buys from.
+enum SupplierKind {
+  INDIVIDUAL
+  ORGANIZATION
+}
+
+model SupplierBankAccount {
+  id                Int      @id @default(autoincrement())
+  supplierId        Int      @map("supplier_id")
+  supplier          Supplier @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  bankName          String?  @map("bank_name")
+  accountNumber     String?  @map("account_number")
+  // Stored normalized: "IR" + 24 digits (legacy copies are kept as typed).
+  shebaNumber       String?  @map("sheba_number")
+  accountHolderName String?  @map("account_holder_name")
+  // At most one default per supplier — enforced by the service.
+  isDefault         Boolean  @default(false) @map("is_default")
+  isActive          Boolean  @default(true) @map("is_active")
+  note              String?
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@index([supplierId])
+  @@map("supplier_bank_accounts")
+}
+
 model Supplier {
-  id                Int            @id @default(autoincrement())
-  code              String         @unique
-  name              String
+  id                 Int                    @id @default(autoincrement())
+  code               String                 @unique
+  name               String
   // شناسه ملی — the supplier's national/legal registration id. Optional
   // (not every supplier record will have it on hand yet) but unique when
   // provided, same treatment as Employee.nationalId.
-  nationalId        String?        @unique @map("national_id")
-  phone             String?
-  email             String?
-  address           String?
+  nationalId         String?                @unique @map("national_id")
+  phone              String?
+  email              String?
+  address            String?
   // --- اطلاعات بانکی (bank details — three separate fields, not one blob) ---
-  bankName          String?        @map("bank_name")
-  bankAccountNumber String?        @map("bank_account_number")
-  bankShebaNumber   String?        @map("bank_sheba_number")
-  status            SupplierStatus @default(active)
-  note              String?
-  purchases         Purchase[]
+  bankName           String?                @map("bank_name")
+  bankAccountNumber  String?                @map("bank_account_number")
+  bankShebaNumber    String?                @map("bank_sheba_number")
+  status             SupplierStatus         @default(active)
+  note               String?
+  // Party master data (2026-10-13). `nationalId` is the کد ملی (INDIVIDUAL) or
+  // شناسه ملی (ORGANIZATION) depending on supplierKind; `address` is نشانی ۱.
+  // The three bank_* columns above are legacy — superseded by
+  // supplier_bank_accounts (copied by the migration, no longer read/written).
+  supplierKind       SupplierKind?          @map("supplier_kind")
+  title              String?
+  economicCode       String?                @map("economic_code")
+  registrationNumber String?                @map("registration_number")
+  phone2             String?                @map("phone_2")
+  mobile             String?
+  fax                String?
+  telex              String?
+  website            String?
+  address2           String?                @map("address_2")
+  province           String?
+  city               String?
+  postalCode         String?                @map("postal_code")
+  country            String?
+  cityCode           String?                @map("city_code")
+  locationNumber     String?                @map("location_number")
+  locationName       String?                @map("location_name")
+  taxOfficeProvince  String?                @map("tax_office_province")
+  taxOfficeCity      String?                @map("tax_office_city")
+  bankAccounts       SupplierBankAccount[]
+  // What we buy from this supplier: its purchase types (drives the auto-fill on
+  // purchase / request forms) and a free-text list of goods (never FK'd to Item).
+  purchaseTypes      SupplierPurchaseType[]
+  goods              SupplierGood[]
+  purchases          Purchase[]
   // I5 (build plan §5.5): raw-material/packaging receipts from this supplier.
-  goodsReceipts     GoodsReceipt[]
+  goodsReceipts      GoodsReceipt[]
   // I8 (build plan §5.8): returns of stock back to this supplier.
-  goodsReturns      GoodsReturn[]
+  goodsReturns       GoodsReturn[]
 
   @@map("suppliers")
 }
@@ -333,7 +435,7 @@ model CustomerGroup {
   nameEn    String     @map("name_en")
   nameFa    String     @map("name_fa")
   isActive  Boolean    @default(true) @map("is_active")
-  sortOrder Int        @default(0) @map("sort_order")
+  sortOrder Int        @default(1) @map("sort_order")
   customers Customer[]
 
   @@map("customer_groups")
@@ -346,7 +448,7 @@ model Territory {
   nameEn    String     @map("name_en")
   nameFa    String     @map("name_fa")
   isActive  Boolean    @default(true) @map("is_active")
-  sortOrder Int        @default(0) @map("sort_order")
+  sortOrder Int        @default(1) @map("sort_order")
   customers Customer[]
 
   @@map("territories")
@@ -362,7 +464,7 @@ model PaymentTerm {
   nameFa            String                     @map("name_fa")
   dueDays           Int                        @default(0) @map("due_days")
   isActive          Boolean                    @default(true) @map("is_active")
-  sortOrder         Int                        @default(0) @map("sort_order")
+  sortOrder         Int                        @default(1) @map("sort_order")
   financialProfiles CustomerFinancialProfile[]
   salesOrders       SalesOrder[]
 
@@ -375,28 +477,40 @@ model PaymentTerm {
 // Purchase.purchaseNumber. legacyCode is the old user-typed `code` column,
 // renamed — searchable, unique, but never "the" customer number.
 model Customer {
-  id              Int            @id @default(autoincrement())
-  customerNumber  String         @unique @map("customer_number")
-  customerKind    CustomerKind   @map("customer_kind")
-  name            String
-  legalName       String?        @map("legal_name")
+  id                 Int            @id @default(autoincrement())
+  customerNumber     String         @unique @map("customer_number")
+  customerKind       CustomerKind   @map("customer_kind")
+  name               String
+  legalName          String?        @map("legal_name")
   // Sensitive — never written to audit details/changes as a value.
-  nationalId      String?        @unique @map("national_id")
-  economicCode    String?        @map("economic_code")
-  legacyCode      String?        @unique @map("legacy_code")
-  phone           String
-  email           String?
-  customerGroupId Int            @map("customer_group_id")
-  customerGroup   CustomerGroup  @relation(fields: [customerGroupId], references: [id], onDelete: Restrict)
-  territoryId     Int?           @map("territory_id")
-  territory       Territory?     @relation(fields: [territoryId], references: [id])
-  status          CustomerStatus @default(ACTIVE)
-  statusReason    String?        @map("status_reason")
-  statusChangedAt DateTime?      @map("status_changed_at")
-  createdByUserId Int?           @map("created_by_user_id")
-  createdByUser   User?          @relation(fields: [createdByUserId], references: [id])
-  createdAt       DateTime       @default(now()) @map("created_at")
-  updatedAt       DateTime       @default(now()) @updatedAt @map("updated_at")
+  nationalId         String?        @unique @map("national_id")
+  economicCode       String?        @map("economic_code")
+  legacyCode         String?        @unique @map("legacy_code")
+  phone              String
+  email              String?
+  // Party master data (2026-10-13). `title` is a prefix such as «شرکت»/«آقای».
+  // `nationalId` above is the کد ملی (10 digits) for INDIVIDUAL and the
+  // شناسه ملی (11 digits) for ORGANIZATION — one column, labelled by kind.
+  title              String?
+  registrationNumber String?        @map("registration_number")
+  phone2             String?        @map("phone_2")
+  mobile             String?
+  fax                String?
+  telex              String?
+  website            String?
+  taxOfficeProvince  String?        @map("tax_office_province")
+  taxOfficeCity      String?        @map("tax_office_city")
+  customerGroupId    Int            @map("customer_group_id")
+  customerGroup      CustomerGroup  @relation(fields: [customerGroupId], references: [id], onDelete: Restrict)
+  territoryId        Int?           @map("territory_id")
+  territory          Territory?     @relation(fields: [territoryId], references: [id])
+  status             CustomerStatus @default(ACTIVE)
+  statusReason       String?        @map("status_reason")
+  statusChangedAt    DateTime?      @map("status_changed_at")
+  createdByUserId    Int?           @map("created_by_user_id")
+  createdByUser      User?          @relation(fields: [createdByUserId], references: [id])
+  createdAt          DateTime       @default(now()) @map("created_at")
+  updatedAt          DateTime       @default(now()) @updatedAt @map("updated_at")
 
   // --- Legacy columns (pre-2026-10-06 flat customer record) ---
   // Kept in place, untouched, as a safety net: their data was copied into
@@ -411,6 +525,7 @@ model Customer {
 
   contacts           CustomerContact[]
   addresses          CustomerAddress[]
+  bankAccounts       CustomerBankAccount[]
   financialProfile   CustomerFinancialProfile?
   notes              CustomerNote[]
   documents          CustomerDocument[]
@@ -446,6 +561,26 @@ model CustomerContact {
   @@map("customer_contacts")
 }
 
+model CustomerBankAccount {
+  id                Int      @id @default(autoincrement())
+  customerId        Int      @map("customer_id")
+  customer          Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  bankName          String?  @map("bank_name")
+  accountNumber     String?  @map("account_number")
+  // Stored normalized: "IR" + 24 digits.
+  shebaNumber       String?  @map("sheba_number")
+  accountHolderName String?  @map("account_holder_name")
+  // At most one default per customer — enforced by the service.
+  isDefault         Boolean  @default(false) @map("is_default")
+  isActive          Boolean  @default(true) @map("is_active")
+  note              String?
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@index([customerId])
+  @@map("customer_bank_accounts")
+}
+
 model CustomerAddress {
   id                   Int                 @id @default(autoincrement())
   customerId           Int                 @map("customer_id")
@@ -456,6 +591,11 @@ model CustomerAddress {
   city                 String?
   addressLine          String              @map("address_line")
   postalCode           String?             @map("postal_code")
+  // null country = ایران. Free text filled by users (2026-10-13).
+  country              String?
+  cityCode             String?             @map("city_code")
+  locationNumber       String?             @map("location_number")
+  locationName         String?             @map("location_name")
   phone                String?
   deliveryInstructions String?             @map("delivery_instructions")
   // At most one default per (customer, addressType) — enforced by
@@ -554,7 +694,7 @@ model Unit {
   nameEn               String                @map("name_en")
   nameFa               String                @map("name_fa")
   isActive             Boolean               @default(true) @map("is_active")
-  sortOrder            Int                   @default(0) @map("sort_order")
+  sortOrder            Int                   @default(1) @map("sort_order")
   purchaseItems        PurchaseItem[]
   purchaseRequestItems PurchaseRequestItem[]
   items                Item[]
@@ -571,7 +711,7 @@ model ItemCategory {
   nameEn    String  @map("name_en")
   nameFa    String  @map("name_fa")
   isActive  Boolean @default(true) @map("is_active")
-  sortOrder Int     @default(0) @map("sort_order")
+  sortOrder Int     @default(1) @map("sort_order")
   items     Item[]
 
   @@map("item_categories")
@@ -633,14 +773,15 @@ model Item {
 // Master data — see database_plan.txt's Purchase Type section for the seed
 // list (raw_material, food_ingredient, packaging, ...).
 model PurchaseType {
-  id               Int               @id @default(autoincrement())
-  code             String            @unique
-  nameEn           String            @map("name_en")
-  nameFa           String            @map("name_fa")
-  isActive         Boolean           @default(true) @map("is_active")
-  sortOrder        Int               @default(0) @map("sort_order")
+  id               Int                    @id @default(autoincrement())
+  code             String                 @unique
+  nameEn           String                 @map("name_en")
+  nameFa           String                 @map("name_fa")
+  isActive         Boolean                @default(true) @map("is_active")
+  sortOrder        Int                    @default(0) @map("sort_order")
   purchases        Purchase[]
   purchaseRequests PurchaseRequest[]
+  suppliers        SupplierPurchaseType[]
 
   @@map("purchase_types")
 }
@@ -808,15 +949,25 @@ model PurchaseItem {
 }
 
 model PurchasePayment {
-  id              Int           @id @default(autoincrement())
-  purchaseId      Int           @map("purchase_id")
-  purchase        Purchase      @relation(fields: [purchaseId], references: [id], onDelete: Restrict)
-  amount          Decimal       @db.Decimal(15, 0)
-  paymentDate     DateTime      @map("payment_date")
-  method          PaymentMethod
-  referenceNumber String?       @map("reference_number")
-  status          PaymentStatus @default(PENDING)
-  note            String?
+  id                       Int           @id @default(autoincrement())
+  purchaseId               Int           @map("purchase_id")
+  purchase                 Purchase      @relation(fields: [purchaseId], references: [id], onDelete: Restrict)
+  amount                   Decimal       @db.Decimal(15, 0)
+  paymentDate              DateTime      @map("payment_date")
+  method                   PaymentMethod
+  referenceNumber          String?       @map("reference_number")
+  status                   PaymentStatus @default(PENDING)
+  note                     String?
+  // Transfer-receipt info (2026-10-13) — informational only. transactionTime
+  // is "HH:MM" Tehran wall clock on paymentDate; the tracking code (کد پیگیری)
+  // reuses referenceNumber.
+  transactionTime          String?       @map("transaction_time")
+  transactionType          String?       @map("transaction_type")
+  depositId                String?       @map("deposit_id")
+  withdrawalId             String?       @map("withdrawal_id")
+  sourceAccount            String?       @map("source_account")
+  destinationAccount       String?       @map("destination_account")
+  destinationAccountHolder String?       @map("destination_account_holder")
 
   @@map("purchase_payments")
 }
@@ -1342,7 +1493,7 @@ model GoodsReceipt {
   items                  GoodsReceiptItem[]
   // I8 (build plan §5.8): goods returns that cite this receipt (display/cap
   // only — optional).
-  goodsReturns            GoodsReturn[]
+  goodsReturns           GoodsReturn[]
 
   @@index([supplierId])
   @@index([status])
@@ -1350,22 +1501,22 @@ model GoodsReceipt {
 }
 
 model GoodsReceiptItem {
-  id             Int          @id @default(autoincrement())
-  goodsReceiptId Int          @map("goods_receipt_id")
-  goodsReceipt   GoodsReceipt @relation(fields: [goodsReceiptId], references: [id], onDelete: Cascade) // drafts only
-  lineNo         Int          @map("line_no")
-  itemId         Int          @map("item_id")
-  item           Item         @relation(fields: [itemId], references: [id], onDelete: Restrict)
-  quantity       Decimal      @db.Decimal(12, 2)
-  unitCost       Decimal?     @map("unit_cost") @db.Decimal(15, 0) // B15 — visible/settable only with inventory.cost
-  batchNumber    String?      @map("batch_number") // required for batch-tracked items (I4)
-  productionDate DateTime?    @map("production_date")
-  expiryDate     DateTime?    @map("expiry_date")
-  batchId        Int?         @map("batch_id") // resolved/created at posting
-  releasedQty    Decimal      @default(0) @map("released_qty") @db.Decimal(12, 2) // QC → ON_HAND (B19)
-  rejectedQty    Decimal      @default(0) @map("rejected_qty") @db.Decimal(12, 2) // left QC via GoodsReturn (I8)
-  returnedQty    Decimal      @default(0) @map("returned_qty") @db.Decimal(12, 2) // Σ posted GoodsReturn lines (I8)
-  note           String?
+  id               Int               @id @default(autoincrement())
+  goodsReceiptId   Int               @map("goods_receipt_id")
+  goodsReceipt     GoodsReceipt      @relation(fields: [goodsReceiptId], references: [id], onDelete: Cascade) // drafts only
+  lineNo           Int               @map("line_no")
+  itemId           Int               @map("item_id")
+  item             Item              @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  quantity         Decimal           @db.Decimal(12, 2)
+  unitCost         Decimal?          @map("unit_cost") @db.Decimal(15, 0) // B15 — visible/settable only with inventory.cost
+  batchNumber      String?           @map("batch_number") // required for batch-tracked items (I4)
+  productionDate   DateTime?         @map("production_date")
+  expiryDate       DateTime?         @map("expiry_date")
+  batchId          Int?              @map("batch_id") // resolved/created at posting
+  releasedQty      Decimal           @default(0) @map("released_qty") @db.Decimal(12, 2) // QC → ON_HAND (B19)
+  rejectedQty      Decimal           @default(0) @map("rejected_qty") @db.Decimal(12, 2) // left QC via GoodsReturn (I8)
+  returnedQty      Decimal           @default(0) @map("returned_qty") @db.Decimal(12, 2) // Σ posted GoodsReturn lines (I8)
+  note             String?
   // I8 (build plan §5.8): goods-return lines that picked this receipt line —
   // caps Σ quantity ≤ quantity − returnedQty (service-enforced).
   goodsReturnItems GoodsReturnItem[]
@@ -1825,44 +1976,54 @@ model DeliveryItem {
 // from sales statistics. paidAmount / creditedAmount / paymentStatus are
 // written ONLY by SalesInvoicesService.applySettlement() (Receivables).
 model SalesInvoice {
-  id                   Int                 @id @default(autoincrement())
-  invoiceNumber        String?             @unique @map("invoice_number")
-  sourceType           SalesSourceType     @default(OPERATIONAL) @map("source_type")
-  customerId           Int                 @map("customer_id")
-  customer             Customer            @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  id                         Int                 @id @default(autoincrement())
+  invoiceNumber              String?             @unique @map("invoice_number")
+  sourceType                 SalesSourceType     @default(OPERATIONAL) @map("source_type")
+  customerId                 Int                 @map("customer_id")
+  customer                   Customer            @relation(fields: [customerId], references: [id], onDelete: Restrict)
   // null only for OPENING_BALANCE.
-  salesOrderId         Int?                @map("sales_order_id")
-  salesOrder           SalesOrder?         @relation(fields: [salesOrderId], references: [id], onDelete: Restrict)
-  invoiceDate          DateTime            @map("invoice_date")
+  salesOrderId               Int?                @map("sales_order_id")
+  salesOrder                 SalesOrder?         @relation(fields: [salesOrderId], references: [id], onDelete: Restrict)
+  invoiceDate                DateTime            @map("invoice_date")
   // Set at posting: invoiceDate + paymentDueDays.
-  dueDate              DateTime?           @map("due_date")
-  status               SalesDocumentStatus @default(DRAFT)
+  dueDate                    DateTime?           @map("due_date")
+  status                     SalesDocumentStatus @default(DRAFT)
   // Snapshots, taken when the draft is created.
-  customerName         String              @map("customer_name")
-  customerEconomicCode String?             @map("customer_economic_code")
-  billingAddressText   String?             @map("billing_address_text")
-  paymentTermName      String?             @map("payment_term_name")
-  paymentDueDays       Int                 @default(0) @map("payment_due_days")
+  customerName               String              @map("customer_name")
+  customerEconomicCode       String?             @map("customer_economic_code")
+  billingAddressText         String?             @map("billing_address_text")
+  // Buyer snapshot (2026-10-13), refreshed at DRAFT creation and at post();
+  // never backfilled on old invoices. The buyer's national ID is deliberately
+  // not snapshotted (decision B14).
+  customerKind               CustomerKind?       @map("customer_kind")
+  customerLegalName          String?             @map("customer_legal_name")
+  customerRegistrationNumber String?             @map("customer_registration_number")
+  customerPhone              String?             @map("customer_phone")
+  customerProvince           String?             @map("customer_province")
+  customerCity               String?             @map("customer_city")
+  customerPostalCode         String?             @map("customer_postal_code")
+  paymentTermName            String?             @map("payment_term_name")
+  paymentDueDays             Int                 @default(0) @map("payment_due_days")
   // Derived money fields — written only from sales-totals.ts results.
-  subtotal             Decimal             @default(0) @db.Decimal(15, 0)
-  discountTotal        Decimal             @default(0) @map("discount_total") @db.Decimal(15, 0)
-  taxTotal             Decimal             @default(0) @map("tax_total") @db.Decimal(15, 0)
-  totalAmount          Decimal             @default(0) @map("total_amount") @db.Decimal(15, 0)
+  subtotal                   Decimal             @default(0) @db.Decimal(15, 0)
+  discountTotal              Decimal             @default(0) @map("discount_total") @db.Decimal(15, 0)
+  taxTotal                   Decimal             @default(0) @map("tax_total") @db.Decimal(15, 0)
+  totalAmount                Decimal             @default(0) @map("total_amount") @db.Decimal(15, 0)
   // Settlement — written ONLY by SalesInvoicesService.applySettlement().
-  paidAmount           Decimal             @default(0) @map("paid_amount") @db.Decimal(15, 0)
-  creditedAmount       Decimal             @default(0) @map("credited_amount") @db.Decimal(15, 0)
-  paymentStatus        SalesPaymentStatus  @default(UNPAID) @map("payment_status")
-  note                 String?
-  postedByUserId       Int?                @map("posted_by_user_id")
-  postedByUser         User?               @relation("SalesInvoicePostedBy", fields: [postedByUserId], references: [id])
-  postedAt             DateTime?           @map("posted_at")
-  createdByUserId      Int?                @map("created_by_user_id")
-  createdByUser        User?               @relation("SalesInvoiceCreatedBy", fields: [createdByUserId], references: [id])
-  createdAt            DateTime            @default(now()) @map("created_at")
-  updatedAt            DateTime            @default(now()) @updatedAt @map("updated_at")
-  items                SalesInvoiceItem[]
-  paymentAllocations   PaymentAllocation[]
-  creditNotes          CreditNote[]
+  paidAmount                 Decimal             @default(0) @map("paid_amount") @db.Decimal(15, 0)
+  creditedAmount             Decimal             @default(0) @map("credited_amount") @db.Decimal(15, 0)
+  paymentStatus              SalesPaymentStatus  @default(UNPAID) @map("payment_status")
+  note                       String?
+  postedByUserId             Int?                @map("posted_by_user_id")
+  postedByUser               User?               @relation("SalesInvoicePostedBy", fields: [postedByUserId], references: [id])
+  postedAt                   DateTime?           @map("posted_at")
+  createdByUserId            Int?                @map("created_by_user_id")
+  createdByUser              User?               @relation("SalesInvoiceCreatedBy", fields: [createdByUserId], references: [id])
+  createdAt                  DateTime            @default(now()) @map("created_at")
+  updatedAt                  DateTime            @default(now()) @updatedAt @map("updated_at")
+  items                      SalesInvoiceItem[]
+  paymentAllocations         PaymentAllocation[]
+  creditNotes                CreditNote[]
 
   @@index([customerId, status])
   @@index([salesOrderId])
@@ -2103,36 +2264,68 @@ enum CustomerPaymentDirection {
 // allocations). A COMPLETED payment may also be CANCELLED directly (reason
 // required), which also reverses its allocations — never deleted.
 model CustomerPayment {
-  id                        Int                      @id @default(autoincrement())
+  id                        Int                       @id @default(autoincrement())
   // Numbered on save (RCP-<jalali year>-000001) — no draft stage, unlike
   // Sales documents.
-  paymentNumber             String                   @unique @map("payment_number")
-  direction                 CustomerPaymentDirection @default(RECEIPT)
-  customerId                Int                      @map("customer_id")
-  customer                  Customer                 @relation(fields: [customerId], references: [id], onDelete: Restrict)
-  paymentDate               DateTime                 @map("payment_date")
-  amount                    Decimal                  @db.Decimal(15, 0)
+  paymentNumber             String                    @unique @map("payment_number")
+  direction                 CustomerPaymentDirection  @default(RECEIPT)
+  customerId                Int                       @map("customer_id")
+  customer                  Customer                  @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  paymentDate               DateTime                  @map("payment_date")
+  amount                    Decimal                   @db.Decimal(15, 0)
   method                    PaymentMethod
-  status                    PaymentStatus            @default(COMPLETED)
-  referenceNumber           String?                  @map("reference_number")
+  status                    PaymentStatus             @default(COMPLETED)
+  referenceNumber           String?                   @map("reference_number")
   // B9: required when status is PENDING at creation (an uncleared cheque).
-  chequeDueDate             DateTime?                @map("cheque_due_date")
-  bankName                  String?                  @map("bank_name")
+  chequeDueDate             DateTime?                 @map("cheque_due_date")
+  bankName                  String?                   @map("bank_name")
   note                      String?
-  cancelledByUserId         Int?                     @map("cancelled_by_user_id")
-  cancelledByUser           User?                    @relation("CustomerPaymentCancelledBy", fields: [cancelledByUserId], references: [id])
-  cancelledAt               DateTime?                @map("cancelled_at")
-  cancelReason              String?                  @map("cancel_reason")
-  createdByUserId           Int?                     @map("created_by_user_id")
-  createdByUser             User?                    @relation("CustomerPaymentCreatedBy", fields: [createdByUserId], references: [id])
-  createdAt                 DateTime                 @default(now()) @map("created_at")
-  updatedAt                 DateTime                 @default(now()) @updatedAt @map("updated_at")
-  allocationsAsSource       PaymentAllocation[]      @relation("PaymentAllocationSourcePayment")
-  allocationsAsRefundTarget PaymentAllocation[]      @relation("PaymentAllocationTargetRefund")
+  cancelledByUserId         Int?                      @map("cancelled_by_user_id")
+  cancelledByUser           User?                     @relation("CustomerPaymentCancelledBy", fields: [cancelledByUserId], references: [id])
+  cancelledAt               DateTime?                 @map("cancelled_at")
+  cancelReason              String?                   @map("cancel_reason")
+  // Transfer-receipt info (2026-10-13) — informational only. transactionTime
+  // is "HH:MM" Tehran wall clock on paymentDate; the tracking code (کد پیگیری)
+  // reuses referenceNumber.
+  transactionTime           String?                   @map("transaction_time")
+  transactionType           String?                   @map("transaction_type")
+  depositId                 String?                   @map("deposit_id")
+  withdrawalId              String?                   @map("withdrawal_id")
+  sourceAccount             String?                   @map("source_account")
+  destinationAccount        String?                   @map("destination_account")
+  destinationAccountHolder  String?                   @map("destination_account_holder")
+  createdByUserId           Int?                      @map("created_by_user_id")
+  createdByUser             User?                     @relation("CustomerPaymentCreatedBy", fields: [createdByUserId], references: [id])
+  createdAt                 DateTime                  @default(now()) @map("created_at")
+  updatedAt                 DateTime                  @default(now()) @updatedAt @map("updated_at")
+  allocationsAsSource       PaymentAllocation[]       @relation("PaymentAllocationSourcePayment")
+  allocationsAsRefundTarget PaymentAllocation[]       @relation("PaymentAllocationTargetRefund")
+  documents                 CustomerPaymentDocument[]
 
   @@index([customerId])
   @@index([status])
   @@map("customer_payments")
+}
+
+// Supporting files for a customer payment (transfer slip, cheque photo, …) —
+// 2026-10-14. One row per uploaded file (single-step upload, unlike
+// PurchaseDocument's metadata-then-file two steps). Files live under
+// uploads/customer-payments and are served only through the guarded
+// CustomerPaymentFilesController. Purely informational — never feeds any
+// total/status.
+model CustomerPaymentDocument {
+  id                Int             @id @default(autoincrement())
+  customerPaymentId Int             @map("customer_payment_id")
+  customerPayment   CustomerPayment @relation(fields: [customerPaymentId], references: [id], onDelete: Restrict)
+  originalName      String          @map("original_name")
+  filePath          String          @map("file_path")
+  note              String?
+  uploadedByUserId  Int?            @map("uploaded_by_user_id")
+  uploadedByUser    User?           @relation("CustomerPaymentDocumentUploadedBy", fields: [uploadedByUserId], references: [id])
+  uploadedAt        DateTime        @default(now()) @map("uploaded_at")
+
+  @@index([customerPaymentId])
+  @@map("customer_payment_documents")
 }
 
 // Open-item AR ledger: one credit source (a RECEIPT CustomerPayment, or —
@@ -2206,17 +2399,21 @@ model RolePermission {
 // A person's Employee record (Master Data) and their User account (if any)
 // are separate, unrelated entities — see database_plan.txt at the project root.
 model User {
-  id                           Int                    @id @default(autoincrement())
-  username                     String                 @unique
-  passwordHash                 String                 @map("password_hash")
+  id                           Int                       @id @default(autoincrement())
+  username                     String                    @unique
+  passwordHash                 String                    @map("password_hash")
   email                        String?
   phone                        String?
-  roleId                       Int                    @map("role_id")
-  role                         Role                   @relation(fields: [roleId], references: [id])
-  status                       UserStatus             @default(ACTIVE)
-  createdAt                    DateTime               @default(now()) @map("created_at")
-  lastLoginAt                  DateTime?              @map("last_login_at")
+  // Display name for pickers and letters (the login is only a username).
+  // Plain account data — NOT an Employee link (CLAUDE.md rule 1).
+  fullName                     String?                   @map("full_name")
+  roleId                       Int                       @map("role_id")
+  role                         Role                      @relation(fields: [roleId], references: [id])
+  status                       UserStatus                @default(ACTIVE)
+  createdAt                    DateTime                  @default(now()) @map("created_at")
+  lastLoginAt                  DateTime?                 @map("last_login_at")
   auditLogs                    AuditLog[]
+  deletedRecords               DeletedRecord[]
   permissions                  UserPermission[]
   // Purchase Requests this account entered (PurchaseRequest.createdByUser) — data-entry
   // provenance, distinct from requestedByEmployee (who actually asked for it).
@@ -2228,62 +2425,67 @@ model User {
   createdCustomers             Customer[]
   customerNotes                CustomerNote[]
   uploadedCustomerDocuments    CustomerDocument[]
-  ownedCustomerComplaints      CustomerComplaint[]    @relation("CustomerComplaintOwner")
-  createdCustomerComplaints    CustomerComplaint[]    @relation("CustomerComplaintCreatedBy")
+  ownedCustomerComplaints      CustomerComplaint[]       @relation("CustomerComplaintOwner")
+  createdCustomerComplaints    CustomerComplaint[]       @relation("CustomerComplaintCreatedBy")
   // Inventory data-entry provenance — same meaning as above. Each *ByUserId
   // field has its own named relation.
-  createdStockMovements        StockMovement[]        @relation("StockMovementCreatedBy")
-  createdStockAdjustments      StockAdjustment[]      @relation("StockAdjustmentCreatedBy")
-  postedStockAdjustments       StockAdjustment[]      @relation("StockAdjustmentPostedBy")
+  createdStockMovements        StockMovement[]           @relation("StockMovementCreatedBy")
+  createdStockAdjustments      StockAdjustment[]         @relation("StockAdjustmentCreatedBy")
+  postedStockAdjustments       StockAdjustment[]         @relation("StockAdjustmentPostedBy")
   // I2: submit/reject provenance — approve() reuses postedStockAdjustments above.
-  submittedStockAdjustments    StockAdjustment[]      @relation("StockAdjustmentSubmittedBy")
-  rejectedStockAdjustments     StockAdjustment[]      @relation("StockAdjustmentRejectedBy")
+  submittedStockAdjustments    StockAdjustment[]         @relation("StockAdjustmentSubmittedBy")
+  rejectedStockAdjustments     StockAdjustment[]         @relation("StockAdjustmentRejectedBy")
   // I3: who last edited an item's min/reorder/max thresholds.
-  updatedItemStockLevels       ItemStockLevel[]       @relation("ItemStockLevelUpdatedBy")
+  updatedItemStockLevels       ItemStockLevel[]          @relation("ItemStockLevelUpdatedBy")
   // I4: batch/expiry provenance — same data-entry-provenance meaning as above.
-  updatedInventoryItemSettings InventoryItemSetting[] @relation("InventoryItemSettingUpdatedBy")
-  createdStockBatches          StockBatch[]           @relation("StockBatchCreatedBy")
+  updatedInventoryItemSettings InventoryItemSetting[]    @relation("InventoryItemSettingUpdatedBy")
+  createdStockBatches          StockBatch[]              @relation("StockBatchCreatedBy")
   // I5: goods-receipt / production-output provenance.
-  createdGoodsReceipts         GoodsReceipt[]         @relation("GoodsReceiptCreatedBy")
-  postedGoodsReceipts          GoodsReceipt[]         @relation("GoodsReceiptPostedBy")
-  createdProductionOutputs     ProductionOutput[]     @relation("ProductionOutputCreatedBy")
-  postedProductionOutputs      ProductionOutput[]     @relation("ProductionOutputPostedBy")
+  createdGoodsReceipts         GoodsReceipt[]            @relation("GoodsReceiptCreatedBy")
+  postedGoodsReceipts          GoodsReceipt[]            @relation("GoodsReceiptPostedBy")
+  createdProductionOutputs     ProductionOutput[]        @relation("ProductionOutputCreatedBy")
+  postedProductionOutputs      ProductionOutput[]        @relation("ProductionOutputPostedBy")
   // I6: stock-count provenance — one named relation per *ByUserId field.
-  createdStockCounts           StockCount[]           @relation("StockCountCreatedBy")
-  startedStockCounts           StockCount[]           @relation("StockCountStartedBy")
-  submittedStockCounts         StockCount[]           @relation("StockCountSubmittedBy")
-  postedStockCounts            StockCount[]           @relation("StockCountPostedBy")
-  cancelledStockCounts         StockCount[]           @relation("StockCountCancelledBy")
-  countedStockCountItems       StockCountItem[]       @relation("StockCountItemCountedBy")
+  createdStockCounts           StockCount[]              @relation("StockCountCreatedBy")
+  startedStockCounts           StockCount[]              @relation("StockCountStartedBy")
+  submittedStockCounts         StockCount[]              @relation("StockCountSubmittedBy")
+  postedStockCounts            StockCount[]              @relation("StockCountPostedBy")
+  cancelledStockCounts         StockCount[]              @relation("StockCountCancelledBy")
+  countedStockCountItems       StockCountItem[]          @relation("StockCountItemCountedBy")
   // I8: goods-return provenance.
-  createdGoodsReturns          GoodsReturn[]          @relation("GoodsReturnCreatedBy")
-  postedGoodsReturns           GoodsReturn[]          @relation("GoodsReturnPostedBy")
+  createdGoodsReturns          GoodsReturn[]             @relation("GoodsReturnCreatedBy")
+  postedGoodsReturns           GoodsReturn[]             @relation("GoodsReturnPostedBy")
   // Sales-order provenance (Sales batch 2) — one named relation per field.
-  createdSalesOrders           SalesOrder[]           @relation("SalesOrderCreatedBy")
-  approvedSalesOrders          SalesOrder[]           @relation("SalesOrderApprovedBy")
-  creditOverriddenSalesOrders  SalesOrder[]           @relation("SalesOrderCreditOverrideBy")
-  confirmedSalesOrders         SalesOrder[]           @relation("SalesOrderConfirmedBy")
-  cancelledSalesOrders         SalesOrder[]           @relation("SalesOrderCancelledBy")
-  closedSalesOrders            SalesOrder[]           @relation("SalesOrderClosedBy")
+  createdSalesOrders           SalesOrder[]              @relation("SalesOrderCreatedBy")
+  approvedSalesOrders          SalesOrder[]              @relation("SalesOrderApprovedBy")
+  creditOverriddenSalesOrders  SalesOrder[]              @relation("SalesOrderCreditOverrideBy")
+  confirmedSalesOrders         SalesOrder[]              @relation("SalesOrderConfirmedBy")
+  cancelledSalesOrders         SalesOrder[]              @relation("SalesOrderCancelledBy")
+  closedSalesOrders            SalesOrder[]              @relation("SalesOrderClosedBy")
   // Delivery provenance (Sales batch 3).
-  createdDeliveries            Delivery[]             @relation("DeliveryCreatedBy")
-  postedDeliveries             Delivery[]             @relation("DeliveryPostedBy")
+  createdDeliveries            Delivery[]                @relation("DeliveryCreatedBy")
+  postedDeliveries             Delivery[]                @relation("DeliveryPostedBy")
   // Sales-invoice provenance (Sales batch 4).
-  createdSalesInvoices         SalesInvoice[]         @relation("SalesInvoiceCreatedBy")
-  postedSalesInvoices          SalesInvoice[]         @relation("SalesInvoicePostedBy")
+  createdSalesInvoices         SalesInvoice[]            @relation("SalesInvoiceCreatedBy")
+  postedSalesInvoices          SalesInvoice[]            @relation("SalesInvoicePostedBy")
   // Receivables provenance (Sales batch 5).
-  cancelledCustomerPayments    CustomerPayment[]      @relation("CustomerPaymentCancelledBy")
-  createdCustomerPayments      CustomerPayment[]      @relation("CustomerPaymentCreatedBy")
-  allocatedPaymentAllocations  PaymentAllocation[]    @relation("PaymentAllocationAllocatedBy")
-  reversedPaymentAllocations   PaymentAllocation[]    @relation("PaymentAllocationReversedBy")
+  cancelledCustomerPayments    CustomerPayment[]         @relation("CustomerPaymentCancelledBy")
+  createdCustomerPayments      CustomerPayment[]         @relation("CustomerPaymentCreatedBy")
+  allocatedPaymentAllocations  PaymentAllocation[]       @relation("PaymentAllocationAllocatedBy")
+  reversedPaymentAllocations   PaymentAllocation[]       @relation("PaymentAllocationReversedBy")
   // Sales-return provenance (Sales batch 6) — one named relation per field.
-  requestedSalesReturns        SalesReturn[]          @relation("SalesReturnRequestedBy")
-  approvedSalesReturns         SalesReturn[]          @relation("SalesReturnApprovedBy")
-  receivedSalesReturns         SalesReturn[]          @relation("SalesReturnReceivedBy")
-  inspectedSalesReturns        SalesReturn[]          @relation("SalesReturnInspectedBy")
+  requestedSalesReturns        SalesReturn[]             @relation("SalesReturnRequestedBy")
+  customerPaymentDocuments     CustomerPaymentDocument[] @relation("CustomerPaymentDocumentUploadedBy")
+  approvedSalesReturns         SalesReturn[]             @relation("SalesReturnApprovedBy")
+  receivedSalesReturns         SalesReturn[]             @relation("SalesReturnReceivedBy")
+  inspectedSalesReturns        SalesReturn[]             @relation("SalesReturnInspectedBy")
   // Credit-note provenance (Sales batch 6).
-  createdCreditNotes           CreditNote[]           @relation("CreditNoteCreatedBy")
-  postedCreditNotes            CreditNote[]           @relation("CreditNotePostedBy")
+  createdCreditNotes           CreditNote[]              @relation("CreditNoteCreatedBy")
+  postedCreditNotes            CreditNote[]              @relation("CreditNotePostedBy")
+  // Letters (نامه‌نگاری): written, received, and attached by this account.
+  sentLetters                  Letter[]                  @relation("LetterSender")
+  receivedLetters              LetterRecipient[]         @relation("LetterRecipientUser")
+  uploadedLetterAttachments    LetterAttachment[]        @relation("LetterAttachmentUploadedBy")
 
   @@map("users")
 }
@@ -2314,6 +2516,123 @@ model AuditLog {
   changes    Json?
 
   @@map("audit_logs")
+}
+
+// Which purchase types a supplier is used for (many-to-many).
+model SupplierPurchaseType {
+  supplierId     Int          @map("supplier_id")
+  supplier       Supplier     @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  purchaseTypeId Int          @map("purchase_type_id")
+  purchaseType   PurchaseType @relation(fields: [purchaseTypeId], references: [id], onDelete: Restrict)
+
+  @@id([supplierId, purchaseTypeId])
+  @@index([purchaseTypeId])
+  @@map("supplier_purchase_types")
+}
+
+// A good/material we get from a supplier — plain text on purpose (purchases are
+// not limited to Items; same rule as PurchaseItem.name).
+model SupplierGood {
+  id         Int      @id @default(autoincrement())
+  supplierId Int      @map("supplier_id")
+  supplier   Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  name       String
+  note       String?
+  sortOrder  Int      @default(1) @map("sort_order")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([supplierId])
+  @@map("supplier_goods")
+}
+
+// Snapshot of a business record at the moment it was deleted (so "a purchase
+// was deleted" in the activity feed can be answered later). View-only — a
+// delete is not undone from here. Rows are purged after `expiresAt`
+// (DMS_DELETED_RECORD_RETENTION_DAYS, default 90). Sensitive values (national
+// IDs) are redacted before writing. No FK to the deleted entity (it is gone).
+model DeletedRecord {
+  id              Int      @id @default(autoincrement())
+  entityType      String   @map("entity_type")
+  entityId        Int      @map("entity_id")
+  label           String?
+  snapshot        Json
+  deletedByUserId Int?     @map("deleted_by_user_id")
+  deletedBy       User?    @relation(fields: [deletedByUserId], references: [id])
+  deletedAt       DateTime @default(now()) @map("deleted_at")
+  expiresAt       DateTime @map("expires_at")
+
+  @@index([expiresAt])
+  @@index([entityType, entityId])
+  @@index([deletedAt])
+  @@map("deleted_records")
+}
+
+// Internal correspondence between system users (نامه‌نگاری, v1: users only —
+// no departments, no outside parties). A letter is a DRAFT visible only to its
+// sender until it is sent; sending claims the gap-free LTR-<jalali year>-NNNNNN
+// number and creates one LetterRecipient row per addressee (that row IS the
+// delivery and the only source of read access for recipients). A SENT letter is
+// never edited or deleted.
+enum LetterStatus {
+  DRAFT
+  SENT
+}
+
+model Letter {
+  id           Int          @id @default(autoincrement())
+  // Null while DRAFT; assigned at send time.
+  letterNumber String?      @unique @map("letter_number")
+  status       LetterStatus @default(DRAFT)
+  subject      String
+  body         String
+  senderUserId Int          @map("sender_user_id")
+  senderUser   User         @relation("LetterSender", fields: [senderUserId], references: [id], onDelete: Restrict)
+  inReplyToId  Int?         @map("in_reply_to_id")
+  inReplyTo    Letter?      @relation("LetterReply", fields: [inReplyToId], references: [id], onDelete: Restrict)
+  replies      Letter[]     @relation("LetterReply")
+  sentAt       DateTime?    @map("sent_at")
+  createdAt    DateTime     @default(now()) @map("created_at")
+  updatedAt    DateTime     @updatedAt @map("updated_at")
+
+  recipients  LetterRecipient[]
+  attachments LetterAttachment[]
+
+  @@index([senderUserId, status, sentAt])
+  @@index([inReplyToId])
+  @@map("letters")
+}
+
+// One row per addressee, created when the letter is sent. readAt/archivedAt
+// are the recipient's own state — nobody else's.
+model LetterRecipient {
+  letterId   Int       @map("letter_id")
+  letter     Letter    @relation(fields: [letterId], references: [id], onDelete: Cascade)
+  userId     Int       @map("user_id")
+  user       User      @relation("LetterRecipientUser", fields: [userId], references: [id], onDelete: Restrict)
+  readAt     DateTime? @map("read_at")
+  archivedAt DateTime? @map("archived_at")
+
+  @@id([letterId, userId])
+  @@index([userId, archivedAt, readAt])
+  @@map("letter_recipients")
+}
+
+model LetterAttachment {
+  id               Int      @id @default(autoincrement())
+  letterId         Int      @map("letter_id")
+  letter           Letter   @relation(fields: [letterId], references: [id], onDelete: Cascade)
+  // /uploads/letters/<uuid>.<ext> — never served statically; downloads go
+  // through the guarded letters controller, which checks the parent letter's
+  // visibility.
+  filePath         String   @map("file_path")
+  originalName     String   @map("original_name")
+  sizeBytes        Int      @map("size_bytes")
+  uploadedByUserId Int?     @map("uploaded_by_user_id")
+  uploadedByUser   User?    @relation("LetterAttachmentUploadedBy", fields: [uploadedByUserId], references: [id])
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  @@index([letterId])
+  @@map("letter_attachments")
 }
 
 /// Managed entirely by connect-pg-simple (the express-session Postgres

@@ -12,7 +12,16 @@ import {
   requiredId,
   requiredText,
 } from '../../common/zod-fields';
-import { toAsciiDigits } from '../customer-normalize';
+import {
+  bankAccountFields,
+  optionalDigitsText,
+  optionalPhone,
+  optionalWebsite,
+  partyIdentityRefine,
+  postalCodeRefine,
+  refineBankAccountHasNumber,
+  requiredPhone,
+} from '../../common/party-fields';
 import { REASON_REQUIRED_CUSTOMER_STATUSES } from '../customer-rules';
 
 // Must match the Prisma enums.
@@ -27,43 +36,14 @@ export const PAYMENT_METHODS = ['CASH', 'BANK_TRANSFER', 'CHECK', 'CARD'] as con
 
 const VERSION_MESSAGE = 'نسخه رکورد (زمان آخرین ویرایش) ارسال نشده یا نامعتبر است';
 
-// Persian/Arabic digits typed into a numeric field are accepted and stored
-// as ASCII (customer-normalize.ts). Blank = not provided.
-function asciiDigitsInput(value: unknown) {
-  const blankless = emptyToUndefined(value);
-  return typeof blankless === 'string' ? toAsciiDigits(blankless).trim() : blankless;
-}
-
-// Same digits-only 6–15 rule as the previous customer/supplier phone.
-const PHONE_PATTERN = /^[0-9]{6,15}$/;
-const requiredPhone = z.preprocess(
-  asciiDigitsInput,
-  z.string({ error: 'تلفن الزامی است' }).regex(PHONE_PATTERN, { error: 'تلفن معتبر نیست' }),
-);
-const optionalPhone = z.preprocess(asciiDigitsInput, z.string().regex(PHONE_PATTERN, { error: 'تلفن معتبر نیست' }).optional());
-
-const optionalDigitsText = (maxLength: number, message: string) =>
-  z.preprocess(
-    asciiDigitsInput,
-    z.string().regex(/^[0-9]+$/, { error: message }).max(maxLength, { error: `حداکثر ${maxLength} رقم مجاز است` }).optional(),
-  );
-
-// شناسه ملی / کد ملی. Digits only here; the exact length depends on
-// customerKind and is checked in nationalIdRefine() below: 10 digits for an
-// individual's کد ملی, 11 for an organization's شناسه ملی.
+// شناسه ملی / کد ملی. Digits only here; the exact rule depends on
+// customerKind and is checked in identityRefine() (common/party-fields.ts):
+// ORGANIZATION → 11-digit شناسه ملی + 12/14-digit کد اقتصادی (both required);
+// INDIVIDUAL → 10-digit کد ملی with a valid check digit (required).
 const nationalIdField = optionalDigitsText(11, 'شناسه/کد ملی فقط باید شامل رقم باشد');
 
-const NATIONAL_ID_LENGTH: Record<(typeof CUSTOMER_KINDS)[number], { length: number; message: string }> = {
-  INDIVIDUAL: { length: 10, message: 'کد ملی شخص حقیقی باید ۱۰ رقم باشد' },
-  ORGANIZATION: { length: 11, message: 'شناسه ملی شخص حقوقی باید ۱۱ رقم باشد' },
-};
-
-function nationalIdRefine(value: { customerKind: (typeof CUSTOMER_KINDS)[number]; nationalId?: string }, ctx: z.RefinementCtx) {
-  if (value.nationalId === undefined) return;
-  const rule = NATIONAL_ID_LENGTH[value.customerKind];
-  if (value.nationalId.length !== rule.length) {
-    ctx.addIssue({ code: 'custom', path: ['nationalId'], message: rule.message });
-  }
+function identityRefine(value: { customerKind: (typeof CUSTOMER_KINDS)[number]; nationalId?: string; economicCode?: string }, ctx: z.RefinementCtx) {
+  partyIdentityRefine(value, value.customerKind, ctx);
 }
 
 // --- Child-record inputs (also used by the create form's optional first
@@ -80,18 +60,33 @@ export const customerContactSchema = z.object({
   note: optionalTrimmedString(500),
 }, { error: 'اطلاعات مخاطب نامعتبر است' });
 
-export const customerAddressSchema = z.object({
+const customerAddressObject = z.object({
   addressType: enumField(CUSTOMER_ADDRESS_TYPES, 'نوع آدرس نامعتبر است'),
   label: optionalTrimmedString(100),
   province: optionalTrimmedString(100),
   city: optionalTrimmedString(100),
   addressLine: requiredText(500, 'نشانی الزامی است'),
   postalCode: optionalDigitsText(20, 'کد پستی فقط باید شامل رقم باشد'),
+  // Free text, filled by users; empty = ایران.
+  country: optionalTrimmedString(100),
+  cityCode: optionalTrimmedString(30),
+  locationNumber: optionalTrimmedString(50),
+  locationName: optionalTrimmedString(150),
   phone: optionalPhone,
   deliveryInstructions: optionalTrimmedString(500),
   isDefault: z.boolean().default(false),
   isActive: z.boolean().default(true),
 }, { error: 'اطلاعات آدرس نامعتبر است' });
+
+function addressRefine(value: { postalCode?: string; country?: string }, ctx: z.RefinementCtx) {
+  postalCodeRefine(value.postalCode, value.country, ctx);
+}
+
+export const customerAddressSchema = customerAddressObject.superRefine(addressRefine);
+
+export const customerBankAccountSchema = z
+  .object(bankAccountFields, { error: 'اطلاعات حساب بانکی نامعتبر است' })
+  .superRefine(refineBankAccountHasNumber);
 
 // --- Customer ----------------------------------------------------------------
 
@@ -101,11 +96,22 @@ const customerFields = {
   legalName: optionalTrimmedString(200),
   nationalId: nationalIdField,
   economicCode: optionalDigitsText(20, 'کد اقتصادی فقط باید شامل رقم باشد'),
+  title: optionalTrimmedString(100),
+  registrationNumber: optionalDigitsText(30, 'شماره ثبت فقط باید شامل رقم باشد'),
   phone: requiredPhone,
+  phone2: optionalPhone,
+  mobile: optionalPhone,
+  fax: optionalPhone,
+  telex: optionalTrimmedString(30),
+  website: optionalWebsite,
   email: optionalEmail,
+  taxOfficeProvince: optionalTrimmedString(100),
+  taxOfficeCity: optionalTrimmedString(100),
   customerGroupId: requiredId('گروه مشتری الزامی است'),
   territoryId: optionalId('منطقهٔ فروش نامعتبر است'),
 };
+
+const MAX_EXTRA_CHILDREN = 10;
 
 // customerNumber is never accepted — it's generated server-side
 // ("CUS-000001"). legacyCode is read-only (the old user-typed code).
@@ -120,16 +126,32 @@ export const createCustomerSchema = z
   .object({
     ...customerFields,
     acknowledgeDuplicates: z.boolean().optional(),
-    firstAddress: customerAddressSchema.omit({ isDefault: true, isActive: true }).optional(),
+    firstAddress: customerAddressObject.omit({ isDefault: true, isActive: true }).superRefine(addressRefine).optional(),
+    firstBankAccount: z.object(bankAccountFields, { error: 'اطلاعات حساب بانکی نامعتبر است' }).omit({ isDefault: true, isActive: true }).superRefine(refineBankAccountHasNumber).optional(),
     firstContact: customerContactSchema.omit({ isPrimary: true, isActive: true }).optional(),
+    // "Add another" on the create form: further entries saved right after the
+    // first one, never as the default/primary. Each list needs its first entry.
+    additionalAddresses: z.array(customerAddressObject.omit({ isDefault: true, isActive: true }).superRefine(addressRefine)).max(MAX_EXTRA_CHILDREN).optional(),
+    additionalBankAccounts: z.array(z.object(bankAccountFields, { error: 'اطلاعات حساب بانکی نامعتبر است' }).omit({ isDefault: true, isActive: true }).superRefine(refineBankAccountHasNumber)).max(MAX_EXTRA_CHILDREN).optional(),
+    additionalContacts: z.array(customerContactSchema.omit({ isPrimary: true, isActive: true })).max(MAX_EXTRA_CHILDREN).optional(),
   }, { error: 'اطلاعات مشتری نامعتبر است' })
-  .superRefine(nationalIdRefine);
+  .superRefine(identityRefine)
+  .superRefine((dto, ctx) => {
+    const needsFirst: [string, unknown[] | undefined, unknown, string][] = [
+      ['additionalAddresses', dto.additionalAddresses, dto.firstAddress, 'آدرس'],
+      ['additionalBankAccounts', dto.additionalBankAccounts, dto.firstBankAccount, 'حساب بانکی'],
+      ['additionalContacts', dto.additionalContacts, dto.firstContact, 'مخاطب'],
+    ];
+    for (const [path, extras, first, label] of needsFirst) {
+      if (extras && extras.length > 0 && !first) ctx.addIssue({ code: 'custom', path: [path], message: `برای ثبت ${label} دوم، ابتدا ${label} اول را کامل کنید` });
+    }
+  });
 
 // Full replace of the identity/classification/communication fields. Status
 // is not here — it changes only through changeCustomerStatusSchema.
 export const updateCustomerSchema = z
   .object({ ...customerFields, updatedAt: requiredDate(VERSION_MESSAGE) }, { error: 'اطلاعات مشتری نامعتبر است' })
-  .superRefine(nationalIdRefine);
+  .superRefine(identityRefine);
 
 export const changeCustomerStatusSchema = z
   .object({
@@ -153,6 +175,9 @@ export const customerListQuerySchema = z.object({
   customerKind: z.preprocess(emptyToUndefined, enumField(CUSTOMER_KINDS, 'نوع شخص نامعتبر است').optional()),
   page: z.string().optional(),
   pageSize: z.string().optional(),
+  // Column sorting (?sortBy=&sortDir=) — see common/pagination.ts parseSort().
+  sortBy: z.string().optional(),
+  sortDir: z.string().optional(),
 });
 
 // --- Notes / documents / complaints / financial ---------------------------
@@ -169,7 +194,12 @@ export const customerDocumentSchema = z.object({
   date: optionalBusinessDate('تاریخ مدرک معتبر نیست'),
   expiresAt: optionalBusinessDate('تاریخ انقضا معتبر نیست'),
   note: optionalTrimmedString(500),
-}, { error: 'اطلاعات مدرک نامعتبر است' });
+}, { error: 'اطلاعات مدرک نامعتبر است' }).superRefine((doc, ctx) => {
+  // Both are business dates (Date | undefined). An expiry can't precede the issue date.
+  if (doc.date && doc.expiresAt && doc.expiresAt.getTime() < doc.date.getTime()) {
+    ctx.addIssue({ code: 'custom', path: ['expiresAt'], message: 'تاریخ انقضا نمی‌تواند قبل از تاریخ صدور باشد' });
+  }
+});
 
 const complaintFields = {
   date: requiredBusinessDate('تاریخ شکایت معتبر نیست'),
@@ -208,6 +238,7 @@ export type ChangeCustomerStatusDto = z.infer<typeof changeCustomerStatusSchema>
 export type CustomerListQuery = z.infer<typeof customerListQuerySchema>;
 export type CustomerContactDto = z.infer<typeof customerContactSchema>;
 export type CustomerAddressDto = z.infer<typeof customerAddressSchema>;
+export type CustomerBankAccountDto = z.infer<typeof customerBankAccountSchema>;
 export type CustomerNoteDto = z.infer<typeof customerNoteSchema>;
 export type CustomerDocumentDto = z.infer<typeof customerDocumentSchema>;
 export type CreateCustomerComplaintDto = z.infer<typeof createCustomerComplaintSchema>;

@@ -1,4 +1,5 @@
-import { Body, Controller, Get, Param, ParseIntPipe, Patch, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, Param, ParseIntPipe, Patch, Post, Req, UseGuards } from '@nestjs/common';
+import type { Request } from 'express';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { SessionAuthGuard } from '../auth/guards/session-auth.guard';
@@ -25,6 +26,13 @@ export class ItemCategoriesController {
     return this.itemCategoriesService.list();
   }
 
+  // Suggested code for a new record — declared before any ':id' route.
+  @Get('next-code')
+  @RequirePermissions('items.manage')
+  nextCode() {
+    return this.itemCategoriesService.nextCode();
+  }
+
   // Every category including inactive ones, for the /item-categories page.
   @Get('all')
   @RequirePermissions('items.view')
@@ -45,5 +53,14 @@ export class ItemCategoriesController {
     @Body(new ZodValidationPipe(updateItemCategorySchema)) dto: UpdateItemCategoryDto,
   ) {
     return this.itemCategoriesService.update(id, dto);
+  }
+
+  // Admin only — gated on users.create, the permission only the ADMIN role
+  // holds (no dedicated permission row, so no seed/role change is needed).
+  @Delete(':id')
+  @HttpCode(204)
+  @RequirePermissions('users.create')
+  async remove(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
+    await this.itemCategoriesService.remove(id, req.session.userId ?? null, req.ip);
   }
 }

@@ -1,5 +1,6 @@
 "use client";
 
+import { useFeature } from "@/lib/session";
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AlertTriangle, Plus, Search, X } from "lucide-react";
@@ -21,6 +22,8 @@ import {
   type CustomerStatus,
   type ReferenceOption,
 } from "./shared";
+import { SortHeader, useTableSort } from "@/components/ui/sortable";
+import { sortQuery } from "@/lib/table-sort";
 
 // Search-first customer list. One search box covers number, name, legal
 // name, legacy code, phone, national id and contact names — normalized
@@ -54,12 +57,16 @@ export default function CustomersPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [filters, setFilters] = useState<FilterState>(emptyFilters);
   const [page, setPage] = useState(1);
+  // Server-side column sorting (?sortBy=&sortDir=); a change returns to page 1.
+  const { sort, onSort } = useTableSort(null, () => setPage(1));
   const [total, setTotal] = useState(0);
   const [reloadKey, setReloadKey] = useState(0);
   const lastQueryRef = useRef(filters.q);
 
   const [groups, setGroups] = useState<ReferenceOption[]>([]);
   const [territories, setTerritories] = useState<ReferenceOption[]>([]);
+  // Territories are hidden in v1 (feature flag): no filter, no request.
+  const territoriesOn = useFeature("customerTerritories");
 
   useEffect(() => {
     if (!canView) return;
@@ -68,7 +75,7 @@ export default function CustomersPage() {
         // /all so a customer still filed under a since-deactivated group can be found.
         const [groupsData, territoriesData] = await Promise.all([
           apiFetch<ReferenceOption[]>("/customer-groups/all"),
-          apiFetch<ReferenceOption[]>("/territories/all"),
+          territoriesOn ? apiFetch<ReferenceOption[]>("/territories/all") : Promise.resolve([] as ReferenceOption[]),
         ]);
         setGroups(groupsData);
         setTerritories(territoriesData);
@@ -95,7 +102,7 @@ export default function CustomersPage() {
         if (filters.customerKind) params.set("customerKind", filters.customerKind);
         params.set("page", String(page));
         params.set("pageSize", String(LIST_PAGE_SIZE));
-        const data = await apiFetch<Paginated<CustomerListItem>>(`/customers?${params.toString()}`);
+        const data = await apiFetch<Paginated<CustomerListItem>>(`/customers?${params.toString()}${sortQuery(sort)}`);
         if (cancelled) return;
         if (data.items.length === 0 && data.total > 0 && page > 1) {
           setPage(totalPages(data.total, LIST_PAGE_SIZE));
@@ -116,7 +123,7 @@ export default function CustomersPage() {
       cancelled = true;
       clearTimeout(timeout);
     };
-  }, [filters, page, reloadKey, canView]);
+  }, [filters, page, reloadKey, canView, sort]);
 
   function updateFilter<K extends keyof FilterState>(key: K, value: FilterState[K]) {
     setFilters((current) => ({ ...current, [key]: value }));
@@ -207,7 +214,7 @@ export default function CustomersPage() {
               </select>
             </div>
 
-            <div className="flex flex-col gap-1">
+            {territoriesOn ? <div className="flex flex-col gap-1">
               <Label htmlFor="filter-territory" className={toolbarFieldLabel}>منطقه فروش</Label>
               <select
                 id="filter-territory"
@@ -220,7 +227,7 @@ export default function CustomersPage() {
                   <option key={territory.id} value={territory.id}>{territory.nameFa}{territory.isActive ? "" : " (غیرفعال)"}</option>
                 ))}
               </select>
-            </div>
+            </div> : null}
 
             <div className="flex flex-col gap-1">
               <Label htmlFor="filter-kind" className={toolbarFieldLabel}>نوع شخص</Label>
@@ -264,11 +271,11 @@ export default function CustomersPage() {
                 <thead className="bg-muted/40 text-xs text-muted-foreground">
                   <tr>
                     <th className="w-8 px-2 py-2.5 font-medium"><span className="sr-only">هشدار</span></th>
-                    <th className="px-3 py-2.5 font-medium">شماره مشتری</th>
-                    <th className="px-3 py-2.5 font-medium">نام</th>
-                    <th className="px-3 py-2.5 font-medium">گروه</th>
-                    <th className="px-3 py-2.5 font-medium">وضعیت</th>
-                    <th className="px-3 py-2.5 font-medium">تلفن</th>
+                    <SortHeader label="شماره مشتری" sortKey="customerNumber" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="نام" sortKey="name" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="گروه" sortKey="group" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="وضعیت" sortKey="status" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="تلفن" sortKey="phone" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
                     <th className="px-3 py-2.5 font-medium">شهر</th>
                   </tr>
                 </thead>

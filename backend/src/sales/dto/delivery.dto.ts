@@ -74,12 +74,18 @@ export const deliveryListQuerySchema = z.object({
   dateTo: optionalDate('تاریخ پایان فیلتر نامعتبر است'),
   page: z.string({ error: 'شماره صفحه نامعتبر است' }).optional(),
   pageSize: z.string({ error: 'تعداد ردیف در هر صفحه نامعتبر است' }).optional(),
+  // Column sorting (?sortBy=&sortDir=) — see common/pagination.ts parseSort().
+  sortBy: z.string().optional(),
+  sortDir: z.string().optional(),
 });
 
 export const deliveryQueueQuerySchema = z.object({
   q: z.string({ error: 'عبارت جستجو نامعتبر است' }).optional(),
   page: z.string({ error: 'شماره صفحه نامعتبر است' }).optional(),
   pageSize: z.string({ error: 'تعداد ردیف در هر صفحه نامعتبر است' }).optional(),
+  // Column sorting (?sortBy=&sortDir=) — see common/pagination.ts parseSort().
+  sortBy: z.string().optional(),
+  sortDir: z.string().optional(),
 });
 
 export type CreateDeliveryDto = z.infer<typeof createDeliverySchema>;

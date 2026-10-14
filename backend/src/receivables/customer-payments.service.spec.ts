@@ -22,6 +22,23 @@ describe('CustomerPaymentsService', () => {
       expect(payment.chequeDueDate).toBeNull();
     });
 
+    it('stores the transfer-receipt info; every field is optional and independent of the method', async () => {
+      const service = buildCustomerPaymentsService(db);
+      const payment = await service.recordReceipt(
+        {
+          customerId: 9, paymentDate: PAYMENT_DATE, amount: 10_000, method: 'BANK_TRANSFER', referenceNumber: '987654', transactionTime: '14:30', transactionType: 'پایا',
+          depositId: 'D1', withdrawalId: 'W1', sourceAccount: 'مبدأ', destinationAccount: 'مقصد', destinationAccountHolder: 'صاحب',
+        } as any,
+        ACTOR,
+      );
+      expect(payment).toMatchObject({
+        referenceNumber: '987654', transactionTime: '14:30', transactionType: 'پایا', depositId: 'D1', withdrawalId: 'W1',
+        sourceAccount: 'مبدأ', destinationAccount: 'مقصد', destinationAccountHolder: 'صاحب',
+      });
+      const bare = await service.recordReceipt({ customerId: 9, paymentDate: PAYMENT_DATE, amount: 1000, method: 'CASH' } as any, ACTOR);
+      expect(bare).toMatchObject({ transactionTime: null, transactionType: null, depositId: null, destinationAccount: null });
+    });
+
     it('a cheque receipt starts PENDING, with its due date stored', async () => {
       const service = buildCustomerPaymentsService(db);
       const chequeDueDate = new Date('2026-11-06T00:00:00.000Z');

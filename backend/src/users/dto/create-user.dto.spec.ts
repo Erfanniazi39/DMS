@@ -68,4 +68,14 @@ describe('createUserSchema', () => {
       expect(result.data.phone).toBeUndefined();
     }
   });
+
+  it('accepts only Latin usernames (letters, digits, . _ -)', () => {
+    const base = { password: '12345678', roleName: 'VIEWER' };
+    for (const username of ['admin', 'erfan01', 'a.b_c-d', 'Sara']) {
+      expect(createUserSchema.safeParse({ ...base, username }).success).toBe(true);
+    }
+    for (const username of ['شسیب', 'фыва', 'علی123', 'user name', '1user', 'us', 'user@x', 'üser']) {
+      expect(createUserSchema.safeParse({ ...base, username }).success).toBe(false);
+    }
+  });
 });

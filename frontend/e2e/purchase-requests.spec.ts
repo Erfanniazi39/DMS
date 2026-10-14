@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { pickJalaliDate } from "./helpers/jalali-date";
 
 // Closes the "no E2E tests for Purchase Requests" coverage gap. Requester
 // Department is the only mandatory reference (the seeded "MGMT" department
@@ -50,9 +51,7 @@ async function selectFirstPurchaseType(page: Page) {
 }
 
 async function selectJalaliDate(page: Page, idPrefix: string, date: { year: number; month: number; day: number }) {
-  await page.locator(`#${idPrefix}-year`).selectOption(String(date.year));
-  await page.locator(`#${idPrefix}-month`).selectOption(String(date.month));
-  await page.locator(`#${idPrefix}-day`).selectOption(String(date.day));
+  await pickJalaliDate(page, idPrefix, date);
 }
 
 async function fillFirstItem(page: Page, values: { name: string; quantity: string }) {

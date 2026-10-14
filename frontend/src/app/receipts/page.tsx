@@ -31,6 +31,8 @@ import {
   type CustomerPaymentStatus,
   type PaymentMethod,
 } from "./shared";
+import { SortHeader, useTableSort } from "@/components/ui/sortable";
+import { sortQuery } from "@/lib/table-sort";
 
 const toolbarFieldLabel = "text-[11px] font-medium uppercase tracking-wide text-muted-foreground";
 const toolbarSelectClass = "h-8 rounded-md border border-input bg-background px-2 text-xs outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50";
@@ -62,6 +64,8 @@ export default function ReceiptsPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [filters, setFilters] = useState<FilterState>(emptyFilters);
   const [page, setPage] = useState(1);
+  // Server-side column sorting (?sortBy=&sortDir=); a change returns to page 1.
+  const { sort, onSort } = useTableSort(null, () => setPage(1));
   const [total, setTotal] = useState(0);
   const [reloadKey, setReloadKey] = useState(0);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -83,7 +87,7 @@ export default function ReceiptsPage() {
         if (filters.dateTo) params.set("dateTo", filters.dateTo);
         params.set("page", String(page));
         params.set("pageSize", String(LIST_PAGE_SIZE));
-        const data = await apiFetch<Paginated<CustomerPaymentListItem>>(`/receivables/payments?${params.toString()}`);
+        const data = await apiFetch<Paginated<CustomerPaymentListItem>>(`/receivables/payments?${params.toString()}${sortQuery(sort)}`);
         if (cancelled) return;
         if (data.items.length === 0 && data.total > 0 && page > 1) {
           setPage(totalPages(data.total, LIST_PAGE_SIZE));
@@ -105,7 +109,7 @@ export default function ReceiptsPage() {
       cancelled = true;
       clearTimeout(timeout);
     };
-  }, [filters, page, reloadKey, canView]);
+  }, [filters, page, reloadKey, canView, sort]);
 
   function updateFilter<K extends keyof FilterState>(key: K, value: FilterState[K]) {
     setFilters((current) => ({ ...current, [key]: value }));
@@ -210,13 +214,13 @@ export default function ReceiptsPage() {
               <table className="w-full text-right text-sm">
                 <thead className="bg-muted/40 text-xs text-muted-foreground">
                   <tr>
-                    <th className="px-3 py-2.5 font-medium">شماره</th>
-                    <th className="px-3 py-2.5 font-medium">نوع</th>
-                    <th className="px-3 py-2.5 font-medium">تاریخ</th>
-                    <th className="px-3 py-2.5 font-medium">مشتری</th>
-                    <th className="px-3 py-2.5 font-medium">روش پرداخت</th>
-                    <th className="px-3 py-2.5 font-medium">مبلغ (ریال)</th>
-                    <th className="px-3 py-2.5 font-medium">وضعیت</th>
+                    <SortHeader label="شماره" sortKey="paymentNumber" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="نوع" sortKey="direction" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="تاریخ" sortKey="paymentDate" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="مشتری" sortKey="customer" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="روش پرداخت" sortKey="method" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="مبلغ (ریال)" sortKey="amount" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="وضعیت" sortKey="status" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">

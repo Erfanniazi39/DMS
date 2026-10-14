@@ -191,7 +191,7 @@ export function SalesReturnRequestForm() {
             <div className="grid gap-x-3 gap-y-2.5 sm:grid-cols-2 lg:grid-cols-4">
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="return-date-year">تاریخ درخواست<RequiredMark /></Label>
-                <JalaliDateInput idPrefix="return-date" value={form.requestDate} onChange={(value) => update("requestDate", value)} required />
+                <JalaliDateInput idPrefix="return-date" value={form.requestDate} minDate={context.deliveryDate.slice(0, 10)} onChange={(value) => update("requestDate", value)} required />
               </div>
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="return-reason">علت مرجوعی<RequiredMark /></Label>

@@ -1,5 +1,6 @@
 "use client";
 
+import { useFeature } from "@/lib/session";
 import { useState } from "react";
 import { AlertCircle, Eye, EyeOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -18,11 +19,15 @@ import { DetailSection } from "./DetailSection";
 // The national id is masked until explicitly revealed (sensitive field).
 export function OverviewSection({ customer }: { customer: CustomerDetail }) {
   const [revealNationalId, setRevealNationalId] = useState(false);
+  const territoriesOn = useFeature("customerTerritories");
+  const paymentTermsOn = useFeature("paymentTerms");
 
   const missing = [
-    !customer.nationalId ? `${nationalIdLabel[customer.customerKind]} ثبت نشده است` : null,
+    customer.missingIdentityFields.length > 0
+      ? `اطلاعات هویتی ناقص یا نامعتبر است (${customer.missingIdentityFields.join("، ")}) — ویرایش مشتری تا تکمیل آن ممکن نیست`
+      : null,
     !hasDefaultDeliveryAddress(customer) ? "آدرس پیش‌فرض تحویل کالا ثبت نشده است" : null,
-    !customer.financialSummary.hasPaymentTerm ? "شرایط پرداخت تعیین نشده است (فقط نقدی)" : null,
+    paymentTermsOn && !customer.financialSummary.hasPaymentTerm ? "شرایط پرداخت تعیین نشده است (فقط نقدی)" : null,
   ].filter((item): item is string => item !== null);
 
   return (
@@ -82,17 +87,39 @@ export function OverviewSection({ customer }: { customer: CustomerDetail }) {
             <dt className="text-xs text-muted-foreground">گروه مشتری</dt>
             <dd className="mt-1">{customer.customerGroup.nameFa}</dd>
           </div>
-          <div>
+          {territoriesOn ? <div>
             <dt className="text-xs text-muted-foreground">منطقه فروش</dt>
             <dd className="mt-1">{customer.territory?.nameFa ?? "-"}</dd>
-          </div>
+          </div> : null}
           <div>
-            <dt className="text-xs text-muted-foreground">تلفن</dt>
-            <dd className="mt-1 tabular-nums" dir="ltr"><span className="block text-right">{customer.phone}</span></dd>
+            <dt className="text-xs text-muted-foreground">عنوان</dt>
+            <dd className="mt-1">{customer.title || "-"}</dd>
           </div>
+          {customer.customerKind === "ORGANIZATION" ? (
+            <div>
+              <dt className="text-xs text-muted-foreground">شماره ثبت</dt>
+              <dd className="mt-1 font-mono" dir="ltr"><span className="block text-right">{customer.registrationNumber || "-"}</span></dd>
+            </div>
+          ) : null}
+          {(
+            [
+              ["تلفن ۱", customer.phone],
+              ["تلفن ۲", customer.phone2],
+              ["موبایل", customer.mobile],
+              ["فکس", customer.fax],
+              ["تلکس", customer.telex],
+              ["وب‌سایت", customer.website],
+              ["ایمیل", customer.email],
+            ] as const
+          ).map(([label, value]) => (
+            <div key={label}>
+              <dt className="text-xs text-muted-foreground">{label}</dt>
+              <dd className="mt-1 tabular-nums" dir="ltr"><span className="block text-right">{value || "-"}</span></dd>
+            </div>
+          ))}
           <div>
-            <dt className="text-xs text-muted-foreground">ایمیل</dt>
-            <dd className="mt-1" dir="ltr"><span className="block text-right">{customer.email || "-"}</span></dd>
+            <dt className="text-xs text-muted-foreground">دارایی — استان / شهر</dt>
+            <dd className="mt-1">{[customer.taxOfficeProvince, customer.taxOfficeCity].filter(Boolean).join(" / ") || "-"}</dd>
           </div>
           <div>
             <dt className="text-xs text-muted-foreground">تاریخ ثبت</dt>

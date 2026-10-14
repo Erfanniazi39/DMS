@@ -7,11 +7,12 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import { BarChart3, Bell, ChevronDown, ChevronLeft, LayoutDashboard, LogOut, ReceiptText, Search, ShieldCheck, Users } from "lucide-react";
+import { Archive, BarChart3, Bell, ChevronDown, ChevronLeft, LayoutDashboard, LogOut, ReceiptText, ShieldCheck, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { apiFetch } from "@/lib/api";
 import { SessionUserContext, type SessionUser } from "@/lib/session";
-import { navGroups, type NavChild } from "./nav-config";
+import GlobalSearch from "./GlobalSearch";
+import { navGroups, requiredPermissionsFor, type NavChild } from "./nav-config";
 
 // Splits a flat children list into consecutive runs by `sectionLabel`, so
 // each run can be rendered as its own visually distinct box. Children with
@@ -29,6 +30,14 @@ function groupChildren(children: NavChild[]) {
   return groups;
 }
 
+function UnreadBadge({ count }: { count: number }) {
+  return (
+    <span className="inline-flex min-w-5 items-center justify-center rounded-full bg-primary px-1.5 text-[11px] font-semibold leading-5 text-primary-foreground" aria-label={`${count} نامهٔ خوانده‌نشده`}>
+      {count > 99 ? "۹۹+" : count.toLocaleString("fa-IR")}
+    </span>
+  );
+}
+
 export default function AppShell({ children }: { children: ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -40,6 +49,32 @@ export default function AppShell({ children }: { children: ReactNode }) {
   // keyed by the item's href. A route match auto-expands its item even
   // before the user has clicked it (see the "خرید" rendering below).
   const [expandedNavItems, setExpandedNavItems] = useState<Record<string, boolean>>({});
+
+  // Unread letters, for the sidebar badge. Polled lightly (no websockets in
+  // v1): on every navigation, when the tab regains focus, and once a minute.
+  const [unreadLetters, setUnreadLetters] = useState(0);
+  const canUseLetters = user?.permissions.includes("letters.use") ?? false;
+  useEffect(() => {
+    if (!canUseLetters) return;
+    let active = true;
+    const refresh = () => {
+      apiFetch<{ count: number }>("/letters/unread-count")
+        .then((data) => {
+          if (active) setUnreadLetters(data.count);
+        })
+        .catch(() => undefined);
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 60_000);
+    window.addEventListener("focus", refresh);
+    window.addEventListener("dms:letters-changed", refresh);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refresh);
+      window.removeEventListener("dms:letters-changed", refresh);
+    };
+  }, [canUseLetters, pathname]);
 
   useEffect(() => {
     let active = true;
@@ -78,13 +113,16 @@ export default function AppShell({ children }: { children: ReactNode }) {
         .filter((item) => user.permissions.includes(item.permission))
         .map((item) => ({
           ...item,
-          children: item.children?.filter((child) => !child.permission || user.permissions.includes(child.permission)),
+          children: item.children?.filter(
+            (child) => (!child.permission || user.permissions.includes(child.permission)) && (!child.feature || user.features?.[child.feature]),
+          ),
         })),
     }))
     .filter((group) => group.items.length > 0);
   const canManageUsers = user.permissions.includes("users.create");
-  const isSystemRoute = pathname.startsWith("/admin/users") || pathname.startsWith("/admin/add-users") || pathname.startsWith("/admin/user-activity") || pathname.startsWith("/admin/roles");
+  const isSystemRoute = pathname.startsWith("/admin/users") || pathname.startsWith("/admin/add-users") || pathname.startsWith("/admin/user-activity") || pathname.startsWith("/admin/deleted-records") || pathname.startsWith("/admin/roles");
   const canViewSystemManagement = canManageUsers;
+  const routeAllowed = requiredPermissionsFor(pathname).every((permission) => user.permissions.includes(permission));
 
   return (
     <SessionUserContext.Provider value={user}>
@@ -101,13 +139,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
           </div>
 
           <div className="flex items-center gap-1 sm:gap-3">
-            <label className="hidden h-9 items-center overflow-hidden rounded-lg border border-input bg-background md:flex">
-              <span className="flex h-full w-10 shrink-0 items-center justify-center border-e border-input text-muted-foreground">
-                <Search className="size-4" aria-hidden="true" />
-              </span>
-              <span className="sr-only">جستجو در سامانه</span>
-              <input className="h-full min-w-0 flex-1 bg-transparent px-3 text-sm outline-none placeholder:text-muted-foreground focus:ring-3 focus:ring-ring/20" placeholder="جستجو در سامانه" type="search" />
-            </label>
+            <GlobalSearch />
             <Button variant="ghost" size="icon" aria-label="اعلان‌ها"><Bell /></Button>
             <div className="relative">
               <Button variant="ghost" className="gap-2 px-2" aria-expanded={userMenuOpen} onClick={() => setUserMenuOpen((open) => !open)}>
@@ -133,7 +165,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
 
         <div className="mx-auto flex max-w-[1600px] flex-col lg:flex-row">
           <aside className="border-b border-border bg-sidebar print:hidden text-sidebar-foreground lg:min-h-[calc(100vh-4rem)] lg:w-64 lg:shrink-0 lg:border-b-0 lg:border-e lg:border-sidebar-border">
-            <nav className="flex gap-1 overflow-x-auto p-3 lg:sticky lg:top-16 lg:block lg:space-y-5 lg:p-4" aria-label="ناوبری اصلی">
+            <nav className="flex gap-1 overflow-x-auto p-3 lg:sticky lg:top-16 lg:block lg:max-h-[calc(100vh-4rem)] lg:space-y-5 lg:overflow-x-hidden lg:overflow-y-auto lg:overscroll-contain lg:p-4" aria-label="ناوبری اصلی">
               <button className={`flex shrink-0 items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium lg:w-full ${pathname === "/main" ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"}`} onClick={() => router.push("/main")}>
                 <LayoutDashboard className="size-4" />
                 داشبورد
@@ -163,6 +195,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
                               <span className="flex items-center gap-3">
                                 <ItemIcon className="size-4" />
                                 <span className="whitespace-nowrap">{item.label}</span>
+                                {item.href === "/letters" && unreadLetters > 0 ? <UnreadBadge count={unreadLetters} /> : null}
                               </span>
                               <ChevronLeft className={`size-4 transition-transform ${expanded ? "-rotate-90" : ""}`} />
                             </button>
@@ -187,6 +220,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
                                         >
                                           {ChildIcon ? <ChildIcon className="size-4" /> : null}
                                           {child.label}
+                                          {child.href === "/letters" && unreadLetters > 0 ? <UnreadBadge count={unreadLetters} /> : null}
                                         </button>
                                       );
                                     })}
@@ -217,6 +251,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
                       <button className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm ${pathname === "/admin/users" ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-sidebar-foreground/75 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"}`} onClick={() => router.push("/admin/users")}><Users className="size-4" />کاربران</button>
                       <button className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm ${pathname === "/admin/add-users" ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-sidebar-foreground/75 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"}`} onClick={() => router.push("/admin/add-users")}><Users className="size-4" />افزودن کاربر</button>
                       <button className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm ${pathname.startsWith("/admin/user-activity") ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-sidebar-foreground/75 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"}`} onClick={() => router.push("/admin/user-activity")}><ReceiptText className="size-4" />فعالیت کاربران</button>
+                      <button className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm ${pathname.startsWith("/admin/deleted-records") ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-sidebar-foreground/75 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"}`} onClick={() => router.push("/admin/deleted-records")}><Archive className="size-4" />سندهای حذف‌شده</button>
                       <button className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm ${pathname.startsWith("/admin/roles") ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-sidebar-foreground/75 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"}`} onClick={() => router.push("/admin/roles")}><ShieldCheck className="size-4" />نقش‌ها و دسترسی‌ها</button>
                     </div>
                   ) : null}
@@ -224,7 +259,13 @@ export default function AppShell({ children }: { children: ReactNode }) {
               ) : null}
             </nav>
           </aside>
-          <main className="min-w-0 flex-1">{children}</main>
+          <main className="min-w-0 flex-1">
+            {routeAllowed ? children : (
+              <div className="p-4 sm:p-6 lg:p-8">
+                <p className="rounded-lg border border-dashed border-border bg-muted/30 p-10 text-center text-sm text-muted-foreground">شما اجازه دسترسی به این بخش را ندارید.</p>
+              </div>
+            )}
+          </main>
         </div>
       </div>
     </SessionUserContext.Provider>

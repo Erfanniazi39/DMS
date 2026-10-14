@@ -2,7 +2,7 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException }
 import { Prisma, type CustomerPaymentDirection, type PaymentMethod, type PaymentStatus } from '@prisma/client';
 import { nextDocumentNumber } from '../common/document-sequence';
 import { isSameVersion, recordModifiedConflict } from '../common/optimistic-lock';
-import { toSkipTake, type PaginationParams } from '../common/pagination';
+import { toSkipTake, type PaginationParams, buildOrderBy, type SortParams } from '../common/pagination';
 import { AUDIT_ENTITY, AuditService } from '../audit/audit.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { SalesInvoicesService } from '../sales/sales-invoices.service';
@@ -20,6 +20,7 @@ export type CustomerPaymentListFilters = {
   customerId?: number;
   dateFrom?: Date;
   dateTo?: Date;
+  sort?: SortParams;
 };
 
 const userSelect = { select: { id: true, username: true } } as const;
@@ -40,6 +41,17 @@ const customerPaymentDetailInclude = {
     },
   },
 } satisfies Prisma.CustomerPaymentInclude;
+
+// Columns the receipts/payments table can be sorted by.
+const CUSTOMER_PAYMENT_SORT_COLUMNS: Record<string, (dir: 'asc' | 'desc') => Prisma.CustomerPaymentOrderByWithRelationInput> = {
+  paymentNumber: (dir) => ({ paymentNumber: dir }),
+  direction: (dir) => ({ direction: dir }),
+  paymentDate: (dir) => ({ paymentDate: dir }),
+  customer: (dir) => ({ customer: { name: dir } }),
+  method: (dir) => ({ method: dir }),
+  amount: (dir) => ({ amount: dir }),
+  status: (dir) => ({ status: dir }),
+};
 
 // دریافت/پرداخت نقدی مشتری — Receivables (Sales batch 5). See
 // docs/sales-module-build-plan.md §4.3/§5. recordReceipt() and refund() both
@@ -85,7 +97,7 @@ export class CustomerPaymentsService {
     if (and.length > 0) where.AND = and;
     const query = {
       where,
-      orderBy: [{ paymentDate: 'desc' }, { id: 'desc' }],
+      orderBy: buildOrderBy(filters.sort, CUSTOMER_PAYMENT_SORT_COLUMNS, [{ paymentDate: 'desc' }, { id: 'desc' }], [{ id: 'desc' }]),
       include: { customer: { select: { id: true, customerNumber: true, name: true } } },
     } satisfies Prisma.CustomerPaymentFindManyArgs;
 
@@ -149,6 +161,13 @@ export class CustomerPaymentsService {
           chequeDueDate: dto.method === 'CHECK' ? (dto.chequeDueDate ?? null) : null,
           bankName: dto.bankName ?? null,
           note: dto.note ?? null,
+          transactionTime: dto.transactionTime ?? null,
+          transactionType: dto.transactionType ?? null,
+          depositId: dto.depositId ?? null,
+          withdrawalId: dto.withdrawalId ?? null,
+          sourceAccount: dto.sourceAccount ?? null,
+          destinationAccount: dto.destinationAccount ?? null,
+          destinationAccountHolder: dto.destinationAccountHolder ?? null,
           createdByUserId: actor.userId,
         },
         select: { id: true },

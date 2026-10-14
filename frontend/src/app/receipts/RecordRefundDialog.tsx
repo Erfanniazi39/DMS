@@ -4,11 +4,13 @@ import { useEffect, useState, type FormEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogBody, DialogCloseButton, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { MoneyInput } from "@/components/ui/money-input";
 import { Label } from "@/components/ui/label";
 import { RequiredMark, selectClass, textareaClass } from "@/components/ui/form-field";
 import { JalaliDateInput } from "@/components/ui/jalali-date-input";
 import { JALALI_MAX_YEAR } from "@/lib/jalali";
 import { apiFetch, type ApiError } from "@/lib/api";
+import { TransactionInfoFields, emptyTransactionInfo, transactionInfoErrors, transactionInfoPayload, type DestinationOption, type TransactionInfo } from "@/components/payments/transaction-info";
 import { PAYMENT_METHODS, paymentMethodLabels, type CustomerPaymentDetail, type CustomerPaymentFormOptions, type PaymentMethod } from "./shared";
 
 export type SectionToasts = { pushError: (message: string) => void; pushErrors: (messages: string[]) => void; pushSuccess: (message: string) => void };
@@ -35,13 +37,22 @@ const emptyForm: RefundForm = { customerId: "", paymentDate: "", amount: "", met
 export function RecordRefundDialog({ open, onOpenChange, onCreated, toasts }: { open: boolean; onOpenChange: (open: boolean) => void; onCreated: (paymentId: number) => void; toasts: SectionToasts }) {
   const { pushError, pushErrors, pushSuccess } = toasts;
   const [form, setForm] = useState<RefundForm>(emptyForm);
+  const [txInfo, setTxInfo] = useState<TransactionInfo>(emptyTransactionInfo);
+  // The customer's registered bank accounts to fill «حساب مقصد» from (needs
+  // customers.view; numbers masked for callers without manage/finance are
+  // skipped). Stored as free text, never linked.
+  const [destinations, setDestinations] = useState<DestinationOption[]>([]);
   const [customers, setCustomers] = useState<CustomerPaymentFormOptions["customers"]>([]);
   const [saving, setSaving] = useState(false);
 
   const [wasOpen, setWasOpen] = useState(open);
   if (open !== wasOpen) {
     setWasOpen(open);
-    if (open) setForm(emptyForm);
+    if (open) {
+      setForm(emptyForm);
+      setTxInfo(emptyTransactionInfo);
+      setDestinations([]);
+    }
   }
 
   useEffect(() => {
@@ -54,6 +65,26 @@ export function RecordRefundDialog({ open, onOpenChange, onCreated, toasts }: { 
 
   function update<K extends keyof RefundForm>(key: K, value: RefundForm[K]) {
     setForm((current) => ({ ...current, [key]: value }));
+  }
+
+  function changeCustomer(customerId: string) {
+    update("customerId", customerId);
+    setDestinations([]);
+    if (!customerId) return;
+    apiFetch<{ name: string; bankAccounts: { id: number; bankName: string | null; accountNumber: string | null; shebaNumber: string | null; accountHolderName: string | null; isActive: boolean }[] }>(`/customers/${customerId}`)
+      .then((customer) =>
+        setDestinations(
+          customer.bankAccounts
+            .filter((account) => account.isActive && !(account.shebaNumber ?? account.accountNumber ?? "").includes("*"))
+            .map((account) => ({
+              key: String(account.id),
+              label: [account.bankName, account.shebaNumber ?? account.accountNumber].filter(Boolean).join(" — "),
+              account: account.shebaNumber ?? account.accountNumber ?? "",
+              holder: account.accountHolderName ?? customer.name,
+            })),
+        ),
+      )
+      .catch(() => setDestinations([]));
   }
 
   function closeDialog() {
@@ -69,6 +100,8 @@ export function RecordRefundDialog({ open, onOpenChange, onCreated, toasts }: { 
     if (!form.paymentDate) problems.push("تاریخ بازپرداخت را وارد کنید.");
     if (!(amountValue > 0)) problems.push("مبلغ باید بزرگ‌تر از صفر باشد.");
     if (form.method === "CHECK" && !form.chequeDueDate) problems.push("برای روش پرداخت «چک» تاریخ سررسید الزامی است.");
+    if (form.chequeDueDate && form.paymentDate && form.chequeDueDate < form.paymentDate) problems.push("سررسید چک نمی‌تواند پیش از تاریخ بازپرداخت باشد.");
+    problems.push(...transactionInfoErrors(txInfo));
     if (problems.length > 0) {
       pushErrors(problems);
       return;
@@ -86,6 +119,7 @@ export function RecordRefundDialog({ open, onOpenChange, onCreated, toasts }: { 
           chequeDueDate: form.method === "CHECK" ? form.chequeDueDate : undefined,
           bankName: form.method === "CHECK" ? form.bankName.trim() : undefined,
           note: form.note.trim(),
+          ...transactionInfoPayload(txInfo),
         }),
       });
       pushSuccess(`بازپرداخت ${payment.paymentNumber} ثبت شد.`);
@@ -112,7 +146,7 @@ export function RecordRefundDialog({ open, onOpenChange, onCreated, toasts }: { 
             <div className="grid gap-4 md:grid-cols-2">
               <div className="flex flex-col gap-2">
                 <Label htmlFor="refund-customer">مشتری<RequiredMark /></Label>
-                <select id="refund-customer" className={selectClass} value={form.customerId} onChange={(event) => update("customerId", event.target.value)}>
+                <select id="refund-customer" className={selectClass} value={form.customerId} onChange={(event) => changeCustomer(event.target.value)}>
                   <option value="">— انتخاب کنید —</option>
                   {customers.map((customer) => (
                     <option key={customer.id} value={customer.id}>{customer.name} ({customer.customerNumber})</option>
@@ -125,7 +159,7 @@ export function RecordRefundDialog({ open, onOpenChange, onCreated, toasts }: { 
               </div>
               <div className="flex flex-col gap-2">
                 <Label htmlFor="refund-amount">مبلغ (ریال)<RequiredMark /></Label>
-                <Input id="refund-amount" inputMode="decimal" value={form.amount} onChange={(event) => update("amount", event.target.value)} required />
+                <MoneyInput id="refund-amount" value={form.amount} onChange={(value) => update("amount", value)} required />
               </div>
               <div className="flex flex-col gap-2">
                 <Label htmlFor="refund-method">روش پرداخت</Label>
@@ -139,7 +173,7 @@ export function RecordRefundDialog({ open, onOpenChange, onCreated, toasts }: { 
                 <>
                   <div className="flex flex-col gap-2">
                     <Label htmlFor="refund-cheque-due">سررسید چک<RequiredMark /></Label>
-                    <JalaliDateInput idPrefix="refund-cheque-due" value={form.chequeDueDate} onChange={(value) => update("chequeDueDate", value)} maxYear={JALALI_MAX_YEAR} required />
+                    <JalaliDateInput idPrefix="refund-cheque-due" value={form.chequeDueDate} minDate={form.paymentDate || undefined} onChange={(value) => update("chequeDueDate", value)} maxYear={JALALI_MAX_YEAR} required />
                   </div>
                   <div className="flex flex-col gap-2">
                     <Label htmlFor="refund-bank">نام بانک</Label>
@@ -148,10 +182,11 @@ export function RecordRefundDialog({ open, onOpenChange, onCreated, toasts }: { 
                 </>
               ) : null}
               <div className="flex flex-col gap-2">
-                <Label htmlFor="refund-reference">شماره مرجع</Label>
+                <Label htmlFor="refund-reference">{form.method === "CHECK" ? "شماره چک" : "کد پیگیری / شماره مرجع"}</Label>
                 <Input id="refund-reference" value={form.referenceNumber} onChange={(event) => update("referenceNumber", event.target.value)} />
               </div>
             </div>
+            <TransactionInfoFields idPrefix="refund" value={txInfo} onChange={setTxInfo} destinations={destinations} />
             <div className="flex flex-col gap-2">
               <Label htmlFor="refund-note">یادداشت</Label>
               <textarea id="refund-note" className={textareaClass} value={form.note} onChange={(event) => update("note", event.target.value)} />

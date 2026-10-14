@@ -80,6 +80,9 @@ export const goodsReturnListQuerySchema = z.object({
   supplierId: optionalId('فیلتر تأمین‌کننده نامعتبر است'),
   page: z.string({ error: 'شماره صفحه نامعتبر است' }).optional(),
   pageSize: z.string({ error: 'تعداد ردیف در هر صفحه نامعتبر است' }).optional(),
+  // Column sorting (?sortBy=&sortDir=) — see common/pagination.ts parseSort().
+  sortBy: z.string().optional(),
+  sortDir: z.string().optional(),
 });
 
 export type CreateGoodsReturnDto = z.infer<typeof createGoodsReturnSchema>;

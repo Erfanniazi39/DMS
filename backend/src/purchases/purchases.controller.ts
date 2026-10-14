@@ -18,7 +18,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import type { Request } from 'express';
 import { memoryStorage } from 'multer';
 import { extname } from 'path';
-import { parsePagination } from '../common/pagination';
+import { parsePagination, parseSort } from '../common/pagination';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { SessionAuthGuard } from '../auth/guards/session-auth.guard';
@@ -76,6 +76,7 @@ export class PurchasesController {
       dateFrom: query.dateFrom,
       dateTo: query.dateTo,
       sourceType: query.sourceType,
+      sort: parseSort(query.sortBy, query.sortDir),
     }, pagination);
   }
 

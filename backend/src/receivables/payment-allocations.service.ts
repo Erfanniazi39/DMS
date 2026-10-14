@@ -56,6 +56,43 @@ export class PaymentAllocationsService {
     });
   }
 
+  // Every allocation (active and reversed, oldest first) that targets this
+  // invoice, with its source receipt / credit note — feeds the «پرداخت‌ها»
+  // section on the sales-invoice page, so Sales never reads payment tables.
+  async listForInvoice(invoiceId: number) {
+    const rows = await this.prisma.paymentAllocation.findMany({
+      where: { targetInvoiceId: invoiceId },
+      orderBy: { id: 'asc' },
+      select: {
+        id: true,
+        amount: true,
+        allocatedAt: true,
+        reversedAt: true,
+        sourcePayment: { select: { id: true, paymentNumber: true, paymentDate: true, method: true, status: true, referenceNumber: true } },
+        sourceCreditNote: { select: { id: true, creditNoteNumber: true } },
+      },
+    });
+    return rows;
+  }
+
+  // Same, for every invoice of one sales order (the order page's «پرداخت‌ها»
+  // section) — read-only join on the invoice's order link.
+  async listForSalesOrder(salesOrderId: number) {
+    return this.prisma.paymentAllocation.findMany({
+      where: { targetInvoice: { salesOrderId } },
+      orderBy: { id: 'asc' },
+      select: {
+        id: true,
+        amount: true,
+        allocatedAt: true,
+        reversedAt: true,
+        targetInvoice: { select: { id: true, invoiceNumber: true } },
+        sourcePayment: { select: { id: true, paymentNumber: true, paymentDate: true, method: true, status: true, referenceNumber: true } },
+        sourceCreditNote: { select: { id: true, creditNoteNumber: true } },
+      },
+    });
+  }
+
   async allocate(dto: AllocatePaymentDto, actor: ReceivablesActor) {
     const id = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM customer_payments WHERE id = ${dto.sourcePaymentId} FOR UPDATE`;

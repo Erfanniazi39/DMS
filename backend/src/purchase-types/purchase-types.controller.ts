@@ -16,6 +16,13 @@ export class PurchaseTypesController {
     return this.purchaseTypesService.list();
   }
 
+  // Suggested code for a new record — declared before any ':id' route.
+  @Get('next-code')
+  @RequirePermissions('purchases.manage')
+  nextCode() {
+    return this.purchaseTypesService.nextCode();
+  }
+
   // Backs the small "+ add purchase type" affordance on the Purchase form —
   // reuses purchases.manage rather than a dedicated permission, since this
   // isn't a standalone admin module (see purchase-type.dto.ts).

@@ -3,8 +3,12 @@ import { SalesModule } from '../sales/sales.module';
 import { CreditNotesController } from './credit-notes.controller';
 import { CreditNotesService } from './credit-notes.service';
 import { CustomerBalancesService } from './customer-balances.service';
+import { CustomerPaymentDocumentsService } from './customer-payment-documents.service';
+import { CustomerPaymentFilesController } from './customer-payment-files.controller';
 import { CustomerPaymentsService } from './customer-payments.service';
 import { PaymentAllocationsService } from './payment-allocations.service';
+import { HistoricalSalesController } from './historical-sales.controller';
+import { HistoricalSalesService } from './historical-sales.service';
 import { QuickSaleController } from './quick-sale.controller';
 import { QuickSaleService } from './quick-sale.service';
 import { ReceivablesController } from './receivables.controller';
@@ -20,8 +24,8 @@ import { ReceivablesController } from './receivables.controller';
 // via customers/customer-rules.ts. PrismaModule and AuditModule are global.
 @Module({
   imports: [SalesModule],
-  controllers: [ReceivablesController, CreditNotesController, QuickSaleController],
-  providers: [CustomerPaymentsService, PaymentAllocationsService, CustomerBalancesService, CreditNotesService, QuickSaleService],
+  controllers: [ReceivablesController, CreditNotesController, QuickSaleController, HistoricalSalesController, CustomerPaymentFilesController],
+  providers: [CustomerPaymentsService, PaymentAllocationsService, CustomerBalancesService, CreditNotesService, QuickSaleService, HistoricalSalesService, CustomerPaymentDocumentsService],
   exports: [CustomerPaymentsService, PaymentAllocationsService, CustomerBalancesService, CreditNotesService, QuickSaleService],
 })
 export class ReceivablesModule {}

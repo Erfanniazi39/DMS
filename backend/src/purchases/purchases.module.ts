@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
 import { PurchaseFilesController } from './purchase-files.controller';
+import { HistoricalPurchasesController } from './historical-purchases.controller';
+import { HistoricalPurchasesService } from './historical-purchases.service';
 import { PurchasesController } from './purchases.controller';
 import { PurchasesService } from './purchases.service';
 import { PurchasePaymentsService } from './purchase-payments.service';
@@ -22,7 +24,7 @@ import { PurchaseRequestsModule } from '../purchase-requests/purchase-requests.m
 // depends on them. PurchaseReturnsService depends on neither.
 @Module({
   imports: [PurchaseRequestsModule, PurchaseQuantitiesModule],
-  controllers: [PurchasesController, PurchaseFilesController],
-  providers: [PurchasesService, PurchasePaymentsService, PurchaseDocumentsService, PurchaseReturnsService],
+  controllers: [PurchasesController, PurchaseFilesController, HistoricalPurchasesController],
+  providers: [PurchasesService, PurchasePaymentsService, PurchaseDocumentsService, PurchaseReturnsService, HistoricalPurchasesService],
 })
 export class PurchasesModule {}

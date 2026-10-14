@@ -13,6 +13,11 @@ import type { SalesInvoicingStatus, SalesOrderStatus, SalesPaymentStatus } from 
 export type SalesInvoiceStatus = "DRAFT" | "POSTED";
 export type SalesSourceType = "OPERATIONAL" | "OPENING_BALANCE";
 
+// «شرایط و نحوه فروش» — derived by the backend from the payment term (0 due
+// days = cash); never stored.
+export type InvoiceSettlementKind = "CASH" | "CREDIT";
+export const invoiceSettlementLabels: Record<InvoiceSettlementKind, string> = { CASH: "نقدی", CREDIT: "غیرنقدی" };
+
 export const SALES_INVOICE_STATUSES: SalesInvoiceStatus[] = ["DRAFT", "POSTED"];
 export const SALES_SOURCE_TYPES: SalesSourceType[] = ["OPERATIONAL", "OPENING_BALANCE"];
 
@@ -66,6 +71,7 @@ export type SalesInvoiceListItem = InvoiceMoney & {
   customerName: string;
   paymentTermName: string | null;
   paymentDueDays: number;
+  settlementKind: InvoiceSettlementKind;
   updatedAt: string;
   customer: { id: number; customerNumber: string };
   salesOrder: { id: number; orderNumber: string | null } | null;
@@ -124,8 +130,20 @@ export type SalesInvoiceDetail = InvoiceMoney & {
   customerName: string;
   customerEconomicCode: string | null;
   billingAddressText: string | null;
+  // Buyer snapshot (2026-10-13) — null on invoices created before it existed.
+  // The buyer's national ID is deliberately not part of it.
+  customerKind: "INDIVIDUAL" | "ORGANIZATION" | null;
+  customerLegalName: string | null;
+  customerRegistrationNumber: string | null;
+  customerPhone: string | null;
+  customerProvince: string | null;
+  customerCity: string | null;
+  customerPostalCode: string | null;
   paymentTermName: string | null;
   paymentDueDays: number;
+  settlementKind: InvoiceSettlementKind;
+  // «جمع کل به حروف», computed by the backend.
+  totalAmountInWords: string;
   note: string | null;
   postedAt: string | null;
   createdAt: string;

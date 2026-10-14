@@ -37,7 +37,7 @@ Confirm and approve are two-step dialogs driven by the backend's 409 codes:
 - `CREDIT_LIMIT_EXCEEDED` (`sales.approve` holder): the dialog shows the credit figures and asks for a required «علت عبور از سقف اعتبار». That re-posts with `creditOverrideReason`.
 - `RECORD_MODIFIED`: a stale-record banner appears and every action is disabled until reload.
 
-Confirm/approve responses carry `backorders[]`. The page shows them as a dismissable banner. A shortfall never blocks confirmation.
+Confirm/approve responses carry `backorders[]`. The page shows them as a dismissable banner. **v1:** a shortfall blocks confirmation (409 `INSUFFICIENT_STOCK`, shown as a toast; the form flags short lines red), so `backorders` is always empty unless the backend's `salesBackorders` flag is on — the banner/tint remain for orders confirmed before v1.
 
 ## Deliveries section (batch 3)
 

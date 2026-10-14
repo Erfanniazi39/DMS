@@ -5,7 +5,7 @@ import { createItemSchema, updateItemSchema } from './dto/item.dto';
 import { ItemsService } from './items.service';
 
 function createPrismaMock() {
-  return {
+  const mock = {
     item: {
       findMany: jest.fn(),
       count: jest.fn(),
@@ -23,7 +23,11 @@ function createPrismaMock() {
     // default; individual tests override this to assert the unitId lock.
     stockMovement: { findFirst: jest.fn().mockResolvedValue(null) },
     auditLog: { create: jest.fn() },
-  } as never;
+    deletedRecord: { create: jest.fn() },
+  };
+  // delete + its snapshot run in a $transaction — the mock just invokes the callback with itself.
+  (mock as any).$transaction = jest.fn((callback: (tx: unknown) => unknown) => callback(mock));
+  return mock as never;
 }
 
 const baseDto = { code: 'ITM1', name: 'شیر پاستوریزه', categoryId: 1, unitId: 2, status: 'active' as const, itemKind: 'FINISHED_GOOD' as const };
@@ -38,7 +42,7 @@ describe('ItemsService', () => {
 
       await expect(service.list()).resolves.toEqual(rows);
       const args = (prisma as any).item.findMany.mock.calls[0][0];
-      expect(args.orderBy).toEqual({ name: 'asc' });
+      expect(args.orderBy).toEqual([{ name: 'asc' }, { id: 'asc' }]);
       expect(args.include.category).toBeDefined();
       expect(args.include.unit).toBeDefined();
     });

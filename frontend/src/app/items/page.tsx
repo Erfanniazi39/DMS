@@ -1,18 +1,24 @@
 "use client";
 
+import { Suspense } from "react";
+import { useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState, type FormEvent, type MouseEvent } from "react";
 import { Plus, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogBody, DialogCloseButton, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { MoneyInput } from "@/components/ui/money-input";
 import { Label } from "@/components/ui/label";
 import { LIST_PAGE_SIZE, ListPagination, totalPages, type Paginated } from "@/components/ui/list-pagination";
 import { useToasts, ToastViewport } from "@/components/ui/toast";
 import { apiFetch, type ApiError } from "@/lib/api";
+import { fillSuggestedCode } from "@/lib/suggested-code";
 import { formatMoney } from "@/lib/format";
 import { normalizeDigits } from "@/lib/number-input";
 import { useAdminUser } from "@/app/admin/layout";
+import { SortHeader, useTableSort } from "@/components/ui/sortable";
+import { sortQuery } from "@/lib/table-sort";
 
 // Item = things the company produces/sells. It is NOT a purchasing catalog
 // — purchase item names stay free text and never reference this list.
@@ -79,7 +85,7 @@ function withCurrent(options: RefOption[], current: RefOption | undefined): RefO
   return [...options, { ...current, isActive: false }];
 }
 
-export default function ItemsPage() {
+function ItemsPageContent() {
   const user = useAdminUser();
   const canView = user?.permissions.includes("items.view") ?? false;
   // Write actions (create/edit/delete) are hidden without items.manage —
@@ -88,13 +94,15 @@ export default function ItemsPage() {
   const [items, setItems] = useState<Item[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(useSearchParams().get("q") ?? ""); // ?q= comes from the header search
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [categoryFilter, setCategoryFilter] = useState("all");
   // Server-side pagination + filtering (GET /items?q=&status=&categoryId=&
   // page=&pageSize=), same pattern as the Suppliers page. Changing any
   // filter resets to page 1.
   const [page, setPage] = useState(1);
+  // Server-side column sorting (?sortBy=&sortDir=); a change returns to page 1.
+  const { sort, onSort } = useTableSort(null, () => setPage(1));
   const [total, setTotal] = useState(0);
   const [reloadKey, setReloadKey] = useState(0);
   const lastQueryRef = useRef(query);
@@ -147,7 +155,7 @@ export default function ItemsPage() {
         if (categoryFilter !== "all") params.set("categoryId", categoryFilter);
         params.set("page", String(page));
         params.set("pageSize", String(LIST_PAGE_SIZE));
-        const data = await apiFetch<Paginated<Item>>(`/items?${params.toString()}`);
+        const data = await apiFetch<Paginated<Item>>(`/items?${params.toString()}${sortQuery(sort)}`);
         if (cancelled) return;
         // Current page fell past the end (e.g. its last row was deleted) —
         // jump to the new last page instead of showing an empty table.
@@ -172,7 +180,7 @@ export default function ItemsPage() {
       clearTimeout(timeout);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canView, query, statusFilter, categoryFilter, page, reloadKey]);
+  }, [canView, query, statusFilter, categoryFilter, page, reloadKey, sort]);
 
   const hasActiveFilters = query.trim() !== "" || statusFilter !== "all" || categoryFilter !== "all";
   const categoryOptions = withCurrent(categories, editingItem?.category);
@@ -185,6 +193,7 @@ export default function ItemsPage() {
   function openCreateForm() {
     setEditingItem(null);
     setForm(emptyForm);
+    fillSuggestedCode("/items/next-code", (code) => setForm((current) => (current.code === "" ? { ...current, code } : current)));
     setFormOpen(true);
   }
 
@@ -376,12 +385,12 @@ export default function ItemsPage() {
                 <table className="w-full min-w-[48rem] text-right text-sm">
                   <thead className="bg-muted/50 text-muted-foreground">
                     <tr>
-                      <th className="px-4 py-3 font-medium">کالا</th>
-                      <th className="px-4 py-3 font-medium">دسته‌بندی</th>
-                      <th className="px-4 py-3 font-medium">واحد</th>
-                      <th className="px-4 py-3 font-medium">نوع کالا</th>
-                      <th className="px-4 py-3 font-medium">قیمت فروش (ریال)</th>
-                      <th className="px-4 py-3 font-medium">وضعیت</th>
+                      <SortHeader label="کالا" sortKey="name" sort={sort} onSort={onSort} className="px-4 py-3 font-medium" />
+                      <SortHeader label="دسته‌بندی" sortKey="category" sort={sort} onSort={onSort} className="px-4 py-3 font-medium" />
+                      <SortHeader label="واحد" sortKey="unit" sort={sort} onSort={onSort} className="px-4 py-3 font-medium" />
+                      <SortHeader label="نوع کالا" sortKey="itemKind" sort={sort} onSort={onSort} className="px-4 py-3 font-medium" />
+                      <SortHeader label="قیمت فروش (ریال)" sortKey="sellingPrice" sort={sort} onSort={onSort} className="px-4 py-3 font-medium" />
+                      <SortHeader label="وضعیت" sortKey="status" sort={sort} onSort={onSort} className="px-4 py-3 font-medium" />
                       {canManage ? <th className="px-4 py-3 font-medium">عملیات</th> : null}
                     </tr>
                   </thead>
@@ -508,14 +517,7 @@ export default function ItemsPage() {
               </div>
               <div className="flex flex-col gap-2">
                 <Label htmlFor="item-selling-price">قیمت فروش (ریال)</Label>
-                <Input
-                  id="item-selling-price"
-                  dir="ltr"
-                  inputMode="numeric"
-                  placeholder="اختیاری"
-                  value={form.sellingPrice}
-                  onChange={(event) => update("sellingPrice", event.target.value)}
-                />
+                <MoneyInput id="item-selling-price" placeholder="اختیاری" value={form.sellingPrice} onChange={(value) => update("sellingPrice", value)} />
               </div>
               <div className="flex flex-col gap-2 md:col-span-2">
                 <Label htmlFor="item-description">توضیحات</Label>
@@ -606,5 +608,13 @@ export default function ItemsPage() {
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+export default function ItemsPage() {
+  return (
+    <Suspense fallback={null}>
+      <ItemsPageContent />
+    </Suspense>
   );
 }

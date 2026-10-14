@@ -63,7 +63,26 @@ export class PurchasePaymentsService {
       const existing = await tx.purchasePayment.findFirst({ where: { id: paymentId, purchaseId } });
       if (!existing) throw new NotFoundException('پرداخت پیدا نشد');
       this.ensurePayable(purchase, dto.paymentDate);
-      const payment = await tx.purchasePayment.update({ where: { id: paymentId }, data: { ...dto } });
+      // Full replace, mapped explicitly: a spread would leave an omitted
+      // optional field (undefined) at its OLD value instead of clearing it.
+      const payment = await tx.purchasePayment.update({
+        where: { id: paymentId },
+        data: {
+          amount: dto.amount,
+          paymentDate: dto.paymentDate,
+          method: dto.method,
+          status: dto.status,
+          referenceNumber: dto.referenceNumber ?? null,
+          note: dto.note ?? null,
+          transactionTime: dto.transactionTime ?? null,
+          transactionType: dto.transactionType ?? null,
+          depositId: dto.depositId ?? null,
+          withdrawalId: dto.withdrawalId ?? null,
+          sourceAccount: dto.sourceAccount ?? null,
+          destinationAccount: dto.destinationAccount ?? null,
+          destinationAccountHolder: dto.destinationAccountHolder ?? null,
+        },
+      });
       await recomputePaymentTotals(tx, purchaseId, purchase.totalAmount);
       await this.audit.log(
         {

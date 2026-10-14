@@ -17,7 +17,7 @@ Routes: `GET /employees` and `GET /employees/:id` (`employees.view`). `POST /emp
 
 ## Rules enforced in code
 
-- **Employee code is server-generated, never client-supplied.** It is `<DEPARTMENT_CODE>-<id padded to 4>`, e.g. `IT-0007`. The row is inserted with a placeholder and corrected in the same transaction. `code` is not part of either DTO and stays fixed if the employee changes department.
+- **Employee code is server-generated at creation** (`<DEPARTMENT_CODE>-<id padded to 4>`, e.g. `IT-0007`; the row is inserted with a placeholder and corrected in the same transaction) and is not part of the create DTO. It does not change when the employee moves department, but it **can be edited** later through the update DTO (owner, 2026-10-14): Latin letters/digits/`-`/`_`, 2–30 chars, unique (409 otherwise).
 - **Persian-only names:** `PERSIAN_NAME_REGEX` in the DTO (Persian letters, space, ZWNJ) applies to first name, last name, and father's name.
 - National ID (10 Latin digits) is required and unique. Birth date is required. Mobile must be exactly 11 Latin digits.
 - Cross-field rules are in `withCrossFieldRules()`, for example salary amount requires salary period.

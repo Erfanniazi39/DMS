@@ -2,16 +2,17 @@ import { BadRequestException, ConflictException, ForbiddenException, Injectable,
 import { Prisma, type StockDocumentStatus } from '@prisma/client';
 import { nextDocumentNumber } from '../common/document-sequence';
 import { isSameVersion, recordModifiedConflict } from '../common/optimistic-lock';
-import { toSkipTake, type PaginationParams } from '../common/pagination';
+import { toSkipTake, type PaginationParams, buildOrderBy, type SortParams } from '../common/pagination';
 import { PrismaService } from '../prisma/prisma.service';
 import { AUDIT_ENTITY, AuditService } from '../audit/audit.service';
+import { archiveDeletedRecord } from '../audit/deleted-records';
 import { InventoryService } from './inventory.service';
 import { EDITABLE_STOCK_DOCUMENT_STATUSES, GOODS_RECEIPT_DOC_TYPE, GOODS_RECEIPT_ITEM_KINDS } from './inventory-rules';
 import { ensureInboundBatchFields, ensureInboundItems, maskLineCosts, resolveInboundBatches, type CostAccess } from './inbound-documents';
 import { applyMovements, type MovementInput } from './stock-ledger';
 import type { CreateGoodsReceiptDto, ReleaseGoodsReceiptQcDto, UpdateGoodsReceiptDto } from './dto/goods-receipt.dto';
 
-export type GoodsReceiptListFilters = { q?: string; status?: StockDocumentStatus; supplierId?: number };
+export type GoodsReceiptListFilters = { q?: string; status?: StockDocumentStatus; supplierId?: number; sort?: SortParams };
 
 const GOODS_RECEIPT_COST_FIELDS = ['unitCost'] as const;
 const DOCUMENT_LABEL_FA = '«رسید انبار»';
@@ -37,6 +38,19 @@ type DraftLine = {
   productionDate?: Date;
   expiryDate?: Date;
   note?: string;
+};
+
+// Columns the goods-receipts table can be sorted by (the line count is derived).
+const GOODS_RECEIPT_SORT_COLUMNS: Record<string, (dir: 'asc' | 'desc') => Prisma.GoodsReceiptOrderByWithRelationInput> = {
+  receiptNumber: (dir) => ({ receiptNumber: { sort: dir, nulls: 'last' } }),
+  receiptDate: (dir) => ({ receiptDate: dir }),
+  supplier: (dir) => ({ supplierName: dir }),
+  supplierDocumentNumber: (dir) => ({ supplierDocumentNumber: { sort: dir, nulls: 'last' } }),
+  purchaseNumber: (dir) => ({ purchaseNumber: { sort: dir, nulls: 'last' } }),
+  location: (dir) => ({ location: { name: dir } }),
+  inspectionRequired: (dir) => ({ inspectionRequired: dir }),
+  createdBy: (dir) => ({ createdByUser: { username: dir } }),
+  status: (dir) => ({ status: dir }),
 };
 
 // Goods receipts (رسید انبار) — Inventory batch I5, build plan §5.5/§6.
@@ -135,7 +149,7 @@ export class GoodsReceiptsService {
         createdByUser: { select: { id: true, username: true } },
         _count: { select: { items: true } },
       },
-      orderBy: [{ receiptDate: 'desc' }, { id: 'desc' }],
+      orderBy: buildOrderBy(filters.sort, GOODS_RECEIPT_SORT_COLUMNS, [{ receiptDate: 'desc' }, { id: 'desc' }], [{ id: 'desc' }]),
     } satisfies Prisma.GoodsReceiptFindManyArgs;
 
     if (!pagination) return this.prisma.goodsReceipt.findMany(query);
@@ -410,9 +424,10 @@ export class GoodsReceiptsService {
   async remove(id: number, userId: number | null, ipAddress?: string) {
     await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM goods_receipts WHERE id = ${id} FOR UPDATE`;
-      const receipt = await tx.goodsReceipt.findUnique({ where: { id }, select: { id: true, status: true, supplierName: true } });
+      const receipt = await tx.goodsReceipt.findUnique({ where: { id }, include: { items: true } });
       if (!receipt) throw new NotFoundException('رسید انبار پیدا نشد');
       this.ensureEditable(receipt.status);
+      await archiveDeletedRecord(tx, { entityType: AUDIT_ENTITY.GOODS_RECEIPT, entityId: id, label: receipt.supplierName, record: receipt, userId });
       await tx.goodsReceipt.delete({ where: { id } });
       await this.audit.log(
         {

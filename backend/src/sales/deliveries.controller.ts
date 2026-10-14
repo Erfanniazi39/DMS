@@ -1,6 +1,6 @@
 import { Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
-import { parsePagination } from '../common/pagination';
+import { parsePagination, parseSort } from '../common/pagination';
 import { ZodValidationPipe } from '../common/zod-validation.pipe';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
@@ -45,6 +45,7 @@ export class DeliveriesController {
         salesOrderId: query.salesOrderId,
         dateFrom: query.dateFrom,
         dateTo: query.dateTo,
+        sort: parseSort(query.sortBy, query.sortDir),
       },
       parsePagination(query.page, query.pageSize),
     );
@@ -54,7 +55,7 @@ export class DeliveriesController {
   @Get('queue')
   @RequirePermissions('sales.view')
   queue(@Query(new ZodValidationPipe(deliveryQueueQuerySchema)) query: DeliveryQueueQuery) {
-    return this.deliveries.queue(query.q?.trim() || undefined, parsePagination(query.page, query.pageSize));
+    return this.deliveries.queue(query.q?.trim() || undefined, parsePagination(query.page, query.pageSize), parseSort(query.sortBy, query.sortDir));
   }
 
   @Get('order-context/:salesOrderId')

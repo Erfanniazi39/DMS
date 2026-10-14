@@ -9,9 +9,14 @@ import { PrismaService } from '../prisma/prisma.service';
 // owned by (and local to) each writing module.
 export const AUDIT_ENTITY = {
   PURCHASE: 'Purchase',
+  LETTER: 'Letter',
   PURCHASE_REQUEST: 'PurchaseRequest',
   CUSTOMER: 'Customer',
+  // Suppliers (2026-10-13): master data plus its bank accounts (logged under
+  // the supplier; bank numbers are never written to `details`).
+  SUPPLIER: 'Supplier',
   ITEM: 'Item',
+  ITEM_CATEGORY: 'ItemCategory',
   // Customer-module reference data (customer groups, territories, payment
   // terms). Customer child records (contacts, addresses, notes, documents,
   // complaints, financial profile) are logged under CUSTOMER with the
@@ -55,6 +60,10 @@ export const AUDIT_ENTITY = {
   // Sales (batch 6).
   SALES_RETURN: 'SalesReturn',
   CREDIT_NOTE: 'CreditNote',
+  // Users & Access (admin panel): account and role/permission changes.
+  // Passwords are never written — a password change is only "changed".
+  USER: 'User',
+  ROLE: 'Role',
 } as const;
 
 // One field-level change recorded in AuditLog.changes (added 2026-10-06 for
@@ -179,5 +188,48 @@ export class AuditService {
         user: { select: { id: true, username: true } },
       },
     });
+  }
+
+  // Filtered, paginated activity feed for the admin panel (the user-activity
+  // page and a user's own "recent activity"). Newest first. Never selects
+  // ipAddress. Failed logins have no userId (the attempted username is inside
+  // the action string), so they only appear when no userId filter is given.
+  async listActivity(filter: {
+    userId?: number;
+    action?: string;
+    entityType?: string;
+    from?: Date;
+    to?: Date;
+    page: number;
+    pageSize: number;
+  }) {
+    const where: Prisma.AuditLogWhereInput = {
+      ...(filter.userId !== undefined ? { userId: filter.userId } : {}),
+      // Exact action, or the same action with a ":<detail>" suffix (LOGIN_FAILED:user:reason).
+      ...(filter.action ? { OR: [{ action: filter.action }, { action: { startsWith: `${filter.action}:` } }] } : {}),
+      ...(filter.entityType ? { entityType: filter.entityType } : {}),
+      ...(filter.from || filter.to
+        ? { createdAt: { ...(filter.from ? { gte: filter.from } : {}), ...(filter.to ? { lt: filter.to } : {}) } }
+        : {}),
+    };
+    const [total, rows] = await Promise.all([
+      this.prisma.auditLog.count({ where }),
+      this.prisma.auditLog.findMany({
+        where,
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        skip: (filter.page - 1) * filter.pageSize,
+        take: filter.pageSize,
+        select: {
+          id: true,
+          action: true,
+          entityType: true,
+          entityId: true,
+          details: true,
+          createdAt: true,
+          user: { select: { id: true, username: true } },
+        },
+      }),
+    ]);
+    return { items: rows, total, page: filter.page, pageSize: filter.pageSize };
   }
 }

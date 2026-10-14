@@ -17,8 +17,12 @@ import {
   textareaClass,
   type DocumentType,
   type PurchaseDetail,
+  type PurchaseDocumentRow,
 } from "../../shared";
 import { DetailSection, type SectionToasts } from "./DetailSection";
+import { SortHeader, useClientTable } from "@/components/ui/sortable";
+import { ListPagination } from "@/components/ui/list-pagination";
+import type { SortValue } from "@/lib/table-sort";
 
 export type DocumentFormState = {
   documentType: DocumentType;
@@ -32,6 +36,14 @@ export const emptyDocumentForm: DocumentFormState = {
   documentNumber: "",
   date: "",
   note: "",
+};
+
+// Accessors for in-memory column sorting — each sorts by what its column shows.
+const PURCHASES_ID__SECTIONS_DOCUMENTSSECTION_TSX_SORT_GETTERS: Record<string, (row: PurchaseDocumentRow) => SortValue> = {
+  documentType: (row) => documentTypeLabels[row.documentType],
+  documentNumber: (row) => row.documentNumber,
+  date: (row) => row.date,
+  note: (row) => row.note,
 };
 
 // «اسناد» section plus its add dialog. All form/dialog state lives in
@@ -66,6 +78,8 @@ export function DocumentsSection({
   toasts: SectionToasts;
 }) {
   const { pushError, pushErrors, pushSuccess } = toasts;
+  // Sort + page the (small, already loaded) rows in memory; click a header to sort.
+  const table = useClientTable(purchase.documents, PURCHASES_ID__SECTIONS_DOCUMENTSSECTION_TSX_SORT_GETTERS, { pageSize: 20 });
 
   async function removeDocument(documentId: number) {
     if (!window.confirm("آیا از حذف این سند مطمئن هستید؟")) return;
@@ -148,16 +162,16 @@ export function DocumentsSection({
             <table className="w-full min-w-[40rem] text-right text-sm">
               <thead className="bg-muted/40 text-xs text-muted-foreground">
                 <tr>
-                  <th className="px-3 py-2 font-medium">نوع سند</th>
-                  <th className="px-3 py-2 font-medium">شماره سند</th>
-                  <th className="px-3 py-2 font-medium">تاریخ</th>
-                  <th className="px-3 py-2 font-medium">یادداشت</th>
+                  <SortHeader label="نوع سند" sortKey="documentType" sort={table.sort} onSort={table.onSort} className="px-3 py-2 font-medium" />
+                  <SortHeader label="شماره سند" sortKey="documentNumber" sort={table.sort} onSort={table.onSort} className="px-3 py-2 font-medium" />
+                  <SortHeader label="تاریخ" sortKey="date" sort={table.sort} onSort={table.onSort} className="px-3 py-2 font-medium" />
+                  <SortHeader label="یادداشت" sortKey="note" sort={table.sort} onSort={table.onSort} className="px-3 py-2 font-medium" />
                   <th className="px-3 py-2 font-medium">فایل</th>
                   <th className="px-3 py-2 font-medium">عملیات</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
-                {purchase.documents.map((document) => (
+                {table.pageRows.map((document) => (
                   <tr key={document.id}>
                     <td className="px-3 py-2">{documentTypeLabels[document.documentType]}</td>
                     <td className="px-3 py-2 text-muted-foreground">{document.documentNumber || "-"}</td>
@@ -192,6 +206,7 @@ export function DocumentsSection({
             </table>
           </div>
         )}
+            {table.total > table.pageSize ? <ListPagination page={table.page} pageSize={table.pageSize} total={table.total} onPageChange={table.setPage} className="mt-3" /> : null}
       </DetailSection>
 
       {/* Portal-based: renders outside the page flow regardless of where it sits in the tree. */}

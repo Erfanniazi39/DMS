@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Param, ParseIntPipe, Patch, Post, Req, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
+import { RequireFeature } from '../common/feature-flags';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { SessionAuthGuard } from '../auth/guards/session-auth.guard';
@@ -18,6 +19,7 @@ import { PaymentTermsService } from './payment-terms.service';
 // customers.finance).
 @Controller('payment-terms')
 @UseGuards(SessionAuthGuard, PermissionsGuard)
+@RequireFeature('paymentTerms')
 export class PaymentTermsController {
   constructor(private readonly paymentTermsService: PaymentTermsService) {}
 
@@ -26,6 +28,13 @@ export class PaymentTermsController {
   @Get()
   list() {
     return this.paymentTermsService.list();
+  }
+
+  // Suggested code for a new record — declared before any ':id' route.
+  @Get('next-code')
+  @RequirePermissions('customers.manage')
+  nextCode() {
+    return this.paymentTermsService.nextCode();
   }
 
   @Get('all')

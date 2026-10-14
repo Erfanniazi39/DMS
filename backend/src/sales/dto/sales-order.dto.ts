@@ -6,6 +6,7 @@ import {
   optionalDate,
   optionalId,
   optionalMoney,
+  optionalPercent,
   optionalTrimmedString,
   requiredBusinessDate,
   requiredDate,
@@ -41,19 +42,6 @@ function toNumberInput(value: unknown): unknown {
 function hasAtMostTwoDecimals(value: number) {
   const scaled = value * 100;
   return Math.abs(scaled - Math.round(scaled)) < 1e-6;
-}
-
-// A percentage within Decimal(5,2): 0–100, at most two decimals.
-function optionalPercent(label: string) {
-  return z.preprocess(
-    toNumberInput,
-    z
-      .number({ error: `${label} باید عدد باشد` })
-      .min(0, { error: `${label} نمی‌تواند منفی باشد` })
-      .max(100, { error: `${label} نمی‌تواند بیشتر از ۱۰۰ باشد` })
-      .refine(hasAtMostTwoDecimals, { error: `${label} حداکثر می‌تواند دو رقم اعشار داشته باشد` })
-      .optional(),
-  );
 }
 
 const salesOrderItemSchema = z
@@ -92,13 +80,21 @@ const salesOrderBaseSchema = z.object({
   items: z.array(salesOrderItemSchema, { error: 'فهرست اقلام نامعتبر است' }).min(1, { error: 'حداقل یک ردیف کالا را وارد کنید' }),
 });
 
-export const createSalesOrderSchema = salesOrderBaseSchema;
+// The requested delivery date can't precede the order date.
+const requestedDateNotBeforeOrder = {
+  check: (data: { orderDate: Date; requestedDeliveryDate?: Date }) => data.requestedDeliveryDate === undefined || data.requestedDeliveryDate.getTime() >= data.orderDate.getTime(),
+  params: { message: 'تاریخ تحویل درخواستی نمی‌تواند پیش از تاریخ سفارش باشد', path: ['requestedDeliveryDate'] },
+};
+
+export const createSalesOrderSchema = salesOrderBaseSchema.refine(requestedDateNotBeforeOrder.check, requestedDateNotBeforeOrder.params);
 
 // Full-record edit of a DRAFT (lines replaced wholesale), with the same
 // optimistic lock as Purchases: updatedAt is the version the client loaded.
-export const updateSalesOrderSchema = salesOrderBaseSchema.extend({
-  updatedAt: requiredDate('نسخهٔ رکورد نامعتبر است'),
-});
+export const updateSalesOrderSchema = salesOrderBaseSchema
+  .extend({
+    updatedAt: requiredDate('نسخهٔ رکورد نامعتبر است'),
+  })
+  .refine(requestedDateNotBeforeOrder.check, requestedDateNotBeforeOrder.params);
 
 const versionField = { updatedAt: requiredDate('نسخهٔ رکورد نامعتبر است') };
 
@@ -149,6 +145,9 @@ export const salesOrderListQuerySchema = z.object({
   dateTo: optionalDate('تاریخ پایان فیلتر نامعتبر است'),
   page: z.string({ error: 'شماره صفحه نامعتبر است' }).optional(),
   pageSize: z.string({ error: 'تعداد ردیف در هر صفحه نامعتبر است' }).optional(),
+  // Column sorting (?sortBy=&sortDir=) — see common/pagination.ts parseSort().
+  sortBy: z.string().optional(),
+  sortDir: z.string().optional(),
 });
 
 export type CreateSalesOrderDto = z.infer<typeof createSalesOrderSchema>;

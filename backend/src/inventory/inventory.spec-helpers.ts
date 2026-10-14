@@ -442,6 +442,7 @@ export function createInventoryDb() {
       ),
     },
     auditLog: { create: jest.fn() },
+    deletedRecord: { create: jest.fn() },
   };
 
   db.$transaction = jest.fn(async (callback: (tx: unknown) => unknown) => {

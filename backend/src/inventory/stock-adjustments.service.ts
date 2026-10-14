@@ -1,10 +1,12 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma, type StockAdjustmentKind, type StockDocumentStatus } from '@prisma/client';
 import { nextDocumentNumber } from '../common/document-sequence';
+import { isFeatureEnabled } from '../common/feature-flags';
 import { isSameVersion, recordModifiedConflict } from '../common/optimistic-lock';
-import { toSkipTake, type PaginationParams } from '../common/pagination';
+import { toSkipTake, type PaginationParams, buildOrderBy, type SortParams } from '../common/pagination';
 import { PrismaService } from '../prisma/prisma.service';
 import { AUDIT_ENTITY, AuditService } from '../audit/audit.service';
+import { archiveDeletedRecord } from '../audit/deleted-records';
 import { InventoryService } from './inventory.service';
 import {
   EDITABLE_STOCK_DOCUMENT_STATUSES,
@@ -17,7 +19,7 @@ import { resolveBatches, type ItemBatchSettings } from './stock-batches';
 import { applyMovements, lockItemSettings, type MovementInput } from './stock-ledger';
 import type { CreateStockAdjustmentDto, UpdateStockAdjustmentDto } from './dto/inventory.dto';
 
-export type StockAdjustmentListFilters = { q?: string; status?: StockDocumentStatus; kind?: StockAdjustmentKind };
+export type StockAdjustmentListFilters = { q?: string; status?: StockDocumentStatus; kind?: StockAdjustmentKind; sort?: SortParams };
 
 // Everything the detail page needs. Users narrowed to id/username.
 const stockAdjustmentDetailInclude = {
@@ -31,6 +33,17 @@ const stockAdjustmentDetailInclude = {
     orderBy: { id: 'asc' },
   },
 } satisfies Prisma.StockAdjustmentInclude;
+
+// Columns the adjustments table can be sorted by (the line count is derived).
+const STOCK_ADJUSTMENT_SORT_COLUMNS: Record<string, (dir: 'asc' | 'desc') => Prisma.StockAdjustmentOrderByWithRelationInput> = {
+  adjustmentNumber: (dir) => ({ adjustmentNumber: { sort: dir, nulls: 'last' } }),
+  adjustmentDate: (dir) => ({ adjustmentDate: dir }),
+  kind: (dir) => ({ kind: dir }),
+  reason: (dir) => ({ reason: dir }),
+  location: (dir) => ({ location: { name: dir } }),
+  createdBy: (dir) => ({ createdByUser: { username: dir } }),
+  status: (dir) => ({ status: dir }),
+};
 
 // Stock adjustment documents (رسید / اصلاح موجودی) — the only way stock
 // enters or is corrected today (no Purchases/Production integration,
@@ -68,7 +81,7 @@ export class StockAdjustmentsService {
         _count: { select: { items: true } },
       },
       // Drafts (no number) and posted documents together, newest first.
-      orderBy: [{ adjustmentDate: 'desc' }, { id: 'desc' }],
+      orderBy: buildOrderBy(filters.sort, STOCK_ADJUSTMENT_SORT_COLUMNS, [{ adjustmentDate: 'desc' }, { id: 'desc' }], [{ id: 'desc' }]),
     } satisfies Prisma.StockAdjustmentFindManyArgs;
 
     if (!pagination) return this.prisma.stockAdjustment.findMany(query);
@@ -202,7 +215,14 @@ export class StockAdjustmentsService {
   // next value, never the same one (adjustment_number is UNIQUE as a
   // backstop). Stock rows are locked by applyMovements() in itemId/locationId
   // order, so overlapping adjustments can't deadlock on balances either.
-  async post(id: number, loadedVersion: Date, userId: number | null, ipAddress?: string) {
+  //
+  // v1 (inventoryApprovalWorkflow flag off — no submit/approve UI): a
+  // WRITE_OFF or negative CORRECTION is posted here directly, but only by a
+  // caller holding inventory.approve (options.canApprove). The B10
+  // no-self-approval split is dropped in v1; the audit entry records it.
+  // BATCH_CUTOVER/MARK_DAMAGED keep needing the full workflow.
+  async post(id: number, loadedVersion: Date, userId: number | null, ipAddress?: string, options: { canApprove?: boolean } = {}) {
+    let postedDirectlyWithApproval = false;
     await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM stock_adjustments WHERE id = ${id} FOR UPDATE`;
       const adjustment = await tx.stockAdjustment.findUnique({
@@ -218,7 +238,13 @@ export class StockAdjustmentsService {
       if (adjustment.items.length === 0) throw new BadRequestException('سند بدون ردیف کالا قابل ثبت نیست');
       if (!adjustment.location?.isActive) throw new ConflictException('انبار این سند غیرفعال است');
       if (stockAdjustmentNeedsApproval(adjustment.kind, adjustment.items.map((item) => item.quantity))) {
-        throw new ConflictException('این سند نیاز به تأیید دارد؛ به‌جای «ثبت نهایی»، آن را «ارسال برای تأیید» کنید.');
+        const directPostAllowed =
+          !isFeatureEnabled('inventoryApprovalWorkflow') && adjustment.kind !== 'BATCH_CUTOVER' && adjustment.kind !== 'MARK_DAMAGED';
+        if (!directPostAllowed) {
+          throw new ConflictException('این سند نیاز به تأیید دارد؛ به‌جای «ثبت نهایی»، آن را «ارسال برای تأیید» کنید.');
+        }
+        if (!options.canApprove) throw new ForbiddenException('ثبت این سند نیاز به مجوز «تأیید اسناد موجودی» دارد');
+        postedDirectlyWithApproval = true;
       }
 
       const adjustmentNumber = await nextDocumentNumber(tx, STOCK_ADJUSTMENT_DOC_TYPE, adjustment.adjustmentDate);
@@ -236,7 +262,9 @@ export class StockAdjustmentsService {
           action: 'STOCK_ADJUSTMENT_POSTED',
           entityType: AUDIT_ENTITY.STOCK_ADJUSTMENT,
           entityId: id,
-          details: `${adjustmentNumber} — ${STOCK_ADJUSTMENT_KIND_LABELS_FA[adjustment.kind]}، ${rows.length} ردیف`,
+          details: `${adjustmentNumber} — ${STOCK_ADJUSTMENT_KIND_LABELS_FA[adjustment.kind]}، ${rows.length} ردیف${
+            postedDirectlyWithApproval ? '؛ ثبت مستقیم با مجوز تأیید (بدون گردش تأیید)' : ''
+          }`,
         },
         tx,
       );
@@ -698,9 +726,10 @@ export class StockAdjustmentsService {
   async remove(id: number, userId: number | null, ipAddress?: string) {
     await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM stock_adjustments WHERE id = ${id} FOR UPDATE`;
-      const adjustment = await tx.stockAdjustment.findUnique({ where: { id }, select: { id: true, status: true, kind: true } });
+      const adjustment = await tx.stockAdjustment.findUnique({ where: { id }, include: { items: true } });
       if (!adjustment) throw new NotFoundException('سند موجودی پیدا نشد');
       this.ensureEditable(adjustment.status);
+      await archiveDeletedRecord(tx, { entityType: AUDIT_ENTITY.STOCK_ADJUSTMENT, entityId: id, label: STOCK_ADJUSTMENT_KIND_LABELS_FA[adjustment.kind], record: adjustment, userId });
       await tx.stockAdjustment.delete({ where: { id } });
       await this.audit.log(
         {

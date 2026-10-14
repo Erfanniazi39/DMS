@@ -1,12 +1,14 @@
 import { ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma, type CustomerKind, type CustomerStatus } from '@prisma/client';
 import { randomUUID } from 'crypto';
-import { toSkipTake, type PaginationParams } from '../common/pagination';
+import { toSkipTake, type PaginationParams, buildOrderBy, type SortParams } from '../common/pagination';
 import { isSameVersion, recordModifiedConflict } from '../common/optimistic-lock';
 import { PrismaService } from '../prisma/prisma.service';
 import { AUDIT_ENTITY, AuditService, diffChanges, MASKED_AUDIT_VALUE } from '../audit/audit.service';
+import { archiveDeletedRecord } from '../audit/deleted-records';
 import { ensureActiveCustomerGroup } from '../customer-groups/customer-group-rules';
 import { ensureActiveTerritory } from '../territories/territory-rules';
+import { missingPartyIdentityFields } from '../common/party-fields';
 import { escapeLike, searchKey, searchKeySql } from './customer-normalize';
 import {
   ALLOWED_CUSTOMER_STATUS_TRANSITIONS,
@@ -28,11 +30,12 @@ export type CustomerListFilters = {
   customerGroupId?: number;
   territoryId?: number;
   customerKind?: CustomerKind;
+  sort?: SortParams;
 };
 
 // Fields whose old -> new values are written to AuditLog.changes on update
 // (business decision 2026-10-06). nationalId is masked: only "it changed".
-const AUDITED_CUSTOMER_FIELDS = ['customerKind', 'legalName', 'nationalId', 'economicCode', 'customerGroupId'] as const;
+const AUDITED_CUSTOMER_FIELDS = ['customerKind', 'legalName', 'nationalId', 'economicCode', 'registrationNumber', 'title', 'taxOfficeProvince', 'taxOfficeCity', 'customerGroupId'] as const;
 const MASKED_CUSTOMER_FIELDS = ['nationalId'] as const;
 
 const userDisplay = { select: { id: true, username: true } } as const;
@@ -47,6 +50,7 @@ const customerDetailInclude = {
   createdByUser: userDisplay,
   contacts: { orderBy: [{ isPrimary: 'desc' }, { id: 'asc' }] },
   addresses: { orderBy: [{ isDefault: 'desc' }, { id: 'asc' }] },
+  bankAccounts: { orderBy: [{ isDefault: 'desc' }, { id: 'asc' }] },
   notes: { orderBy: [{ isPinned: 'desc' }, { createdAt: 'desc' }, { id: 'desc' }], include: { createdByUser: userDisplay } },
   documents: { orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], include: { uploadedByUser: userDisplay } },
   complaints: {
@@ -97,17 +101,44 @@ function toListItem(row: CustomerListRow) {
 // bank account, restricted in §15.4 of the archive) — a customers.view-only
 // caller gets it masked, same shape as the list row's omission but kept
 // present (not dropped) so the detail page can show "***" rather than blank.
+function maskTail(value: string | null) {
+  return value ? `${'*'.repeat(Math.max(value.length - 4, 0))}${value.slice(-4)}` : null;
+}
+
 function toDetail(row: CustomerDetailRow, options: { canViewSensitive: boolean }) {
   const { financialProfile, ...customer } = withoutLegacyColumns(row);
   return {
     ...customer,
     nationalId: options.canViewSensitive ? customer.nationalId : customer.nationalId ? MASKED_AUDIT_VALUE : null,
+    // Bank numbers are sensitive too: view-only callers see the last 4 digits.
+    bankAccounts: customer.bankAccounts.map((account) => ({
+      ...account,
+      accountNumber: options.canViewSensitive ? account.accountNumber : maskTail(account.accountNumber),
+      shebaNumber: options.canViewSensitive ? account.shebaNumber : maskTail(account.shebaNumber),
+    })),
+    // Identity fields the record fails today («ناقص» indicator); the next
+    // header edit is rejected until they are fixed. Sales is not gated on it.
+    missingIdentityFields: missingPartyIdentityFields({
+      kind: customer.customerKind,
+      nationalId: customer.nationalId,
+      economicCode: customer.economicCode,
+    }),
     financialSummary: {
       creditHold: financialProfile?.creditHold ?? false,
       hasPaymentTerm: financialProfile?.paymentTermId != null,
     },
   };
 }
+
+// Columns the customers table can be sorted by (the city column is derived
+// from the default address, so it is not sortable).
+const CUSTOMER_SORT_COLUMNS: Record<string, (dir: 'asc' | 'desc') => Prisma.CustomerOrderByWithRelationInput> = {
+  customerNumber: (dir) => ({ customerNumber: dir }),
+  name: (dir) => ({ name: dir }),
+  group: (dir) => ({ customerGroup: { nameFa: dir } }),
+  status: (dir) => ({ status: dir }),
+  phone: (dir) => ({ phone: dir }),
+};
 
 @Injectable()
 export class CustomersService {
@@ -140,14 +171,15 @@ export class CustomersService {
     if (filters.territoryId) and.push({ territoryId: filters.territoryId });
     if (filters.customerKind) and.push({ customerKind: filters.customerKind });
     const where: Prisma.CustomerWhereInput = and.length > 0 ? { AND: and } : {};
+    const orderBy = buildOrderBy(filters.sort, CUSTOMER_SORT_COLUMNS, [{ name: 'asc' }, { id: 'asc' }], [{ id: 'asc' }]);
 
     if (!pagination) {
-      const rows = await this.prisma.customer.findMany({ where, include: customerListInclude, orderBy: [{ name: 'asc' }, { id: 'asc' }] });
+      const rows = await this.prisma.customer.findMany({ where, include: customerListInclude, orderBy });
       return rows.map(toListItem);
     }
 
     const [rows, total] = await Promise.all([
-      this.prisma.customer.findMany({ where, include: customerListInclude, orderBy: [{ name: 'asc' }, { id: 'asc' }], ...toSkipTake(pagination) }),
+      this.prisma.customer.findMany({ where, include: customerListInclude, orderBy, ...toSkipTake(pagination) }),
       this.prisma.customer.count({ where }),
     ]);
     return { items: rows.map(toListItem), total, page: pagination.page, pageSize: pagination.pageSize };
@@ -192,15 +224,25 @@ export class CustomersService {
             legalName: dto.legalName,
             nationalId: dto.nationalId,
             economicCode: dto.economicCode,
+            title: dto.title,
+            registrationNumber: dto.registrationNumber,
             phone: dto.phone,
+            phone2: dto.phone2,
+            mobile: dto.mobile,
+            fax: dto.fax,
+            telex: dto.telex,
+            website: dto.website,
             email: dto.email,
+            taxOfficeProvince: dto.taxOfficeProvince,
+            taxOfficeCity: dto.taxOfficeCity,
             customerGroupId: dto.customerGroupId,
             territoryId: dto.territoryId,
             status: 'ACTIVE',
             createdByUserId: userId,
             financialProfile: { create: {} },
-            ...(dto.firstAddress ? { addresses: { create: { ...dto.firstAddress, isDefault: true } } } : {}),
-            ...(dto.firstContact ? { contacts: { create: { ...dto.firstContact, isPrimary: true } } } : {}),
+            ...(dto.firstAddress ? { addresses: { create: [{ ...dto.firstAddress, isDefault: true }, ...(dto.additionalAddresses ?? []).map((address) => ({ ...address, isDefault: false }))] } } : {}),
+            ...(dto.firstBankAccount ? { bankAccounts: { create: [{ ...dto.firstBankAccount, isDefault: true }, ...(dto.additionalBankAccounts ?? []).map((account) => ({ ...account, isDefault: false }))] } } : {}),
+            ...(dto.firstContact ? { contacts: { create: [{ ...dto.firstContact, isPrimary: true }, ...(dto.additionalContacts ?? []).map((contact) => ({ ...contact, isPrimary: false }))] } } : {}),
           },
         });
         const customerNumber = `CUS-${String(row.id).padStart(6, '0')}`;
@@ -245,8 +287,17 @@ export class CustomersService {
       legalName: dto.legalName ?? null,
       nationalId: dto.nationalId ?? null,
       economicCode: dto.economicCode ?? null,
+      title: dto.title ?? null,
+      registrationNumber: dto.registrationNumber ?? null,
       phone: dto.phone,
+      phone2: dto.phone2 ?? null,
+      mobile: dto.mobile ?? null,
+      fax: dto.fax ?? null,
+      telex: dto.telex ?? null,
+      website: dto.website ?? null,
       email: dto.email ?? null,
+      taxOfficeProvince: dto.taxOfficeProvince ?? null,
+      taxOfficeCity: dto.taxOfficeCity ?? null,
       customerGroupId: dto.customerGroupId,
       territoryId: dto.territoryId ?? null,
     };
@@ -319,14 +370,17 @@ export class CustomersService {
   async remove(id: number, userId: number | null = null, ipAddress?: string) {
     const customer = await this.prisma.customer.findUnique({
       where: { id },
-      include: { _count: { select: { contacts: true, addresses: true, notes: true, documents: true, complaints: true } } },
+      include: { _count: { select: { contacts: true, addresses: true, bankAccounts: true, notes: true, documents: true, complaints: true } }, financialProfile: true },
     });
     if (!customer) throw new NotFoundException('مشتری پیدا نشد');
     const counts = customer._count;
-    if (counts.contacts + counts.addresses + counts.notes + counts.documents + counts.complaints > 0) {
-      throw new ConflictException('این مشتری دارای مخاطب، آدرس، یادداشت، مدرک یا شکایت ثبت‌شده است و قابل حذف نیست. به‌جای حذف، آن را بایگانی کنید.');
+    if (counts.contacts + counts.addresses + counts.bankAccounts + counts.notes + counts.documents + counts.complaints > 0) {
+      throw new ConflictException('این مشتری دارای مخاطب، آدرس، حساب بانکی، یادداشت، مدرک یا شکایت ثبت‌شده است و قابل حذف نیست. به‌جای حذف، آن را بایگانی کنید.');
     }
     await this.prisma.$transaction(async (tx) => {
+      const { _count, ...record } = customer;
+      void _count;
+      await archiveDeletedRecord(tx, { entityType: AUDIT_ENTITY.CUSTOMER, entityId: id, label: customer.customerNumber, record, userId });
       await tx.customerFinancialProfile.deleteMany({ where: { customerId: id } });
       // Sales orders reference the customer (onDelete: Restrict) — this
       // module doesn't count them (they're Sales' data), so the FK error is

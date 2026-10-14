@@ -1,5 +1,5 @@
 import { ConflictException, NotFoundException } from '@nestjs/common';
-import { Prisma, type CustomerStatus } from '@prisma/client';
+import { Prisma, type CustomerKind, type CustomerStatus } from '@prisma/client';
 
 // The Customers module's single definition of what its statuses mean, plus
 // the plain DI-free checks other code may import (same pattern as
@@ -102,5 +102,42 @@ export async function getCustomerCreditPolicy(
     creditLimit: profile?.creditLimit == null ? null : new Prisma.Decimal(profile.creditLimit),
     creditHold: profile?.creditHold ?? false,
     paymentTerm: profile?.paymentTerm ?? null,
+  };
+}
+
+export type CustomerInvoiceSnapshot = {
+  name: string;
+  customerKind: CustomerKind;
+  legalName: string | null;
+  economicCode: string | null;
+  registrationNumber: string | null;
+  // The default active BILLING address's phone, else the customer's phone 1.
+  phone: string;
+  billingAddress: { province: string | null; city: string | null; addressLine: string; postalCode: string | null } | null;
+};
+
+// The buyer data a sales invoice snapshots (2026-10-13), so which address is
+// "the billing address" stays Customers' rule (default active BILLING first,
+// else the lowest id). DI-free, same pattern as getCustomerCreditPolicy().
+// The national ID is deliberately NOT part of it (decision B14).
+export async function getCustomerInvoiceSnapshot(tx: Prisma.TransactionClient, customerId: number): Promise<CustomerInvoiceSnapshot> {
+  const customer = await tx.customer.findUnique({
+    where: { id: customerId },
+    select: { name: true, customerKind: true, legalName: true, economicCode: true, registrationNumber: true, phone: true },
+  });
+  if (!customer) throw new ConflictException('مشتری انتخاب‌شده یافت نشد');
+  const address = await tx.customerAddress.findFirst({
+    where: { customerId, isActive: true, addressType: 'BILLING' },
+    orderBy: [{ isDefault: 'desc' }, { id: 'asc' }],
+    select: { province: true, city: true, addressLine: true, postalCode: true, phone: true },
+  });
+  return {
+    name: customer.name,
+    customerKind: customer.customerKind,
+    legalName: customer.legalName,
+    economicCode: customer.economicCode,
+    registrationNumber: customer.registrationNumber,
+    phone: address?.phone ?? customer.phone,
+    billingAddress: address ? { province: address.province, city: address.city, addressLine: address.addressLine, postalCode: address.postalCode } : null,
   };
 }

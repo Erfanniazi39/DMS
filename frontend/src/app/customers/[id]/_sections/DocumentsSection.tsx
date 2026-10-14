@@ -20,12 +20,24 @@ import {
   type CustomerDocumentType,
 } from "../../shared";
 import { DetailSection, type SectionToasts } from "./DetailSection";
+import { SortHeader, useClientTable } from "@/components/ui/sortable";
+import { ListPagination } from "@/components/ui/list-pagination";
+import type { SortValue } from "@/lib/table-sort";
 
 type DocumentForm = { documentType: CustomerDocumentType; documentNumber: string; date: string; expiresAt: string; note: string };
 const emptyDocumentForm: DocumentForm = { documentType: "BUSINESS_LICENSE", documentNumber: "", date: "", expiresAt: "", note: "" };
 
 // Mirrors the backend (customer-documents.service.ts): PDF/PNG/JPEG, 10 MB.
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
+
+// Accessors for in-memory column sorting — each sorts by what its column shows.
+const CUSTOMERS_ID__SECTIONS_DOCUMENTSSECTION_TSX_SORT_GETTERS: Record<string, (row: CustomerDocumentRow) => SortValue> = {
+  documentType: (row) => documentTypeLabels[row.documentType],
+  documentNumber: (row) => row.documentNumber,
+  date: (row) => row.date,
+  expiresAt: (row) => row.expiresAt,
+  note: (row) => row.note,
+};
 
 // «مدارک» — same two-step upload as purchases/[id]/_sections/DocumentsSection:
 // POST /customers/:id/documents (metadata) then
@@ -43,6 +55,8 @@ export function DocumentsSection({
   toasts: SectionToasts;
 }) {
   const { pushError, pushErrors, pushSuccess } = toasts;
+  // Sort + page the (small, already loaded) rows in memory; click a header to sort.
+  const table = useClientTable(customer.documents, CUSTOMERS_ID__SECTIONS_DOCUMENTSSECTION_TSX_SORT_GETTERS, { pageSize: 20 });
   const [dialogOpen, setDialogOpen] = useState(false);
   const [form, setForm] = useState<DocumentForm>(emptyDocumentForm);
   const [file, setFile] = useState<File | null>(null);
@@ -57,6 +71,10 @@ export function DocumentsSection({
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (form.date && form.expiresAt && form.expiresAt < form.date) {
+      pushError("تاریخ انقضا نمی‌تواند قبل از تاریخ صدور باشد.");
+      return;
+    }
     if (file && file.size > MAX_FILE_BYTES) {
       pushError("حجم فایل نباید بیشتر از ۱۰ مگابایت باشد.");
       return;
@@ -125,17 +143,17 @@ export function DocumentsSection({
             <table className="w-full min-w-[44rem] text-right text-sm">
               <thead className="bg-muted/40 text-xs text-muted-foreground">
                 <tr>
-                  <th className="px-3 py-2 font-medium">نوع مدرک</th>
-                  <th className="px-3 py-2 font-medium">شماره</th>
-                  <th className="px-3 py-2 font-medium">تاریخ</th>
-                  <th className="px-3 py-2 font-medium">انقضا</th>
-                  <th className="px-3 py-2 font-medium">یادداشت</th>
+                  <SortHeader label="نوع مدرک" sortKey="documentType" sort={table.sort} onSort={table.onSort} className="px-3 py-2 font-medium" />
+                  <SortHeader label="شماره" sortKey="documentNumber" sort={table.sort} onSort={table.onSort} className="px-3 py-2 font-medium" />
+                  <SortHeader label="تاریخ" sortKey="date" sort={table.sort} onSort={table.onSort} className="px-3 py-2 font-medium" />
+                  <SortHeader label="انقضا" sortKey="expiresAt" sort={table.sort} onSort={table.onSort} className="px-3 py-2 font-medium" />
+                  <SortHeader label="یادداشت" sortKey="note" sort={table.sort} onSort={table.onSort} className="px-3 py-2 font-medium" />
                   <th className="px-3 py-2 font-medium">فایل</th>
                   {canManage ? <th className="px-3 py-2 font-medium">عملیات</th> : null}
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
-                {customer.documents.map((document) => {
+                {table.pageRows.map((document) => {
                   const expired = document.expiresAt !== null && document.expiresAt.slice(0, 10) < today;
                   return (
                     <tr key={document.id}>
@@ -178,6 +196,7 @@ export function DocumentsSection({
             </table>
           </div>
         )}
+            {table.total > table.pageSize ? <ListPagination page={table.page} pageSize={table.pageSize} total={table.total} onPageChange={table.setPage} className="mt-3" /> : null}
       </DetailSection>
 
       <Dialog open={dialogOpen} onOpenChange={(open) => setDialogOpen(open)}>
@@ -207,7 +226,12 @@ export function DocumentsSection({
               </div>
               <div className="flex flex-col gap-2">
                 <Label htmlFor="customer-document-date-year">تاریخ صدور</Label>
-                <JalaliDateInput idPrefix="customer-document-date" value={form.date} onChange={(value) => setForm((current) => ({ ...current, date: value }))} />
+                <JalaliDateInput
+                  idPrefix="customer-document-date"
+                  value={form.date}
+                  // Moving the issue date past an already-picked expiry clears the expiry.
+                  onChange={(value) => setForm((current) => ({ ...current, date: value, expiresAt: value && current.expiresAt && current.expiresAt < value ? "" : current.expiresAt }))}
+                />
               </div>
               <div className="flex flex-col gap-2">
                 <Label htmlFor="customer-document-expires-year">تاریخ انقضا</Label>
@@ -216,6 +240,7 @@ export function DocumentsSection({
                   value={form.expiresAt}
                   onChange={(value) => setForm((current) => ({ ...current, expiresAt: value }))}
                   maxYear={JALALI_MAX_YEAR}
+                  minDate={form.date || undefined}
                 />
               </div>
               <div className="flex flex-col gap-2 md:col-span-2">

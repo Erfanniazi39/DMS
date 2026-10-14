@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { pickJalaliDate } from "./helpers/jalali-date";
 
 // ---------------------------------------------------------------------
 // Four tests, as requested: one add-success, one add-error, one
@@ -82,9 +83,7 @@ async function selectJalaliDate(
   idPrefix: string,
   date: { year: number; month: number; day: number },
 ) {
-  await page.locator(`#${idPrefix}-year`).selectOption(String(date.year));
-  await page.locator(`#${idPrefix}-month`).selectOption(String(date.month));
-  await page.locator(`#${idPrefix}-day`).selectOption(String(date.day));
+  await pickJalaliDate(page, idPrefix, date);
 }
 
 // Fills every field the create/edit form exposes. birthDate/hireDate are

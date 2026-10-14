@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { emptyToUndefined, optionalEmail } from '../../common/zod-fields';
+import { usernameSchema } from './username';
 
 // USER is created independently of EMPLOYEE — no employee reference is
 // accepted here. See docs/database_plan.txt for the current model.
@@ -16,8 +17,12 @@ const optionalPhone = z.preprocess(
     .optional(),
 );
 
+// Display name for pickers and letters; plain account data, never an Employee link.
+const optionalFullName = z.preprocess(emptyToUndefined, z.string().trim().max(100, 'نام و نام خانوادگی حداکثر ۱۰۰ کاراکتر است').optional());
+
 export const createUserSchema = z.object({
-  username: z.string().min(3, 'نام کاربری باید حداقل ۳ کاراکتر باشد'),
+  username: usernameSchema,
+  fullName: optionalFullName,
   password: z.string().min(8, 'رمز عبور باید حداقل ۸ کاراکتر باشد'),
   email: optionalEmail,
   phone: optionalPhone,

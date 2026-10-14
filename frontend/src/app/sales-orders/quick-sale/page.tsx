@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { MoneyInput } from "@/components/ui/money-input";
 import { Label } from "@/components/ui/label";
 import { JalaliDateInput } from "@/components/ui/jalali-date-input";
 import { RequiredMark, selectClass } from "@/components/ui/form-field";
@@ -231,7 +232,7 @@ function QuickSaleScreen() {
                           <Input aria-label="مقدار" inputMode="decimal" className="h-9 tabular-nums" value={line.quantity} onChange={(event) => updateLine(line.key, { quantity: event.target.value })} />
                         </td>
                         <td className="px-2 py-1.5">
-                          <Input aria-label="قیمت واحد" inputMode="decimal" className="h-9 tabular-nums" value={line.unitPrice} onChange={(event) => updateLine(line.key, { unitPrice: event.target.value })} />
+                          <MoneyInput aria-label="قیمت واحد" className="h-9 tabular-nums" value={line.unitPrice} onChange={(value) => updateLine(line.key, { unitPrice: value })} />
                         </td>
                         <td className="px-2 py-2 tabular-nums">{formatMoney(Math.round(quantity * unitPrice))}</td>
                         <td className="px-2 py-1.5">

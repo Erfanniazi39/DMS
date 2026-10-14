@@ -1,4 +1,5 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { suggestNextCode } from '../common/next-code';
 import { PrismaService } from '../prisma/prisma.service';
 import type { CreateUnitDto, UpdateUnitDto } from './dto/unit.dto';
 
@@ -24,13 +25,18 @@ export class UnitsService {
     });
   }
 
+  // The suggested code for the create form (PREFIX-000001, editable there).
+  nextCode() {
+    return suggestNextCode('UNT', (startsWith) => this.prisma.unit.findMany({ where: { code: { startsWith } }, select: { code: true } }));
+  }
+
   async create(dto: CreateUnitDto) {
     await this.ensureUnique(dto.code, dto.nameFa);
 
     let sortOrder = dto.sortOrder;
     if (sortOrder === undefined) {
       const { _max } = await this.prisma.unit.aggregate({ _max: { sortOrder: true } });
-      sortOrder = (_max.sortOrder ?? -1) + 1;
+      sortOrder = (_max.sortOrder ?? 0) + 1;
     }
 
     return this.prisma.unit.create({

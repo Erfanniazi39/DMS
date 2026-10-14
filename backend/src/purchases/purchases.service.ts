@@ -1,7 +1,7 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma, PurchasePaymentStatus, PurchaseSourceType, PurchaseStatus } from '@prisma/client';
 import { randomUUID } from 'crypto';
-import { toSkipTake, type PaginationParams } from '../common/pagination';
+import { toSkipTake, type PaginationParams, buildOrderBy, type SortParams } from '../common/pagination';
 import { isSameVersion, recordModifiedConflict } from '../common/optimistic-lock';
 import { PurchaseQuantitiesService } from './purchase-quantities.service';
 import { derivePaymentStatus, sumItemTotals } from './purchase-totals';
@@ -10,6 +10,7 @@ import { ACTIVE_DEPARTMENT_STATUS } from '../departments/department-rules';
 import { ensureActiveUnits } from '../units/unit-rules';
 import { ensureActivePurchaseType } from '../purchase-types/purchase-type-rules';
 import { AUDIT_ENTITY, AuditService } from '../audit/audit.service';
+import { archiveDeletedRecord } from '../audit/deleted-records';
 import { PurchaseRequestsService } from '../purchase-requests/purchase-requests.service';
 import { LINKABLE_PURCHASE_REQUEST_STATUSES } from '../purchase-requests/purchase-request-rules';
 import { ALLOWED_PURCHASE_STATUS_TRANSITIONS, PURCHASE_STATUS_LABELS_FA, RETURN_BLOCKED_TARGET_STATUSES } from './purchase-rules';
@@ -30,6 +31,7 @@ export type PurchaseListFilters = {
   // All / Operational / Historical reporting — see PurchaseSourceType.
   // Omitted = all purchases, both kinds, from this one table.
   sourceType?: string;
+  sort?: SortParams;
 };
 
 // Shared "everything the detail page needs" include — the list endpoint
@@ -53,6 +55,20 @@ const purchaseDetailInclude = {
   payments: { orderBy: { paymentDate: 'desc' } },
   documents: { orderBy: { date: 'desc' } },
 } satisfies Prisma.PurchaseInclude;
+
+// Columns the purchases table can be sorted by (the first-item/«قلم» count
+// and the derived payment cell are not sortable).
+const PURCHASE_SORT_COLUMNS: Record<string, (dir: 'asc' | 'desc') => Prisma.PurchaseOrderByWithRelationInput> = {
+  purchaseNumber: (dir) => ({ purchaseNumber: dir }),
+  purchaseDate: (dir) => ({ purchaseDate: dir }),
+  supplier: (dir) => ({ supplier: { name: dir } }),
+  purchaseType: (dir) => ({ purchaseType: { nameFa: dir } }),
+  buyer: (dir) => ({ buyerEmployee: { lastName: dir } }),
+  totalAmount: (dir) => ({ totalAmount: dir }),
+  paymentStatus: (dir) => ({ paymentStatus: dir }),
+  status: (dir) => ({ status: dir }),
+  sourceType: (dir) => ({ sourceType: dir }),
+};
 
 @Injectable()
 export class PurchasesService {
@@ -99,7 +115,7 @@ export class PurchasesService {
 
     const query = {
       where,
-      orderBy: [{ purchaseDate: 'desc' }, { id: 'desc' }],
+      orderBy: buildOrderBy(filters.sort, PURCHASE_SORT_COLUMNS, [{ purchaseDate: 'desc' }, { id: 'desc' }], [{ id: 'desc' }]),
       include: {
         purchaseType: true,
         supplier: { select: { id: true, code: true, name: true } },
@@ -351,13 +367,18 @@ export class PurchasesService {
   async remove(id: number, userId: number | null, ipAddress?: string) {
     const purchase = await this.prisma.purchase.findUnique({
       where: { id },
-      include: { _count: { select: { payments: true, documents: true, returns: true } } },
+      include: { _count: { select: { payments: true, documents: true, returns: true } }, items: true },
     });
     if (!purchase) throw new NotFoundException('خرید پیدا نشد');
     if (purchase._count.payments > 0 || purchase._count.documents > 0 || purchase._count.returns > 0) {
       throw new ConflictException('این خرید دارای پرداخت، سند یا برگشت ثبت‌شده است و قابل حذف نیست. ابتدا آن‌ها را حذف کنید.');
     }
-    await this.prisma.purchase.delete({ where: { id } });
+    const { _count, ...record } = purchase;
+    void _count;
+    await this.prisma.$transaction(async (tx) => {
+      await archiveDeletedRecord(tx, { entityType: AUDIT_ENTITY.PURCHASE, entityId: id, label: purchase.purchaseNumber, record, userId });
+      await tx.purchase.delete({ where: { id } });
+    });
     await this.audit.log({ userId, ipAddress, action: 'PURCHASE_DELETED', entityType: AUDIT_ENTITY.PURCHASE, entityId: id, details: purchase.purchaseNumber });
     if (purchase.purchaseRequestId) await this.purchaseRequestsService.recomputeStatus(purchase.purchaseRequestId, userId, ipAddress);
     return { success: true };

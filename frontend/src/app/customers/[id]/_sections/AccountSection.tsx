@@ -8,6 +8,9 @@ import { formatJalali } from "@/lib/jalali";
 import { apiFetch, type ApiError } from "@/lib/api";
 import { formatMoney, StatusBadge } from "../../shared";
 import { DetailSection } from "./DetailSection";
+import { SortHeader, useClientTable } from "@/components/ui/sortable";
+import { ListPagination } from "@/components/ui/list-pagination";
+import type { SortValue } from "@/lib/table-sort";
 
 type OpenInvoiceRow = { id: number; invoiceNumber: string | null; dueDate: string | null; totalAmount: string; openAmount: string };
 type StatementEntry = {
@@ -23,6 +26,13 @@ type StatementEntry = {
 
 const kindLabels: Record<StatementEntry["kind"], string> = { INVOICE: "فاکتور", RECEIPT: "دریافت", REFUND: "بازپرداخت" };
 
+// Accessors for in-memory column sorting — each sorts by what its column shows.
+const CUSTOMERS_ID__SECTIONS_ACCOUNTSECTION_TSX_SORT_GETTERS: Record<string, (row: OpenInvoiceRow) => SortValue> = {
+  invoiceNumber: (row) => row.invoiceNumber,
+  dueDate: (row) => row.dueDate,
+  openAmount: (row) => Number(row.openAmount),
+};
+
 // «حساب مشتری» — balance, open invoices, and (on demand) the full
 // chronological statement. Calls /receivables/... directly (build plan §4's
 // explicit requirement: no backend Customers→Receivables dependency) and is
@@ -31,6 +41,8 @@ const kindLabels: Record<StatementEntry["kind"], string> = { INVOICE: "فاکت�
 export function AccountSection({ customerId, canViewReceivables }: { customerId: number; canViewReceivables: boolean }) {
   const [balance, setBalance] = useState<string | null>(null);
   const [openInvoices, setOpenInvoices] = useState<OpenInvoiceRow[]>([]);
+  // Sort + page the (small, already loaded) rows in memory; click a header to sort.
+  const table = useClientTable(openInvoices, CUSTOMERS_ID__SECTIONS_ACCOUNTSECTION_TSX_SORT_GETTERS, { pageSize: 20 });
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [statementOpen, setStatementOpen] = useState(false);
@@ -115,13 +127,13 @@ export function AccountSection({ customerId, canViewReceivables }: { customerId:
               <table className="w-full text-right text-sm">
                 <thead className="bg-muted/40 text-xs text-muted-foreground">
                   <tr>
-                    <th className="px-3 py-2 font-medium">شماره فاکتور</th>
-                    <th className="px-3 py-2 font-medium">سررسید</th>
-                    <th className="px-3 py-2 font-medium">مانده</th>
+                    <SortHeader label="شماره فاکتور" sortKey="invoiceNumber" sort={table.sort} onSort={table.onSort} className="px-3 py-2 font-medium" />
+                    <SortHeader label="سررسید" sortKey="dueDate" sort={table.sort} onSort={table.onSort} className="px-3 py-2 font-medium" />
+                    <SortHeader label="مانده" sortKey="openAmount" sort={table.sort} onSort={table.onSort} className="px-3 py-2 font-medium" />
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
-                  {openInvoices.map((invoice) => (
+                  {table.pageRows.map((invoice) => (
                     <tr key={invoice.id}>
                       <td className="px-3 py-2 font-mono text-xs">
                         <Link href={`/sales-invoices/${invoice.id}`} className="text-primary hover:underline">{invoice.invoiceNumber ?? `#${invoice.id}`}</Link>
@@ -134,6 +146,7 @@ export function AccountSection({ customerId, canViewReceivables }: { customerId:
               </table>
             </div>
           )}
+              {table.total > table.pageSize ? <ListPagination page={table.page} pageSize={table.pageSize} total={table.total} onPageChange={table.setPage} className="mt-3" /> : null}
 
           {statementOpen ? (
             <div className="overflow-x-auto rounded-md border border-border">

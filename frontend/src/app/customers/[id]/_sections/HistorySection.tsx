@@ -1,5 +1,6 @@
 "use client";
 
+import { useFeature } from "@/lib/session";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { formatJalali } from "@/lib/jalali";
@@ -18,6 +19,9 @@ import {
   type ReferenceOption,
 } from "../../shared";
 import { DetailSection } from "./DetailSection";
+import { SortHeader, useClientTable } from "@/components/ui/sortable";
+import { ListPagination } from "@/components/ui/list-pagination";
+import type { SortValue } from "@/lib/table-sort";
 
 // «تاریخچه تغییرات» — GET /customers/:id/history (customers.view): the
 // customer's audit entries, newest first, including contact/address/note/
@@ -67,13 +71,23 @@ const fieldLabels: Record<string, string> = {
   creditHoldReason: "دلیل توقف اعتباری",
 };
 
+// Accessors for in-memory column sorting — each sorts by what its column shows.
+const CUSTOMERS_ID__SECTIONS_HISTORYSECTION_TSX_SORT_GETTERS: Record<string, (row: CustomerHistoryEntry) => SortValue> = {
+  createdAt: (row) => row.createdAt,
+  user: (row) => row.user?.username ?? null,
+  action: (row) => actionLabels[row.action] ?? row.action,
+};
+
 export function HistorySection({ customerId, reloadKey }: { customerId: number; reloadKey: number }) {
   const [entries, setEntries] = useState<CustomerHistoryEntry[]>([]);
+  // Sort + page the (small, already loaded) rows in memory; click a header to sort.
+  const table = useClientTable(entries, CUSTOMERS_ID__SECTIONS_HISTORYSECTION_TSX_SORT_GETTERS, { pageSize: 20 });
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [retryKey, setRetryKey] = useState(0);
   const [groups, setGroups] = useState<ReferenceOption[]>([]);
   const [terms, setTerms] = useState<PaymentTermOption[]>([]);
+  const paymentTermsOn = useFeature("paymentTerms");
 
   useEffect(() => {
     let ignore = false;
@@ -98,7 +112,7 @@ export function HistorySection({ customerId, reloadKey }: { customerId: number; 
   // For turning group / payment-term ids in `changes` into names.
   useEffect(() => {
     let ignore = false;
-    Promise.all([apiFetch<ReferenceOption[]>("/customer-groups/all"), apiFetch<PaymentTermOption[]>("/payment-terms/all")])
+    Promise.all([apiFetch<ReferenceOption[]>("/customer-groups/all"), paymentTermsOn ? apiFetch<PaymentTermOption[]>("/payment-terms/all") : Promise.resolve([] as PaymentTermOption[])])
       .then(([groupsData, termsData]) => {
         if (ignore) return;
         setGroups(groupsData);
@@ -108,7 +122,7 @@ export function HistorySection({ customerId, reloadKey }: { customerId: number; 
     return () => {
       ignore = true;
     };
-  }, []);
+  }, [paymentTermsOn]);
 
   function formatValue(field: string, value: unknown): string {
     if (value === null || value === undefined || value === "") return "—";
@@ -167,14 +181,14 @@ export function HistorySection({ customerId, reloadKey }: { customerId: number; 
           <table className="w-full min-w-[40rem] text-right text-sm">
             <thead className="bg-muted/40 text-xs text-muted-foreground">
               <tr>
-                <th className="px-3 py-2 font-medium">زمان</th>
-                <th className="px-3 py-2 font-medium">کاربر</th>
-                <th className="px-3 py-2 font-medium">رویداد</th>
+                <SortHeader label="زمان" sortKey="createdAt" sort={table.sort} onSort={table.onSort} className="px-3 py-2 font-medium" />
+                <SortHeader label="کاربر" sortKey="user" sort={table.sort} onSort={table.onSort} className="px-3 py-2 font-medium" />
+                <SortHeader label="رویداد" sortKey="action" sort={table.sort} onSort={table.onSort} className="px-3 py-2 font-medium" />
                 <th className="px-3 py-2 font-medium">جزئیات</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
-              {entries.map((entry) => (
+              {table.pageRows.map((entry) => (
                 <tr key={entry.id} className="align-top">
                   <td className="px-3 py-2 whitespace-nowrap text-muted-foreground">
                     {formatJalali(entry.createdAt)}{" "}
@@ -194,6 +208,7 @@ export function HistorySection({ customerId, reloadKey }: { customerId: number; 
           </table>
         </div>
       )}
+          {table.total > table.pageSize ? <ListPagination page={table.page} pageSize={table.pageSize} total={table.total} onPageChange={table.setPage} className="mt-3" /> : null}
     </DetailSection>
   );
 }

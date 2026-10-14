@@ -135,6 +135,9 @@ export const SALES_ORDER_APPROVAL_REASON_LABELS_FA: Record<SalesOrderApprovalRea
 // Distinct, frontend-detectable 409 codes.
 export const SALES_ORDER_APPROVAL_REQUIRED = 'SALES_ORDER_APPROVAL_REQUIRED';
 export const CREDIT_LIMIT_EXCEEDED = 'CREDIT_LIMIT_EXCEEDED';
+// v1 (salesBackorders flag off): an order can't be confirmed/approved, or
+// submitted for approval, for more than is available at its warehouse.
+export const INSUFFICIENT_STOCK = 'INSUFFICIENT_STOCK';
 // Posting a delivery for a customer currently on credit hold (business
 // decision 2026-10-07, extends B4: a hold blocks delivery posting too, not
 // just order confirmation — no override path).
@@ -146,6 +149,15 @@ export function formatAddress(address: { province: string | null; city: string |
   return [address.province, address.city, address.addressLine, address.postalCode ? `کد پستی ${address.postalCode}` : null]
     .filter((part): part is string => !!part && part.trim() !== '')
     .join('، ');
+}
+
+// «شرایط و نحوه فروش (نقدی یا غیرنقدی)» on the invoice paper is DERIVED from
+// the payment term snapshotted on the invoice, never stored: no due days
+// (cash-only default, decision 6) = cash, otherwise credit.
+export type InvoiceSettlementKind = 'CASH' | 'CREDIT';
+export const INVOICE_SETTLEMENT_LABELS_FA: Record<InvoiceSettlementKind, string> = { CASH: 'نقدی', CREDIT: 'غیرنقدی' };
+export function invoiceSettlementKind(paymentDueDays: number): InvoiceSettlementKind {
+  return paymentDueDays > 0 ? 'CREDIT' : 'CASH';
 }
 
 export function ensureSalesOrderTransition(from: SalesOrderStatus, to: SalesOrderStatus) {

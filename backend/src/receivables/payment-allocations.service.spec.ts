@@ -231,4 +231,23 @@ describe('PaymentAllocationsService', () => {
       expect(suggestion.unallocated).toBe('0');
     });
   });
+  describe('listForInvoice', () => {
+    it('queries allocations targeting the invoice, oldest first, including reversed ones', async () => {
+      const rows = [{ id: 1, amount: dec(500), reversedAt: null }];
+      db.paymentAllocation.findMany.mockResolvedValue(rows);
+      const allocations = buildPaymentAllocationsService(db);
+
+      await expect(allocations.listForInvoice(61)).resolves.toBe(rows);
+
+      expect(db.paymentAllocation.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { targetInvoiceId: 61 }, orderBy: { id: 'asc' } }));
+    });
+  });
+
+  describe('listForSalesOrder', () => {
+    it("queries allocations whose target invoice belongs to the order", async () => {
+      db.paymentAllocation.findMany.mockResolvedValue([]);
+      await buildPaymentAllocationsService(db).listForSalesOrder(28);
+      expect(db.paymentAllocation.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { targetInvoice: { salesOrderId: 28 } } }));
+    });
+  });
 });

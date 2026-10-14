@@ -259,6 +259,9 @@ export const stockAdjustmentListQuerySchema = z.object({
   kind: z.preprocess(emptyToUndefined, enumField(STOCK_ADJUSTMENT_KINDS, 'فیلتر نوع سند نامعتبر است').optional()),
   page: z.string({ error: 'شماره صفحه نامعتبر است' }).optional(),
   pageSize: z.string({ error: 'تعداد ردیف در هر صفحه نامعتبر است' }).optional(),
+  // Column sorting (?sortBy=&sortDir=) — see common/pagination.ts parseSort().
+  sortBy: z.string().optional(),
+  sortDir: z.string().optional(),
 });
 
 // sortBy=available sorts by onHand − reserved (قابل فروش) — the "which item
@@ -272,8 +275,9 @@ export const SORT_DIRECTIONS = ['asc', 'desc'] as const;
 export const stockBalanceListQuerySchema = z.object({
   q: z.string({ error: 'عبارت جستجو نامعتبر است' }).optional(),
   locationId: optionalId('فیلتر انبار نامعتبر است'),
-  sortBy: z.preprocess(emptyToUndefined, enumField(STOCK_BALANCE_SORT_FIELDS, 'فیلتر مرتب‌سازی نامعتبر است').optional()),
-  sortDir: z.preprocess(emptyToUndefined, enumField(SORT_DIRECTIONS, 'جهت مرتب‌سازی نامعتبر است').optional()),
+  // Column sort (?sortBy=&sortDir=) — validated by parseSort() + the whitelist in InventoryService.
+  sortBy: z.string().optional(),
+  sortDir: z.string().optional(),
   // I3 (B14): only rows below their own configured ItemStockLevel threshold.
   lowStockOnly: z.preprocess(emptyToUndefined, z.enum(['true', 'false'], { error: 'فیلتر کمبود موجودی نامعتبر است' }).optional()),
   page: z.string({ error: 'شماره صفحه نامعتبر است' }).optional(),
@@ -308,6 +312,9 @@ export const stockMovementListQuerySchema = z.object({
   dateTo: optionalDate('تاریخ پایان نامعتبر است'),
   page: z.string({ error: 'شماره صفحه نامعتبر است' }).optional(),
   pageSize: z.string({ error: 'تعداد ردیف در هر صفحه نامعتبر است' }).optional(),
+  // Column sorting (?sortBy=&sortDir=) — see common/pagination.ts parseSort().
+  sortBy: z.string().optional(),
+  sortDir: z.string().optional(),
 });
 
 // Inventory locations (warehouses) — plain master data, same shape as

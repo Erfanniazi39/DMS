@@ -8,6 +8,7 @@ import { useToasts, ToastViewport } from "@/components/ui/toast";
 import { formatJalali } from "@/lib/jalali";
 import { apiFetch, type ApiError } from "@/lib/api";
 import { useAdminUser } from "@/app/admin/layout";
+import { useFeature } from "@/lib/session";
 import {
   NoAccess,
   batchHasStock,
@@ -38,6 +39,7 @@ export default function StockCardPage() {
   const user = useAdminUser();
   const canView = user?.permissions.includes("inventory.view") ?? false;
   const canManage = user?.permissions.includes("inventory.manage") ?? false;
+  const batchTrackingOn = useFeature("inventoryBatchTracking");
 
   const [card, setCard] = useState<StockCard | null>(null);
   const [locations, setLocations] = useState<InventoryLocation[]>([]);
@@ -139,7 +141,7 @@ export default function StockCardPage() {
             <p className="mt-1 font-mono text-sm text-muted-foreground">{card.item.code}</p>
           </div>
           <div className="flex flex-wrap items-center gap-4">
-            {canManage ? (
+            {canManage && batchTrackingOn ? (
               <Link href={`/inventory/item-settings?itemId=${card.item.id}`} className="text-sm text-primary hover:underline">
                 تنظیمات بچ و انقضا
               </Link>

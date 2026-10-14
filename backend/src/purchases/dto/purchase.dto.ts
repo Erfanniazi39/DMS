@@ -13,6 +13,7 @@ import {
   requiredQuantity,
   requiredText,
 } from '../../common/zod-fields';
+import { paymentReceiptInfoFields } from '../../common/payment-receipt-fields';
 
 // Field builders live in common/zod-fields.ts — strict on purpose: a
 // missing/blank/null/boolean value on a required field is a 400 with a
@@ -40,7 +41,7 @@ const PURCHASE_PAYMENT_STATUSES = ['UNPAID', 'PARTIAL', 'PAID'] as const;
 // unitPrice is optional — some items (exceptions, lump-sum pricing) have no
 // meaningful per-unit price; totalPrice is what's actually billed and is
 // always required.
-const purchaseItemSchema = z.object({
+export const purchaseItemSchema = z.object({
   name: requiredText(150, 'نام/شرح قلم الزامی است'),
   quantity: requiredQuantity('مقدار'),
   unitId: requiredId('واحد را انتخاب کنید'),
@@ -141,6 +142,9 @@ export const createPurchasePaymentSchema = z.object({
   // the common case.
   status: enumField(PAYMENT_STATUSES, 'وضعیت پرداخت نامعتبر است').default('COMPLETED'),
   note: optionalTrimmedString(500),
+  // Transfer-receipt info (2026-10-13): informational only — never feeds
+  // paidAmount/paymentStatus (CLAUDE.md rule 6).
+  ...paymentReceiptInfoFields,
 }, { error: 'اطلاعات پرداخت نامعتبر است' });
 
 // PATCH /purchases/:id/payments/:paymentId — a full replacement of the
@@ -195,6 +199,9 @@ export const purchaseListQuerySchema = z.object({
   sourceType: z.preprocess(emptyToUndefined, enumField(PURCHASE_SOURCE_TYPES, 'فیلتر نوع منبع خرید نامعتبر است').optional()),
   page: z.string({ error: 'شماره صفحه نامعتبر است' }).optional(),
   pageSize: z.string({ error: 'تعداد ردیف در هر صفحه نامعتبر است' }).optional(),
+  // Column sorting (?sortBy=&sortDir=) — see common/pagination.ts parseSort().
+  sortBy: z.string().optional(),
+  sortDir: z.string().optional(),
 });
 
 export type PurchaseListQuery = z.infer<typeof purchaseListQuerySchema>;

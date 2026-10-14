@@ -1,4 +1,4 @@
-import { cancelSalesOrderSchema, confirmSalesOrderSchema, createSalesOrderSchema } from './sales-order.dto';
+import { cancelSalesOrderSchema, confirmSalesOrderSchema, createSalesOrderSchema, updateSalesOrderSchema } from './sales-order.dto';
 
 const base = { orderDate: '2026-10-06', customerId: 9, items: [{ itemId: 1, quantity: 5, unitPrice: 1000 }] };
 
@@ -19,6 +19,12 @@ describe('sales-order DTOs', () => {
   it('refuses null / blank required fields instead of coercing them', () => {
     expect(createSalesOrderSchema.safeParse({ ...base, customerId: null }).success).toBe(false);
     expect(createSalesOrderSchema.safeParse({ ...base, items: [{ itemId: 1, quantity: '', unitPrice: 1 }] }).success).toBe(false);
+  });
+
+  it('the requested delivery date cannot precede the order date', () => {
+    expect(createSalesOrderSchema.safeParse({ ...base, requestedDeliveryDate: '2026-10-05' }).success).toBe(false);
+    expect(createSalesOrderSchema.safeParse({ ...base, requestedDeliveryDate: '2026-10-06' }).success).toBe(true);
+    expect(updateSalesOrderSchema.safeParse({ ...base, updatedAt: '2026-10-01T10:00:00.000Z', requestedDeliveryDate: '2026-10-05' }).success).toBe(false);
   });
 
   it('cancel requires a reason; confirm defaults submitForApproval to false', () => {

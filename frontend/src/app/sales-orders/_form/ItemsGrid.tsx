@@ -1,12 +1,14 @@
 "use client";
 
-import { Fragment } from "react";
+import { Fragment, useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { MoneyInput } from "@/components/ui/money-input";
 import { RequiredMark, selectClass } from "@/components/ui/form-field";
 import { formatMoney } from "@/lib/format";
 import { parseNumberInput } from "@/lib/number-input";
+import { useFeature } from "@/lib/session";
 import { formatQuantity, type SalesItemOption } from "../shared";
 import { FormSection } from "./FormSection";
 
@@ -67,12 +69,14 @@ export function isBelowList(line: SalesLineRow, listPrice: number | null): boole
 // Discount inputs exist only for sales.approve holders (B3); the backend
 // refuses a discount from anyone else regardless.
 // «موجود» = available at the default warehouse when the form loaded
-// (on hand − reserved) — informational; confirming re-checks under a lock
-// and a shortfall becomes a visible backorder, never a block.
+// (on hand − reserved) — informational; confirming re-checks under a lock.
+// A short line is flagged: amber "backorder" while salesBackorders is on
+// (the v1 default), red "not enough stock" when the backend blocks instead.
 export function ItemsGrid({
   lines,
   setLines,
   itemOptions,
+  categories,
   listPriceFallback,
   canDiscount,
   locationName,
@@ -80,12 +84,17 @@ export function ItemsGrid({
   lines: SalesLineRow[];
   setLines: (update: (current: SalesLineRow[]) => SalesLineRow[]) => void;
   itemOptions: SalesItemOption[];
+  categories: { id: number; nameFa: string }[];
   // itemId → listUnitPrice snapshot, for draft lines whose item is no longer offered.
   listPriceFallback: Map<number, string | null>;
   canDiscount: boolean;
   locationName: string;
 }) {
+  const backordersOn = useFeature("salesBackorders");
+  // Category filter: the item pickers list only that category's items (a line's already-picked item stays visible).
+  const [categoryId, setCategoryId] = useState("");
   const itemById = new Map(itemOptions.map((item) => [item.id, item]));
+  const optionsFor = (line: SalesLineRow) => (categoryId ? itemOptions.filter((option) => String(option.categoryId) === categoryId || String(option.id) === line.itemId) : itemOptions);
   const columnCount = canDiscount ? 10 : 8;
 
   function updateLine(key: string, patch: Partial<SalesLineRow>) {
@@ -99,7 +108,20 @@ export function ItemsGrid({
   }
 
   return (
-    <FormSection title="اقلام سفارش" description={`موجودی قابل فروش از انبار «${locationName}» — فقط جهت اطلاع؛ کسری موجودی مانع تأیید نیست و به‌صورت پس‌افت ثبت می‌شود.`}>
+    <FormSection
+      title="اقلام سفارش"
+      action={
+        <div className="flex items-center gap-2">
+          <label htmlFor="order-item-category" className="text-xs text-muted-foreground">دسته‌بندی کالا</label>
+          <select id="order-item-category" className={`${selectClass} h-8 w-48`} value={categoryId} onChange={(event) => setCategoryId(event.target.value)}>
+            <option value="">همه دسته‌ها</option>
+            {categories.map((category) => (
+              <option key={category.id} value={category.id}>{category.nameFa}</option>
+            ))}
+          </select>
+        </div>
+      }
+      description={`موجودی قابل فروش از انبار «${locationName}» — ${backordersOn ? "فقط جهت اطلاع؛ کسری موجودی مانع تأیید نیست و به‌صورت پس‌افت ثبت می‌شود." : "سفارش بیش از موجودی قابل فروش قابل تأیید نیست."}`}>
       <div className="space-y-2">
         <div className="overflow-x-auto rounded-md border border-border">
           <table className="w-full min-w-[60rem] text-right text-sm">
@@ -139,7 +161,7 @@ export function ItemsGrid({
                       <td className="px-2 pt-1.5">
                         <select aria-label={`کالای ردیف ${row}`} className={`${selectClass} w-full`} value={line.itemId} onChange={(event) => pickItem(line, event.target.value)}>
                           <option value="">انتخاب کنید</option>
-                          {itemOptions.map((option) => (
+                          {optionsFor(line).map((option) => (
                             <option key={option.id} value={option.id}>
                               {option.name} ({option.code})
                             </option>
@@ -147,20 +169,19 @@ export function ItemsGrid({
                         </select>
                       </td>
                       <td className="px-2 pt-1.5 text-muted-foreground">{item?.unit.nameFa ?? "-"}</td>
-                      <td className={`px-2 pt-1.5 tabular-nums ${short ? "font-medium text-warning" : "text-muted-foreground"}`} title={short ? "مقدار سفارش بیشتر از موجودی قابل فروش است" : undefined}>
+                      <td className={`px-2 pt-1.5 tabular-nums ${short ? (backordersOn ? "font-medium text-warning" : "font-medium text-destructive") : "text-muted-foreground"}`} title={short ? "مقدار سفارش بیشتر از موجودی قابل فروش است" : undefined}>
                         {available === null ? "-" : formatQuantity(available)}
+                        {short ? <span className="block text-[11px] font-normal">{backordersOn ? "کسری — پس‌افت" : "موجودی کافی نیست"}</span> : null}
                       </td>
                       <td className="px-2 pt-1.5">
                         <Input aria-label={`مقدار ردیف ${row}`} dir="ltr" inputMode="decimal" value={line.quantity} onChange={(event) => updateLine(line.key, { quantity: event.target.value })} />
                       </td>
                       <td className="px-2 pt-1.5">
-                        <Input
+                        <MoneyInput
                           aria-label={`قیمت واحد ردیف ${row}`}
-                          dir="ltr"
-                          inputMode="numeric"
                           value={line.unitPrice}
                           aria-invalid={belowList && !line.priceOverrideReason.trim() ? true : undefined}
-                          onChange={(event) => updateLine(line.key, { unitPrice: event.target.value })}
+                          onChange={(value) => updateLine(line.key, { unitPrice: value })}
                         />
                       </td>
                       {canDiscount ? (
@@ -176,13 +197,11 @@ export function ItemsGrid({
                             />
                           </td>
                           <td className="px-2 pt-1.5">
-                            <Input
+                            <MoneyInput
                               aria-label={`مبلغ تخفیف ردیف ${row}`}
-                              dir="ltr"
-                              inputMode="numeric"
                               value={line.discountAmount}
                               disabled={line.discountPercent.trim() !== ""}
-                              onChange={(event) => updateLine(line.key, { discountAmount: event.target.value })}
+                              onChange={(value) => updateLine(line.key, { discountAmount: value })}
                             />
                           </td>
                         </>

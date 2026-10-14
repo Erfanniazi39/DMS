@@ -35,6 +35,8 @@ import {
   type SalesOrderStatus,
   type SalesPaymentStatus,
 } from "./shared";
+import { SortHeader, useTableSort } from "@/components/ui/sortable";
+import { sortQuery } from "@/lib/table-sort";
 
 // Same dense toolbar sizing as the Purchases list.
 const toolbarFieldLabel = "text-[11px] font-medium uppercase tracking-wide text-muted-foreground";
@@ -67,6 +69,8 @@ export default function SalesOrdersPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [filters, setFilters] = useState<FilterState>(emptyFilters);
   const [page, setPage] = useState(1);
+  // Server-side column sorting (?sortBy=&sortDir=); a change returns to page 1.
+  const { sort, onSort } = useTableSort(null, () => setPage(1));
   const [total, setTotal] = useState(0);
   const [reloadKey, setReloadKey] = useState(0);
   const lastQueryRef = useRef(filters.q);
@@ -87,7 +91,7 @@ export default function SalesOrdersPage() {
         if (filters.dateTo) params.set("dateTo", filters.dateTo);
         params.set("page", String(page));
         params.set("pageSize", String(LIST_PAGE_SIZE));
-        const data = await apiFetch<Paginated<SalesOrderListItem>>(`/sales-orders?${params.toString()}`);
+        const data = await apiFetch<Paginated<SalesOrderListItem>>(`/sales-orders?${params.toString()}${sortQuery(sort)}`);
         if (cancelled) return;
         if (data.items.length === 0 && data.total > 0 && page > 1) {
           setPage(totalPages(data.total, LIST_PAGE_SIZE));
@@ -109,7 +113,7 @@ export default function SalesOrdersPage() {
       cancelled = true;
       clearTimeout(timeout);
     };
-  }, [filters, page, reloadKey, canView]);
+  }, [filters, page, reloadKey, canView, sort]);
 
   function updateFilter<K extends keyof FilterState>(key: K, value: FilterState[K]) {
     setFilters((current) => ({ ...current, [key]: value }));
@@ -143,6 +147,9 @@ export default function SalesOrdersPage() {
           </div>
           {canManage ? (
             <div className="flex items-center gap-2">
+              <Button variant="outline" onClick={() => router.push("/sales-orders/historical")}>
+                ثبت فروش تاریخی
+              </Button>
               <Button variant="outline" onClick={() => router.push("/sales-orders/quick-sale")}>
                 فروش نقدی سریع
               </Button>
@@ -261,16 +268,16 @@ export default function SalesOrdersPage() {
               <table className="w-full text-right text-sm">
                 <thead className="bg-muted/40 text-xs text-muted-foreground">
                   <tr>
-                    <th className="px-3 py-2.5 font-medium">شماره سفارش</th>
-                    <th className="px-3 py-2.5 font-medium">تاریخ</th>
-                    <th className="px-3 py-2.5 font-medium">مشتری</th>
-                    <th className="px-3 py-2.5 font-medium">فروشنده</th>
+                    <SortHeader label="شماره سفارش" sortKey="orderNumber" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="تاریخ" sortKey="orderDate" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="مشتری" sortKey="customer" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="فروشنده" sortKey="salesperson" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
                     <th className="px-3 py-2.5 font-medium">ردیف</th>
-                    <th className="px-3 py-2.5 font-medium">مبلغ کل</th>
-                    <th className="px-3 py-2.5 font-medium">وضعیت</th>
-                    <th className="px-3 py-2.5 font-medium">تحویل</th>
-                    <th className="px-3 py-2.5 font-medium">فاکتور</th>
-                    <th className="px-3 py-2.5 font-medium">پرداخت</th>
+                    <SortHeader label="مبلغ کل" sortKey="totalAmount" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="وضعیت" sortKey="status" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="تحویل" sortKey="deliveryStatus" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="فاکتور" sortKey="invoicingStatus" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="پرداخت" sortKey="paymentStatus" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
                     <th className="px-3 py-2.5 font-medium">عملیات</th>
                   </tr>
                 </thead>

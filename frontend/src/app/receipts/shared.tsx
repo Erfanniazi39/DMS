@@ -87,6 +87,14 @@ export type CustomerPaymentListItem = {
   chequeDueDate: string | null;
   bankName: string | null;
   note: string | null;
+  // Transfer-receipt info (informational only).
+  transactionTime: string | null;
+  transactionType: string | null;
+  depositId: string | null;
+  withdrawalId: string | null;
+  sourceAccount: string | null;
+  destinationAccount: string | null;
+  destinationAccountHolder: string | null;
   customer: { id: number; customerNumber: string; name: string };
 };
 

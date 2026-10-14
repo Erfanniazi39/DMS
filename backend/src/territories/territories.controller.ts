@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Param, ParseIntPipe, Patch, Post, Req, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
+import { RequireFeature } from '../common/feature-flags';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { SessionAuthGuard } from '../auth/guards/session-auth.guard';
@@ -16,6 +17,7 @@ import { TerritoriesService } from './territories.service';
 // Group is customer master data).
 @Controller('territories')
 @UseGuards(SessionAuthGuard, PermissionsGuard)
+@RequireFeature('customerTerritories')
 export class TerritoriesController {
   constructor(private readonly territoriesService: TerritoriesService) {}
 
@@ -24,6 +26,13 @@ export class TerritoriesController {
   @Get()
   list() {
     return this.territoriesService.list();
+  }
+
+  // Suggested code for a new record — declared before any ':id' route.
+  @Get('next-code')
+  @RequirePermissions('customers.manage')
+  nextCode() {
+    return this.territoriesService.nextCode();
   }
 
   // Every territory including inactive ones, for the /territories page.

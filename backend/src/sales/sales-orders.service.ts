@@ -1,27 +1,66 @@
-import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
-import { Prisma, type SalesDeliveryStatus, type SalesInvoicingStatus, type SalesOrderStatus, type SalesPaymentStatus } from '@prisma/client';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import {
+  Prisma,
+  type SalesDeliveryStatus,
+  type SalesInvoicingStatus,
+  type SalesOrderStatus,
+  type SalesPaymentStatus,
+} from '@prisma/client';
 import { nextDocumentNumber } from '../common/document-sequence';
-import { isSameVersion, recordModifiedConflict } from '../common/optimistic-lock';
-import { toSkipTake, type PaginationParams } from '../common/pagination';
+import { isFeatureEnabled } from '../common/feature-flags';
+import {
+  isSameVersion,
+  recordModifiedConflict,
+} from '../common/optimistic-lock';
+import {
+  toSkipTake,
+  type PaginationParams,
+  buildOrderBy,
+  type SortParams,
+} from '../common/pagination';
 import { toIsoDay } from '../common/zod-fields';
 import { AUDIT_ENTITY, AuditService } from '../audit/audit.service';
-import { ensureTransactableCustomer, getCustomerCreditPolicy } from '../customers/customer-rules';
+import { archiveDeletedRecord } from '../audit/deleted-records';
+import {
+  ensureTransactableCustomer,
+  getCustomerCreditPolicy,
+} from '../customers/customer-rules';
 import { InventoryService } from '../inventory/inventory.service';
-import { releaseReserved, reserveAvailable, type StockEventContext } from '../inventory/stock-ledger';
+import {
+  releaseReserved,
+  reserveAvailable,
+  type StockEventContext,
+} from '../inventory/stock-ledger';
 import { PrismaService } from '../prisma/prisma.service';
-import { computeExposure, evaluateCredit, type CreditCheck } from './sales-credit';
+import {
+  computeExposure,
+  evaluateCredit,
+  type CreditCheck,
+} from './sales-credit';
 import {
   CREDIT_LIMIT_EXCEEDED,
   EDITABLE_SALES_ORDER_STATUSES,
   ensureSalesOrderTransition,
   formatAddress,
+  INSUFFICIENT_STOCK,
   SALES_ORDER_APPROVAL_REASON_LABELS_FA,
   SALES_ORDER_APPROVAL_REQUIRED,
   SALES_ORDER_DOC_TYPE,
   SALES_ORDER_STATUS_LABELS_FA,
   type SalesOrderApprovalReason,
 } from './sales-rules';
-import { computeLineAmounts, hasAnyDiscount, sumOrderTotals, type SalesLineAmounts } from './sales-totals';
+import {
+  computeLineAmounts,
+  hasAnyDiscount,
+  sumOrderTotals,
+  type SalesLineAmounts,
+} from './sales-totals';
 import type {
   ApproveSalesOrderDto,
   CancelSalesOrderDto,
@@ -57,10 +96,12 @@ export type SalesOrderListFilters = {
   customerId?: number;
   dateFrom?: Date;
   dateTo?: Date;
+  sort?: SortParams;
 };
 
 // A line that couldn't be fully reserved at confirmation — a visible
-// backorder, never a block (build plan §5).
+// backorder (build plan §5). Only reachable with the salesBackorders flag
+// on; in v1 a shortfall is an INSUFFICIENT_STOCK refusal instead.
 export type SalesOrderBackorder = {
   lineNo: number;
   itemId: number;
@@ -70,15 +111,52 @@ export type SalesOrderBackorder = {
   shortfall: string;
 };
 
+type ShortLine = {
+  lineNo: number;
+  itemId: number;
+  itemName: string;
+  requested: Prisma.Decimal;
+  available: Prisma.Decimal;
+};
+
+function insufficientStockConflict(lines: ShortLine[]) {
+  const summary = lines
+    .map(
+      (line) =>
+        `ردیف ${line.lineNo} «${line.itemName}»: درخواستی ${line.requested.toString()}، قابل فروش ${line.available.toString()}`,
+    )
+    .join('؛ ');
+  return new ConflictException({
+    statusCode: 409,
+    code: INSUFFICIENT_STOCK,
+    message: `موجودی کافی برای این سفارش وجود ندارد — ${summary}`,
+    details: {
+      lines: lines.map((line) => ({
+        ...line,
+        requested: line.requested.toString(),
+        available: line.available.toString(),
+      })),
+    },
+  });
+}
+
 const userSelect = { select: { id: true, username: true } } as const;
 
 // Everything the detail page needs. Employee narrowed to display fields
 // (never national ID / salary / bank — CLAUDE.md, same as Purchases).
 const salesOrderDetailInclude = {
-  customer: { select: { id: true, customerNumber: true, name: true, status: true } },
-  deliveryAddress: { select: { id: true, addressType: true, label: true, isActive: true } },
-  paymentTerm: { select: { id: true, code: true, nameFa: true, dueDays: true } },
-  salespersonEmployee: { select: { id: true, code: true, firstName: true, lastName: true } },
+  customer: {
+    select: { id: true, customerNumber: true, name: true, status: true },
+  },
+  deliveryAddress: {
+    select: { id: true, addressType: true, label: true, isActive: true },
+  },
+  paymentTerm: {
+    select: { id: true, code: true, nameFa: true, dueDays: true },
+  },
+  salespersonEmployee: {
+    select: { id: true, code: true, firstName: true, lastName: true },
+  },
   location: { select: { id: true, code: true, name: true } },
   createdByUser: userSelect,
   approvedByUser: userSelect,
@@ -122,6 +200,23 @@ function today() {
   return new Date(`${toIsoDay(new Date())}T00:00:00.000Z`);
 }
 
+// Columns the sales-orders table can be sorted by (the line count and the
+// «تحویل/فاکتور» progress cells are derived, so not sortable).
+const SALES_ORDER_SORT_COLUMNS: Record<
+  string,
+  (dir: 'asc' | 'desc') => Prisma.SalesOrderOrderByWithRelationInput
+> = {
+  orderNumber: (dir) => ({ orderNumber: dir }),
+  orderDate: (dir) => ({ orderDate: dir }),
+  customer: (dir) => ({ customerName: dir }),
+  salesperson: (dir) => ({ salespersonEmployee: { lastName: dir } }),
+  totalAmount: (dir) => ({ totalAmount: dir }),
+  status: (dir) => ({ status: dir }),
+  deliveryStatus: (dir) => ({ deliveryStatus: dir }),
+  invoicingStatus: (dir) => ({ invoicingStatus: dir }),
+  paymentStatus: (dir) => ({ paymentStatus: dir }),
+};
+
 // سفارش فروش — lifecycle per docs/sales-module-build-plan.md §5:
 //
 //   create/update/remove  DRAFT only (no number, no stock effect; snapshots
@@ -153,7 +248,10 @@ export class SalesOrdersService {
   ) {}
 
   // Same opt-in pagination contract as the other list endpoints.
-  async list(filters: SalesOrderListFilters = {}, pagination?: PaginationParams) {
+  async list(
+    filters: SalesOrderListFilters = {},
+    pagination?: PaginationParams,
+  ) {
     const where: Prisma.SalesOrderWhereInput = {};
     if (filters.q) {
       where.OR = [
@@ -164,7 +262,8 @@ export class SalesOrdersService {
     }
     if (filters.status) where.status = filters.status;
     if (filters.deliveryStatus) where.deliveryStatus = filters.deliveryStatus;
-    if (filters.invoicingStatus) where.invoicingStatus = filters.invoicingStatus;
+    if (filters.invoicingStatus)
+      where.invoicingStatus = filters.invoicingStatus;
     if (filters.paymentStatus) where.paymentStatus = filters.paymentStatus;
     if (filters.customerId) where.customerId = filters.customerId;
     if (filters.dateFrom || filters.dateTo) {
@@ -175,10 +274,17 @@ export class SalesOrdersService {
     }
     const query = {
       where,
-      orderBy: [{ orderDate: 'desc' }, { id: 'desc' }],
+      orderBy: buildOrderBy(
+        filters.sort,
+        SALES_ORDER_SORT_COLUMNS,
+        [{ orderDate: 'desc' }, { id: 'desc' }],
+        [{ id: 'desc' }],
+      ),
       include: {
         customer: { select: { id: true, customerNumber: true } },
-        salespersonEmployee: { select: { id: true, firstName: true, lastName: true } },
+        salespersonEmployee: {
+          select: { id: true, firstName: true, lastName: true },
+        },
         _count: { select: { items: true } },
       },
     } satisfies Prisma.SalesOrderFindManyArgs;
@@ -188,11 +294,19 @@ export class SalesOrdersService {
       this.prisma.salesOrder.findMany({ ...query, ...toSkipTake(pagination) }),
       this.prisma.salesOrder.count({ where }),
     ]);
-    return { items, total, page: pagination.page, pageSize: pagination.pageSize };
+    return {
+      items,
+      total,
+      page: pagination.page,
+      pageSize: pagination.pageSize,
+    };
   }
 
   async get(id: number) {
-    const order = await this.prisma.salesOrder.findUnique({ where: { id }, include: salesOrderDetailInclude });
+    const order = await this.prisma.salesOrder.findUnique({
+      where: { id },
+      include: salesOrderDetailInclude,
+    });
     if (!order) throw new NotFoundException('سفارش فروش پیدا نشد');
     return order;
   }
@@ -237,10 +351,14 @@ export class SalesOrdersService {
   // transaction, so an edit can't land on an order that was confirmed or
   // submitted for approval in the meantime.
   async update(id: number, dto: UpdateSalesOrderDto, actor: SalesActor) {
-    const existing = await this.prisma.salesOrder.findUnique({ where: { id }, include: { items: true } });
+    const existing = await this.prisma.salesOrder.findUnique({
+      where: { id },
+      include: { items: true },
+    });
     if (!existing) throw new NotFoundException('سفارش فروش پیدا نشد');
     this.ensureEditable(existing.status);
-    if (!isSameVersion(existing.updatedAt, dto.updatedAt)) throw recordModifiedConflict();
+    if (!isSameVersion(existing.updatedAt, dto.updatedAt))
+      throw recordModifiedConflict();
     this.ensureDiscountAllowed(dto.items, actor, existing.items);
     const prepared = await this.prepareDraft(dto, existing);
 
@@ -275,13 +393,23 @@ export class SalesOrdersService {
   async remove(id: number, actor: SalesActor) {
     await this.prisma.$transaction(async (tx) => {
       await this.lockOrder(tx, id);
-      const order = await tx.salesOrder.findUnique({ where: { id }, select: { id: true, status: true, customerName: true } });
+      const order = await tx.salesOrder.findUnique({
+        where: { id },
+        include: { items: true },
+      });
       if (!order) throw new NotFoundException('سفارش فروش پیدا نشد');
       if (!EDITABLE_SALES_ORDER_STATUSES.includes(order.status)) {
         throw new ConflictException(
           `فقط سفارش «پیش‌نویس» قابل حذف است؛ این سفارش «${SALES_ORDER_STATUS_LABELS_FA[order.status]}» است. سفارش تأییدشده را می‌توان لغو یا بست.`,
         );
       }
+      await archiveDeletedRecord(tx, {
+        entityType: AUDIT_ENTITY.SALES_ORDER,
+        entityId: id,
+        label: order.customerName,
+        record: order,
+        userId: actor.userId,
+      });
       await tx.salesOrder.delete({ where: { id } });
       await this.audit.log(
         {
@@ -308,11 +436,14 @@ export class SalesOrdersService {
   // The customer gate (inactive / credit hold) blocks everyone, always.
   async confirm(id: number, dto: ConfirmSalesOrderDto, actor: SalesActor) {
     if (dto.creditOverrideReason && !actor.canApprove) {
-      throw new ForbiddenException('فقط کاربر دارای مجوز «تأیید فروش» می‌تواند از سقف اعتبار عبور کند');
+      throw new ForbiddenException(
+        'فقط کاربر دارای مجوز «تأیید فروش» می‌تواند از سقف اعتبار عبور کند',
+      );
     }
     const backorders = await this.prisma.$transaction(async (tx) => {
       const order = await this.loadLocked(tx, id);
-      if (!isSameVersion(order.updatedAt, dto.updatedAt)) throw recordModifiedConflict();
+      if (!isSameVersion(order.updatedAt, dto.updatedAt))
+        throw recordModifiedConflict();
       // DRAFT only: PENDING_APPROVAL → CONFIRMED is legal in the matrix but
       // belongs to approve() (sales.approve) — otherwise a salesperson could
       // confirm their own pending order here once the reason went away.
@@ -324,36 +455,60 @@ export class SalesOrdersService {
         );
       }
       ensureSalesOrderTransition(order.status, 'CONFIRMED');
-      if (order.items.length === 0) throw new BadRequestException('سفارش بدون ردیف کالا قابل تأیید نیست');
+      if (order.items.length === 0)
+        throw new BadRequestException('سفارش بدون ردیف کالا قابل تأیید نیست');
       await ensureTransactableCustomer(tx, order.customerId);
-      const credit = await evaluateCredit(tx, order.customerId, order.totalAmount, { excludeSalesOrderId: order.id });
+      const credit = await this.checkCredit(tx, order);
 
       const reasons: SalesOrderApprovalReason[] = [];
       if (hasAnyDiscount(order.items)) reasons.push('DISCOUNT');
       if (credit.exceeded) reasons.push('CREDIT_LIMIT');
 
       if (actor.canApprove) {
-        if (credit.exceeded && !dto.creditOverrideReason) throw this.creditConflict(credit, actor);
+        if (credit.exceeded && !dto.creditOverrideReason)
+          throw this.creditConflict(credit, actor);
         return this.finalizeConfirm(tx, order, actor, {
           approved: reasons.length > 0,
-          creditOverrideReason: credit.exceeded ? dto.creditOverrideReason! : null,
+          creditOverrideReason: credit.exceeded
+            ? dto.creditOverrideReason!
+            : null,
           credit,
         });
       }
 
-      if (reasons.length === 0) return this.finalizeConfirm(tx, order, actor, { approved: false, creditOverrideReason: null, credit });
+      if (reasons.length === 0)
+        return this.finalizeConfirm(tx, order, actor, {
+          approved: false,
+          creditOverrideReason: null,
+          credit,
+        });
 
       if (!dto.submitForApproval) {
-        const labels = reasons.map((reason) => SALES_ORDER_APPROVAL_REASON_LABELS_FA[reason]).join('؛ ');
+        const labels = reasons
+          .map((reason) => SALES_ORDER_APPROVAL_REASON_LABELS_FA[reason])
+          .join('؛ ');
         throw new ConflictException({
           statusCode: 409,
           code: SALES_ORDER_APPROVAL_REQUIRED,
           message: `تأیید این سفارش نیاز به مجوز «تأیید فروش» دارد (${labels}). برای ادامه، سفارش را برای تأیید ارسال کنید.`,
-          details: { reasons, ...(actor.canViewCredit && credit.exceeded ? { credit: this.creditDetails(credit) } : {}) },
+          details: {
+            reasons,
+            ...(actor.canViewCredit && credit.exceeded
+              ? { credit: this.creditDetails(credit) }
+              : {}),
+          },
         });
       }
       ensureSalesOrderTransition(order.status, 'PENDING_APPROVAL');
-      await tx.salesOrder.update({ where: { id }, data: { status: 'PENDING_APPROVAL' } });
+      // Non-binding early refusal so an approver isn't handed an order that
+      // can't be filled; finalizeConfirm() re-checks under row locks, since
+      // nothing is reserved while the order waits.
+      if (!isFeatureEnabled('salesBackorders'))
+        await this.ensureStockForSubmit(order);
+      await tx.salesOrder.update({
+        where: { id },
+        data: { status: 'PENDING_APPROVAL' },
+      });
       await this.audit.log(
         {
           userId: actor.userId,
@@ -361,7 +516,9 @@ export class SalesOrdersService {
           action: 'SALES_ORDER_SUBMITTED_FOR_APPROVAL',
           entityType: AUDIT_ENTITY.SALES_ORDER,
           entityId: id,
-          details: reasons.map((reason) => SALES_ORDER_APPROVAL_REASON_LABELS_FA[reason]).join('؛ '),
+          details: reasons
+            .map((reason) => SALES_ORDER_APPROVAL_REASON_LABELS_FA[reason])
+            .join('؛ '),
         },
         tx,
       );
@@ -376,17 +533,23 @@ export class SalesOrdersService {
   async approve(id: number, dto: ApproveSalesOrderDto, actor: SalesActor) {
     const backorders = await this.prisma.$transaction(async (tx) => {
       const order = await this.loadLocked(tx, id);
-      if (!isSameVersion(order.updatedAt, dto.updatedAt)) throw recordModifiedConflict();
+      if (!isSameVersion(order.updatedAt, dto.updatedAt))
+        throw recordModifiedConflict();
       if (order.status !== 'PENDING_APPROVAL') {
-        throw new ConflictException(`فقط سفارش «در انتظار تأیید» قابل تأیید است؛ این سفارش «${SALES_ORDER_STATUS_LABELS_FA[order.status]}» است`);
+        throw new ConflictException(
+          `فقط سفارش «در انتظار تأیید» قابل تأیید است؛ این سفارش «${SALES_ORDER_STATUS_LABELS_FA[order.status]}» است`,
+        );
       }
       await ensureTransactableCustomer(tx, order.customerId);
-      const credit = await evaluateCredit(tx, order.customerId, order.totalAmount, { excludeSalesOrderId: order.id });
-      if (credit.exceeded && !dto.creditOverrideReason) throw this.creditConflict(credit, actor);
+      const credit = await this.checkCredit(tx, order);
+      if (credit.exceeded && !dto.creditOverrideReason)
+        throw this.creditConflict(credit, actor);
       return this.finalizeConfirm(tx, order, actor, {
         approved: true,
         approvalNote: dto.note ?? null,
-        creditOverrideReason: credit.exceeded ? dto.creditOverrideReason! : null,
+        creditOverrideReason: credit.exceeded
+          ? dto.creditOverrideReason!
+          : null,
         credit,
       });
     });
@@ -398,9 +561,12 @@ export class SalesOrdersService {
   async reject(id: number, dto: RejectSalesOrderDto, actor: SalesActor) {
     await this.prisma.$transaction(async (tx) => {
       const order = await this.loadLocked(tx, id);
-      if (!isSameVersion(order.updatedAt, dto.updatedAt)) throw recordModifiedConflict();
+      if (!isSameVersion(order.updatedAt, dto.updatedAt))
+        throw recordModifiedConflict();
       if (order.status !== 'PENDING_APPROVAL') {
-        throw new ConflictException(`فقط سفارش «در انتظار تأیید» قابل رد است؛ این سفارش «${SALES_ORDER_STATUS_LABELS_FA[order.status]}» است`);
+        throw new ConflictException(
+          `فقط سفارش «در انتظار تأیید» قابل رد است؛ این سفارش «${SALES_ORDER_STATUS_LABELS_FA[order.status]}» است`,
+        );
       }
       ensureSalesOrderTransition(order.status, 'DRAFT');
       await tx.salesOrder.update({ where: { id }, data: { status: 'DRAFT' } });
@@ -441,32 +607,62 @@ export class SalesOrdersService {
   // InventoryService (display only — confirmation re-checks under a lock).
   async formOptions() {
     const location = await this.inventory.getDefaultLocation();
-    const [customers, items, employees, availability] = await Promise.all([
-      this.prisma.customer.findMany({
-        where: { status: 'ACTIVE' },
-        select: { id: true, customerNumber: true, name: true, financialProfile: { select: { creditHold: true } } },
-        orderBy: [{ name: 'asc' }, { id: 'asc' }],
-      }),
-      // FINISHED_GOOD only (Inventory build plan I1, B2): raw materials and
-      // packaging are tracked as stock but are never sellable.
-      this.prisma.item.findMany({
-        where: { status: 'active', itemKind: 'FINISHED_GOOD' },
-        select: { id: true, code: true, name: true, sellingPrice: true, unit: { select: { id: true, nameFa: true } } },
-        orderBy: [{ name: 'asc' }, { id: 'asc' }],
-      }),
-      this.prisma.employee.findMany({
-        where: { status: 'active' },
-        select: { id: true, code: true, firstName: true, lastName: true },
-        orderBy: [{ lastName: 'asc' }, { firstName: 'asc' }, { id: 'asc' }],
-      }),
-      this.inventory.listAvailability(location.id),
-    ]);
-    const availableByItem = new Map(availability.map((row) => [row.itemId, row.available]));
+    const [customers, items, employees, availability, categories] =
+      await Promise.all([
+        this.prisma.customer.findMany({
+          where: { status: 'ACTIVE' },
+          select: {
+            id: true,
+            customerNumber: true,
+            name: true,
+            financialProfile: { select: { creditHold: true } },
+          },
+          orderBy: [{ name: 'asc' }, { id: 'asc' }],
+        }),
+        // FINISHED_GOOD only (Inventory build plan I1, B2): raw materials and
+        // packaging are tracked as stock but are never sellable.
+        this.prisma.item.findMany({
+          where: { status: 'active', itemKind: 'FINISHED_GOOD' },
+          select: {
+            id: true,
+            code: true,
+            name: true,
+            sellingPrice: true,
+            categoryId: true,
+            unit: { select: { id: true, nameFa: true } },
+          },
+          orderBy: [{ name: 'asc' }, { id: 'asc' }],
+        }),
+        this.prisma.employee.findMany({
+          where: { status: 'active' },
+          select: { id: true, code: true, firstName: true, lastName: true },
+          orderBy: [{ lastName: 'asc' }, { firstName: 'asc' }, { id: 'asc' }],
+        }),
+        this.inventory.listAvailability(location.id),
+        // Read-only display lookup (rule 11 exception): the order form's category filter.
+        this.prisma.itemCategory.findMany({
+          where: { isActive: true },
+          select: { id: true, nameFa: true },
+          orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }],
+        }),
+      ]);
+    const availableByItem = new Map(
+      availability.map((row) => [row.itemId, row.available]),
+    );
     return {
       location: { id: location.id, code: location.code, name: location.name },
-      customers: customers.map(({ financialProfile, ...customer }) => ({ ...customer, creditHold: financialProfile?.creditHold ?? false })),
-      items: items.map((item) => ({ ...item, available: (availableByItem.get(item.id) ?? new Prisma.Decimal(0)).toString() })),
+      customers: customers.map(({ financialProfile, ...customer }) => ({
+        ...customer,
+        creditHold: financialProfile?.creditHold ?? false,
+      })),
+      items: items.map((item) => ({
+        ...item,
+        available: (
+          availableByItem.get(item.id) ?? new Prisma.Decimal(0)
+        ).toString(),
+      })),
       employees,
+      categories,
     };
   }
 
@@ -476,28 +672,66 @@ export class SalesOrdersService {
   async customerContext(customerId: number, actor: SalesActor) {
     const customer = await this.prisma.customer.findUnique({
       where: { id: customerId },
-      select: { id: true, customerNumber: true, name: true, status: true, economicCode: true },
+      select: {
+        id: true,
+        customerNumber: true,
+        name: true,
+        status: true,
+        economicCode: true,
+        // Main facts for the order form's customer panel (read-only display lookup).
+        customerKind: true,
+        title: true,
+        legalName: true,
+        registrationNumber: true,
+        phone: true,
+        phone2: true,
+        mobile: true,
+        email: true,
+        customerGroup: { select: { nameFa: true } },
+        contacts: { where: { isActive: true, isPrimary: true }, select: { name: true, roleTitle: true, mobile: true, phone: true }, take: 1 },
+      },
     });
     if (!customer) throw new NotFoundException('مشتری پیدا نشد');
     const [addresses, policy] = await Promise.all([
       this.prisma.customerAddress.findMany({
         where: { customerId, isActive: true },
-        select: { id: true, addressType: true, label: true, province: true, city: true, addressLine: true, postalCode: true, isDefault: true },
+        select: {
+          id: true,
+          addressType: true,
+          label: true,
+          province: true,
+          city: true,
+          addressLine: true,
+          postalCode: true,
+          isDefault: true,
+        },
         orderBy: [{ isDefault: 'desc' }, { id: 'asc' }],
       }),
       getCustomerCreditPolicy(this.prisma, customerId),
     ]);
-    let credit: { creditLimit: string | null; exposure: string; available: string } | null = null;
-    if (actor.canViewCredit) {
+    let credit: {
+      creditLimit: string | null;
+      exposure: string;
+      available: string;
+    } | null = null;
+    if (actor.canViewCredit && isFeatureEnabled('customerCreditLimit')) {
       const exposure = await computeExposure(this.prisma, customerId);
       const limit = policy.creditLimit ?? new Prisma.Decimal(0);
-      credit = { creditLimit: policy.creditLimit?.toString() ?? null, exposure: exposure.total.toString(), available: limit.minus(exposure.total).toString() };
+      credit = {
+        creditLimit: policy.creditLimit?.toString() ?? null,
+        exposure: exposure.total.toString(),
+        available: limit.minus(exposure.total).toString(),
+      };
     }
+    const { customerGroup, contacts, ...customerFields } = customer;
     return {
-      customer,
+      customer: { ...customerFields, groupName: customerGroup?.nameFa ?? null, primaryContact: contacts[0] ?? null },
       creditHold: policy.creditHold,
       paymentTerm: policy.paymentTerm,
-      addresses: addresses.map((address) => ({ ...address, text: formatAddress(address) })),
+      addresses: addresses.map((address) => ({
+        ...address,
+        text: formatAddress(address),
+      })),
       credit,
     };
   }
@@ -512,10 +746,68 @@ export class SalesOrdersService {
     await this.lockOrder(tx, id);
     const order = await tx.salesOrder.findUnique({
       where: { id },
-      include: { items: { orderBy: { lineNo: 'asc' } }, location: { select: { isActive: true } } },
+      include: {
+        items: { orderBy: { lineNo: 'asc' } },
+        location: { select: { isActive: true } },
+      },
     });
     if (!order) throw new NotFoundException('سفارش فروش پیدا نشد');
     return order;
+  }
+
+  // v1 (customerCreditLimit flag off): the credit limit (B4) is out of scope —
+  // no limit check, no CREDIT_LIMIT approval reason, no override. Credit hold
+  // still blocks via ensureTransactableCustomer().
+  private checkCredit(
+    tx: Prisma.TransactionClient,
+    order: { customerId: number; id: number; totalAmount: Prisma.Decimal },
+  ): Promise<CreditCheck> {
+    if (isFeatureEnabled('customerCreditLimit')) {
+      return evaluateCredit(tx, order.customerId, order.totalAmount, {
+        excludeSalesOrderId: order.id,
+      });
+    }
+    const zero = new Prisma.Decimal(0);
+    const amount = new Prisma.Decimal(order.totalAmount);
+    return Promise.resolve({
+      creditLimit: null,
+      effectiveLimit: zero,
+      exposure: { openInvoices: zero, uninvoicedOrders: zero, total: zero },
+      orderAmount: amount,
+      projected: amount,
+      exceeded: false,
+      excess: zero,
+    });
+  }
+
+  private async ensureStockForSubmit(
+    order: Awaited<ReturnType<SalesOrdersService['loadLocked']>>,
+  ) {
+    const availability = await this.inventory.listAvailability(
+      order.locationId,
+    );
+    const free = new Map(
+      availability.map((row) => [
+        row.itemId,
+        Prisma.Decimal.max(0, row.available),
+      ]),
+    );
+    const short: ShortLine[] = [];
+    for (const line of order.items) {
+      const remaining = free.get(line.itemId) ?? new Prisma.Decimal(0);
+      const requested = new Prisma.Decimal(line.quantity);
+      if (requested.greaterThan(remaining)) {
+        short.push({
+          lineNo: line.lineNo,
+          itemId: line.itemId,
+          itemName: line.itemName,
+          requested,
+          available: remaining,
+        });
+      }
+      free.set(line.itemId, Prisma.Decimal.max(0, remaining.minus(requested)));
+    }
+    if (short.length > 0) throw insufficientStockConflict(short);
   }
 
   // The CONFIRMED write, shared by confirm() and approve(). Runs inside the
@@ -524,26 +816,71 @@ export class SalesOrdersService {
     tx: Prisma.TransactionClient,
     order: Awaited<ReturnType<SalesOrdersService['loadLocked']>>,
     actor: SalesActor,
-    options: { approved: boolean; approvalNote?: string | null; creditOverrideReason: string | null; credit: CreditCheck },
+    options: {
+      approved: boolean;
+      approvalNote?: string | null;
+      creditOverrideReason: string | null;
+      credit: CreditCheck;
+    },
   ): Promise<SalesOrderBackorder[]> {
-    if (!order.location?.isActive) throw new ConflictException('انبار این سفارش غیرفعال است');
+    if (!order.location?.isActive)
+      throw new ConflictException('انبار این سفارش غیرفعال است');
 
-    const orderNumber = await nextDocumentNumber(tx, SALES_ORDER_DOC_TYPE, order.orderDate);
-    const results = await reserveAvailable(
+    const orderNumber = await nextDocumentNumber(
       tx,
-      {
-        locationId: order.locationId,
-        movementDate: order.orderDate,
-        referenceType: 'SALES_ORDER',
-        referenceId: order.id,
-        referenceNumber: orderNumber,
-        createdByUserId: actor.userId,
-      },
-      order.items.map((line) => ({ referenceLineId: line.id, itemId: line.itemId, quantity: line.quantity })),
+      SALES_ORDER_DOC_TYPE,
+      order.orderDate,
     );
+    // salesStockEffects off (v1): no reservation — every line confirms with nothing reserved and no backorder.
+    const results = !isFeatureEnabled('salesStockEffects')
+      ? order.items.map((line) => ({
+          referenceLineId: line.id,
+          requested: new Prisma.Decimal(line.quantity),
+          reserved: new Prisma.Decimal(0),
+          shortfall: new Prisma.Decimal(0),
+        }))
+      : await reserveAvailable(
+          tx,
+          {
+            locationId: order.locationId,
+            movementDate: order.orderDate,
+            referenceType: 'SALES_ORDER',
+            referenceId: order.id,
+            referenceNumber: orderNumber,
+            createdByUserId: actor.userId,
+          },
+          order.items.map((line) => ({
+            referenceLineId: line.id,
+            itemId: line.itemId,
+            quantity: line.quantity,
+          })),
+        );
+    const linesById = new Map(order.items.map((line) => [line.id, line]));
+    if (!isFeatureEnabled('salesBackorders')) {
+      const short = results.filter((result) => result.shortfall.greaterThan(0));
+      // Thrown inside the transaction: the RESERVE movements and the claimed
+      // number roll back with it (no gap).
+      if (short.length > 0) {
+        throw insufficientStockConflict(
+          short.map((result) => {
+            const line = linesById.get(result.referenceLineId)!;
+            return {
+              lineNo: line.lineNo,
+              itemId: line.itemId,
+              itemName: line.itemName,
+              requested: result.requested,
+              available: result.reserved,
+            };
+          }),
+        );
+      }
+    }
     for (const result of results) {
       if (result.reserved.greaterThan(0)) {
-        await tx.salesOrderItem.update({ where: { id: result.referenceLineId }, data: { reservedQty: result.reserved } });
+        await tx.salesOrderItem.update({
+          where: { id: result.referenceLineId },
+          data: { reservedQty: result.reserved },
+        });
       }
     }
 
@@ -555,14 +892,23 @@ export class SalesOrdersService {
         orderNumber,
         confirmedByUserId: actor.userId,
         confirmedAt: now,
-        ...(options.approved ? { approvedByUserId: actor.userId, approvedAt: now, approvalReason: options.approvalNote ?? null } : {}),
+        ...(options.approved
+          ? {
+              approvedByUserId: actor.userId,
+              approvedAt: now,
+              approvalReason: options.approvalNote ?? null,
+            }
+          : {}),
         ...(options.creditOverrideReason
-          ? { creditOverrideByUserId: actor.userId, creditOverrideAt: now, creditOverrideReason: options.creditOverrideReason }
+          ? {
+              creditOverrideByUserId: actor.userId,
+              creditOverrideAt: now,
+              creditOverrideReason: options.creditOverrideReason,
+            }
           : {}),
       },
     });
 
-    const linesById = new Map(order.items.map((line) => [line.id, line]));
     const backorders: SalesOrderBackorder[] = results
       .filter((result) => result.shortfall.greaterThan(0))
       .map((result) => {
@@ -577,12 +923,18 @@ export class SalesOrdersService {
         };
       });
 
-    const backorderNote = backorders.length > 0 ? `؛ کسری موجودی (پس‌افت) در ${backorders.length} ردیف` : '';
+    const backorderNote =
+      backorders.length > 0
+        ? `؛ کسری موجودی (پس‌افت) در ${backorders.length} ردیف`
+        : '';
     await this.audit.log(
       {
         userId: actor.userId,
         ipAddress: actor.ipAddress,
-        action: options.approved && order.status === 'PENDING_APPROVAL' ? 'SALES_ORDER_APPROVED' : 'SALES_ORDER_CONFIRMED',
+        action:
+          options.approved && order.status === 'PENDING_APPROVAL'
+            ? 'SALES_ORDER_APPROVED'
+            : 'SALES_ORDER_CONFIRMED',
         entityType: AUDIT_ENTITY.SALES_ORDER,
         entityId: order.id,
         details: `${orderNumber} — جمع ${order.totalAmount.toString()}${backorderNote}${options.approvalNote ? `؛ یادداشت تأیید: ${options.approvalNote}` : ''}`,
@@ -605,13 +957,27 @@ export class SalesOrdersService {
     return backorders;
   }
 
-  private async endOrder(id: number, target: 'CANCELLED' | 'CLOSED', loadedVersion: Date, reason: string, actor: SalesActor) {
+  private async endOrder(
+    id: number,
+    target: 'CANCELLED' | 'CLOSED',
+    loadedVersion: Date,
+    reason: string,
+    actor: SalesActor,
+  ) {
     await this.prisma.$transaction(async (tx) => {
       const order = await this.loadLocked(tx, id);
-      if (!isSameVersion(order.updatedAt, loadedVersion)) throw recordModifiedConflict();
+      if (!isSameVersion(order.updatedAt, loadedVersion))
+        throw recordModifiedConflict();
       ensureSalesOrderTransition(order.status, target);
-      if (target === 'CANCELLED' && order.items.some((line) => new Prisma.Decimal(line.deliveredQty).greaterThan(0))) {
-        throw new ConflictException('برای این سفارش کالا تحویل شده است و قابل لغو نیست؛ در صورت نیاز آن را «بستن» کنید.');
+      if (
+        target === 'CANCELLED' &&
+        order.items.some((line) =>
+          new Prisma.Decimal(line.deliveredQty).greaterThan(0),
+        )
+      ) {
+        throw new ConflictException(
+          'برای این سفارش کالا تحویل شده است و قابل لغو نیست؛ در صورت نیاز آن را «بستن» کنید.',
+        );
       }
 
       const context: StockEventContext = {
@@ -623,27 +989,50 @@ export class SalesOrdersService {
         createdByUserId: actor.userId,
         note: reason,
       };
-      const held = order.items.filter((line) => new Prisma.Decimal(line.reservedQty).greaterThan(0));
+      const held = order.items.filter((line) =>
+        new Prisma.Decimal(line.reservedQty).greaterThan(0),
+      );
       await releaseReserved(
         tx,
         context,
-        held.map((line) => ({ referenceLineId: line.id, itemId: line.itemId, quantity: line.reservedQty })),
+        held.map((line) => ({
+          referenceLineId: line.id,
+          itemId: line.itemId,
+          quantity: line.reservedQty,
+        })),
       );
-      if (held.length > 0) await tx.salesOrderItem.updateMany({ where: { salesOrderId: id }, data: { reservedQty: 0 } });
+      if (held.length > 0)
+        await tx.salesOrderItem.updateMany({
+          where: { salesOrderId: id },
+          data: { reservedQty: 0 },
+        });
 
       const now = new Date();
       await tx.salesOrder.update({
         where: { id },
         data:
           target === 'CANCELLED'
-            ? { status: 'CANCELLED', cancelledByUserId: actor.userId, cancelledAt: now, cancelReason: reason }
-            : { status: 'CLOSED', closedByUserId: actor.userId, closedAt: now, closeReason: reason },
+            ? {
+                status: 'CANCELLED',
+                cancelledByUserId: actor.userId,
+                cancelledAt: now,
+                cancelReason: reason,
+              }
+            : {
+                status: 'CLOSED',
+                closedByUserId: actor.userId,
+                closedAt: now,
+                closeReason: reason,
+              },
       });
       await this.audit.log(
         {
           userId: actor.userId,
           ipAddress: actor.ipAddress,
-          action: target === 'CANCELLED' ? 'SALES_ORDER_CANCELLED' : 'SALES_ORDER_CLOSED',
+          action:
+            target === 'CANCELLED'
+              ? 'SALES_ORDER_CANCELLED'
+              : 'SALES_ORDER_CLOSED',
           entityType: AUDIT_ENTITY.SALES_ORDER,
           entityId: id,
           details: `${order.orderNumber ?? ''} — علت: ${reason}${held.length > 0 ? `؛ آزادسازی رزرو در ${held.length} ردیف` : ''}`,
@@ -667,7 +1056,10 @@ export class SalesOrdersService {
   // 409 for a sales.approve holder confirming/approving over the limit
   // without an override reason. Figures only for canViewCredit.
   private creditConflict(credit: CreditCheck, actor: SalesActor) {
-    const limitText = credit.creditLimit === null ? 'تعریف نشده (فقط فروش نقدی)' : credit.creditLimit.toString();
+    const limitText =
+      credit.creditLimit === null
+        ? 'تعریف نشده (فقط فروش نقدی)'
+        : credit.creditLimit.toString();
     const figures = actor.canViewCredit
       ? ` سقف اعتبار: ${limitText}، تعهدات باز فعلی: ${credit.exposure.total.toString()}، مبلغ این سفارش: ${credit.orderAmount.toString()}، مازاد: ${credit.excess.toString()}.`
       : '';
@@ -681,7 +1073,9 @@ export class SalesOrdersService {
 
   private ensureEditable(status: SalesOrderStatus) {
     if (!EDITABLE_SALES_ORDER_STATUSES.includes(status)) {
-      throw new ConflictException(`فقط سفارش «پیش‌نویس» قابل ویرایش است؛ این سفارش «${SALES_ORDER_STATUS_LABELS_FA[status]}» است`);
+      throw new ConflictException(
+        `فقط سفارش «پیش‌نویس» قابل ویرایش است؛ این سفارش «${SALES_ORDER_STATUS_LABELS_FA[status]}» است`,
+      );
     }
   }
 
@@ -689,13 +1083,29 @@ export class SalesOrdersService {
   // draft's lines are replaced wholesale on save, only they may save a draft
   // that already carries one (otherwise the save would either strip or
   // re-submit a discount the user isn't allowed to set).
-  private ensureDiscountAllowed(items: SalesOrderItemDto[], actor: SalesActor, existingItems?: { discountAmount: Prisma.Decimal; discountPercent: Prisma.Decimal | null }[]) {
+  private ensureDiscountAllowed(
+    items: SalesOrderItemDto[],
+    actor: SalesActor,
+    existingItems?: {
+      discountAmount: Prisma.Decimal;
+      discountPercent: Prisma.Decimal | null;
+    }[],
+  ) {
     if (actor.canApprove) return;
-    if (items.some((line) => (line.discountPercent ?? 0) > 0 || (line.discountAmount ?? 0) > 0)) {
-      throw new ForbiddenException('فقط کاربر دارای مجوز «تأیید فروش» می‌تواند تخفیف اعمال کند');
+    if (
+      items.some(
+        (line) =>
+          (line.discountPercent ?? 0) > 0 || (line.discountAmount ?? 0) > 0,
+      )
+    ) {
+      throw new ForbiddenException(
+        'فقط کاربر دارای مجوز «تأیید فروش» می‌تواند تخفیف اعمال کند',
+      );
     }
     if (existingItems && hasAnyDiscount(existingItems)) {
-      throw new ForbiddenException('این سفارش دارای تخفیف است و فقط کاربر دارای مجوز «تأیید فروش» می‌تواند آن را ویرایش کند');
+      throw new ForbiddenException(
+        'این سفارش دارای تخفیف است و فقط کاربر دارای مجوز «تأیید فروش» می‌تواند آن را ویرایش کند',
+      );
     }
   }
 
@@ -703,31 +1113,55 @@ export class SalesOrdersService {
   // DRAFT save. A reference is re-checked for "active" only when it's new or
   // changed (same rule as Purchases): a draft may keep an item / address /
   // salesperson that was deactivated since.
-  private async prepareDraft(dto: CreateSalesOrderDto, existing?: ExistingDraft) {
-    if (!existing || existing.customerId !== dto.customerId) await ensureTransactableCustomer(this.prisma, dto.customerId);
-    const customer = await this.prisma.customer.findUnique({ where: { id: dto.customerId }, select: { name: true, economicCode: true } });
+  private async prepareDraft(
+    dto: CreateSalesOrderDto,
+    existing?: ExistingDraft,
+  ) {
+    if (!existing || existing.customerId !== dto.customerId)
+      await ensureTransactableCustomer(this.prisma, dto.customerId);
+    const customer = await this.prisma.customer.findUnique({
+      where: { id: dto.customerId },
+      select: { name: true, economicCode: true },
+    });
     if (!customer) throw new ConflictException('مشتری انتخاب‌شده یافت نشد');
 
     let deliveryAddressText: string | null = null;
     if (dto.deliveryAddressId) {
-      const address = await this.prisma.customerAddress.findFirst({ where: { id: dto.deliveryAddressId, customerId: dto.customerId } });
-      if (!address) throw new BadRequestException('آدرس تحویل انتخاب‌شده متعلق به این مشتری نیست');
-      if (!address.isActive && address.id !== existing?.deliveryAddressId) throw new BadRequestException('آدرس تحویل انتخاب‌شده غیرفعال است');
+      const address = await this.prisma.customerAddress.findFirst({
+        where: { id: dto.deliveryAddressId, customerId: dto.customerId },
+      });
+      if (!address)
+        throw new BadRequestException(
+          'آدرس تحویل انتخاب‌شده متعلق به این مشتری نیست',
+        );
+      if (!address.isActive && address.id !== existing?.deliveryAddressId)
+        throw new BadRequestException('آدرس تحویل انتخاب‌شده غیرفعال است');
       deliveryAddressText = formatAddress(address);
     }
 
-    if (dto.salespersonEmployeeId && dto.salespersonEmployeeId !== existing?.salespersonEmployeeId) {
-      const employee = await this.prisma.employee.findUnique({ where: { id: dto.salespersonEmployeeId }, select: { status: true } });
-      if (!employee || employee.status !== 'active') throw new BadRequestException('فروشنده انتخاب‌شده فعال نیست');
+    if (
+      dto.salespersonEmployeeId &&
+      dto.salespersonEmployeeId !== existing?.salespersonEmployeeId
+    ) {
+      const employee = await this.prisma.employee.findUnique({
+        where: { id: dto.salespersonEmployeeId },
+        select: { status: true },
+      });
+      if (!employee || employee.status !== 'active')
+        throw new BadRequestException('فروشنده انتخاب‌شده فعال نیست');
     }
 
     // The payment term always comes from the customer's financial profile
     // (set under customers.finance) — never chosen on the order, so a
     // salesperson can't grant terms.
     const policy = await getCustomerCreditPolicy(this.prisma, dto.customerId);
-    const locationId = existing?.locationId ?? (await this.inventory.getDefaultLocation()).id;
+    const locationId =
+      existing?.locationId ?? (await this.inventory.getDefaultLocation()).id;
 
-    const prepared = await this.prepareLines(dto.items, existing?.items.map((line) => line.itemId) ?? []);
+    const prepared = await this.prepareLines(
+      dto.items,
+      existing?.items.map((line) => line.itemId) ?? [],
+    );
     const lines = prepared.map((entry) => entry.line);
     const totals = sumOrderTotals(prepared.map((entry) => entry.amounts));
 
@@ -754,11 +1188,23 @@ export class SalesOrdersService {
     };
   }
 
-  private async prepareLines(items: SalesOrderItemDto[], alreadyOnOrder: number[]): Promise<{ line: PreparedLine; amounts: SalesLineAmounts }[]> {
+  private async prepareLines(
+    items: SalesOrderItemDto[],
+    alreadyOnOrder: number[],
+  ): Promise<{ line: PreparedLine; amounts: SalesLineAmounts }[]> {
     const ids = [...new Set(items.map((line) => line.itemId))];
     const found = await this.prisma.item.findMany({
       where: { id: { in: ids } },
-      select: { id: true, code: true, name: true, status: true, itemKind: true, sellingPrice: true, unitId: true, unit: { select: { nameFa: true } } },
+      select: {
+        id: true,
+        code: true,
+        name: true,
+        status: true,
+        itemKind: true,
+        sellingPrice: true,
+        unitId: true,
+        unit: { select: { nameFa: true } },
+      },
     });
     const byId = new Map(found.map((item) => [item.id, item]));
     const kept = new Set(alreadyOnOrder);
@@ -766,18 +1212,29 @@ export class SalesOrdersService {
     return items.map((line, index) => {
       const label = `ردیف ${index + 1}`;
       const item = byId.get(line.itemId);
-      if (!item) throw new BadRequestException(`${label}: کالای انتخاب‌شده یافت نشد`);
-      if (item.status !== 'active' && !kept.has(item.id)) throw new BadRequestException(`${label}: کالای «${item.name}» غیرفعال است`);
+      if (!item)
+        throw new BadRequestException(`${label}: کالای انتخاب‌شده یافت نشد`);
+      if (item.status !== 'active' && !kept.has(item.id))
+        throw new BadRequestException(
+          `${label}: کالای «${item.name}» غیرفعال است`,
+        );
       // Inventory build plan I1, B2: raw materials/packaging are stock-only,
       // never sellable — authoritative even if a request bypasses the picker.
       if (item.itemKind !== 'FINISHED_GOOD' && !kept.has(item.id)) {
-        throw new BadRequestException(`${label}: کالای «${item.name}» محصول نهایی نیست و قابل فروش نمی‌باشد`);
+        throw new BadRequestException(
+          `${label}: کالای «${item.name}» محصول نهایی نیست و قابل فروش نمی‌باشد`,
+        );
       }
 
       // B2: any sales.manage holder may change the price; going BELOW the
       // list price needs a reason, above it doesn't.
-      const listUnitPrice = item.sellingPrice === null ? null : new Prisma.Decimal(item.sellingPrice);
-      const belowList = listUnitPrice !== null && new Prisma.Decimal(line.unitPrice).lessThan(listUnitPrice);
+      const listUnitPrice =
+        item.sellingPrice === null
+          ? null
+          : new Prisma.Decimal(item.sellingPrice);
+      const belowList =
+        listUnitPrice !== null &&
+        new Prisma.Decimal(line.unitPrice).lessThan(listUnitPrice);
       if (belowList && !line.priceOverrideReason) {
         throw new BadRequestException(
           `${label}: قیمت «${item.name}» کمتر از قیمت فهرست (${listUnitPrice.toString()}) است؛ علت کاهش قیمت را وارد کنید`,

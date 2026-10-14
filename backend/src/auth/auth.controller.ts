@@ -11,6 +11,7 @@ import {
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { AuditService } from '../audit/audit.service';
+import { featureFlags } from '../common/feature-flags';
 import { AuthService } from './auth.service';
 import type { LoginDto } from './dto/login.dto';
 import { loginSchema } from './dto/login.dto';
@@ -91,6 +92,7 @@ export class AuthController {
       id: req.session.userId,
       username: req.session.username,
       permissions: req.session.permissions ?? [],
+      features: featureFlags(),
     };
   }
 }

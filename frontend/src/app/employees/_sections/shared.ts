@@ -46,19 +46,42 @@ export type Employee = {
   // --- اطلاعات استخدام و قرارداد ---
   workLocation: string | null;
   workingHours: string | null;
-  contractType: ContractType | null;
-  contractStartDate: string | null;
-  contractEndDate: string | null;
   // Serialized as a string by Prisma's Decimal type — parsed with Number()
   // only where it's actually used as a number.
   salaryAmount: string | null;
   salaryPeriod: SalaryPeriod | null;
   bankAccountNumber: string | null;
-  // A scanned/photographed contract document (PDF or image) — uploaded the
-  // same way the photo above is, via its own endpoint.
-  contractDocumentPath: string | null;
   // --- اطلاعات تماس و سایر ---
   address: string | null;
+  // --- پایان همکاری (only when status === "terminated") ---
+  terminationDate: string | null;
+  terminationType: ExitType | null;
+  terminationReason: string | null;
+  // --- قراردادها: history (latest first), the current one, expiry and tenure ---
+  contracts: EmployeeContract[];
+  currentContract: EmployeeContract | null;
+  /** Days until the current contract ends (negative = lapsed); null = open-ended / none. */
+  daysToExpiry: number | null;
+  contractExpired: boolean;
+  tenure: Tenure;
+};
+
+export type ExitType = "resigned" | "fired" | "contract_ended" | "retired" | "other";
+
+export type EmployeeContract = {
+  id: number;
+  contractType: ContractType;
+  startDate: string;
+  endDate: string | null;
+  note: string | null;
+  documentPath: string | null;
+};
+
+// Mirrors backend employees/employee-tenure.ts computeTenure().
+export type Tenure = {
+  days: number;
+  basis: "contracts" | "hire_date" | "none";
+  periods: { start: string; end: string; days: number }[];
 };
 
 export type FormState = {
@@ -88,6 +111,8 @@ export type FormState = {
   // --- اطلاعات استخدام و قرارداد ---
   workLocation: string;
   workingHours: string;
+  // The FIRST contract (create form only) — later contracts / extensions are
+  // managed on the employee's page.
   contractType: ContractType | "";
   contractStartDate: string;
   contractEndDate: string;
@@ -96,6 +121,14 @@ export type FormState = {
   bankAccountNumber: string;
   // --- اطلاعات تماس و سایر ---
   address: string;
+};
+
+export const exitTypeLabels: Record<ExitType, string> = {
+  resigned: "استعفا",
+  fired: "اخراج",
+  contract_ended: "پایان قرارداد",
+  retired: "بازنشستگی",
+  other: "سایر",
 };
 
 export const statusLabels: Record<EmployeeStatus, string> = {
@@ -134,6 +167,9 @@ export const salaryPeriodLabels: Record<SalaryPeriod, string> = {
   weekly: "هفتگی",
   daily: "روزانه",
 };
+
+/** رشته applies only from کاردانی up (diploma and below have none). */
+export const FIELD_OF_STUDY_LEVELS: EducationLevel[] = ["associate", "bachelor", "master", "phd"];
 
 export const sortFieldLabels: Record<SortField, string> = {
   department: "واحد سازمانی",

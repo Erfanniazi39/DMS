@@ -1,6 +1,6 @@
 import { Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
-import { parsePagination } from '../common/pagination';
+import { parsePagination, parseSort } from '../common/pagination';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { SessionAuthGuard } from '../auth/guards/session-auth.guard';
@@ -25,11 +25,20 @@ export class ItemsController {
     // Opt-in pagination — see parsePagination(). Omitted = full array.
     @Query('page') page?: string,
     @Query('pageSize') pageSize?: string,
+    @Query('sortBy') sortBy?: string,
+    @Query('sortDir') sortDir?: string,
   ) {
     return this.itemsService.list(
-      { q: q?.trim() || undefined, status: status || undefined, categoryId: categoryId || undefined },
+      { q: q?.trim() || undefined, status: status || undefined, categoryId: categoryId || undefined, sort: parseSort(sortBy, sortDir) },
       parsePagination(page, pageSize),
     );
+  }
+
+  // Suggested code for a new record — declared before any ':id' route.
+  @Get('next-code')
+  @RequirePermissions('items.manage')
+  nextCode() {
+    return this.itemsService.nextCode();
   }
 
   @Get(':id')

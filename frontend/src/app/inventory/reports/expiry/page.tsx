@@ -11,6 +11,9 @@ import { formatJalali } from "@/lib/jalali";
 import { apiFetch, type ApiError } from "@/lib/api";
 import { useAdminUser } from "@/app/admin/layout";
 import { NoAccess, formatQuantity, type ExpiryReportRow, type InventoryLocation } from "../../shared";
+import { SortHeader, useClientTable } from "@/components/ui/sortable";
+import { ListPagination } from "@/components/ui/list-pagination";
+import type { SortValue } from "@/lib/table-sort";
 
 const toolbarFieldLabel = "text-[11px] font-medium uppercase tracking-wide text-muted-foreground";
 const toolbarSelectClass = "h-8 rounded-md border border-input bg-background px-2 text-xs outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50";
@@ -18,6 +21,22 @@ const toolbarSelectClass = "h-8 rounded-md border border-input bg-background px-
 // Look-ahead choices for withinDays — a display filter only, not a business
 // threshold ("" = every dated batch with stock, however far out).
 const WITHIN_DAYS_OPTIONS = ["30", "60", "90", "180", "365", ""] as const;
+
+// Accessors for in-memory column sorting — each sorts by what its column shows.
+const INVENTORY_REPORTS_EXPIRY_SORT_GETTERS: Record<string, (row: ExpiryReportRow) => SortValue> = {
+  code: (row) => row.item?.code ?? null,
+  name: (row) => row.item?.name ?? null,
+  unit: (row) => row.item?.unit.nameFa ?? null,
+  batchNumber: (row) => row.batchNumber,
+  productionDate: (row) => row.productionDate,
+  expiryDate: (row) => row.expiryDate,
+  daysUntilExpiry: (row) => row.daysUntilExpiry,
+  onHand: (row) => Number(row.onHand),
+  qc: (row) => Number(row.qc),
+};
+
+// Stable empty list while the report is still loading.
+const NO_ROWS: ExpiryReportRow[] = [];
 
 // گزارش انقضای بچ‌ها (I4): every dated batch that still holds stock (ON_HAND
 // or QC), soonest expiry first, straight from GET /inventory/reports/expiry —
@@ -32,6 +51,8 @@ export default function ExpiryReportPage() {
   const canView = user?.permissions.includes("inventory.view") ?? false;
 
   const [rows, setRows] = useState<ExpiryReportRow[] | null>(null);
+  // Sort + page the (small, already loaded) rows in memory; click a header to sort.
+  const table = useClientTable(rows ?? NO_ROWS, INVENTORY_REPORTS_EXPIRY_SORT_GETTERS, { pageSize: 20 });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
@@ -150,20 +171,20 @@ export default function ExpiryReportPage() {
               <table className="w-full text-right text-sm">
                 <thead className="bg-muted/40 text-xs text-muted-foreground">
                   <tr>
-                    <th className="px-3 py-2.5 font-medium">کد کالا</th>
-                    <th className="px-3 py-2.5 font-medium">نام کالا</th>
-                    <th className="px-3 py-2.5 font-medium">واحد</th>
+                    <SortHeader label="کد کالا" sortKey="code" sort={table.sort} onSort={table.onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="نام کالا" sortKey="name" sort={table.sort} onSort={table.onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="واحد" sortKey="unit" sort={table.sort} onSort={table.onSort} className="px-3 py-2.5 font-medium" />
                     {locations.length > 1 ? <th className="px-3 py-2.5 font-medium">انبار</th> : null}
-                    <th className="px-3 py-2.5 font-medium">شماره بچ</th>
-                    <th className="px-3 py-2.5 font-medium">تاریخ تولید</th>
-                    <th className="px-3 py-2.5 font-medium">تاریخ انقضا</th>
-                    <th className="px-3 py-2.5 font-medium">مانده تا انقضا</th>
-                    <th className="px-3 py-2.5 font-medium">موجودی انبار</th>
-                    <th className="px-3 py-2.5 font-medium">کنترل کیفیت</th>
+                    <SortHeader label="شماره بچ" sortKey="batchNumber" sort={table.sort} onSort={table.onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="تاریخ تولید" sortKey="productionDate" sort={table.sort} onSort={table.onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="تاریخ انقضا" sortKey="expiryDate" sort={table.sort} onSort={table.onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="مانده تا انقضا" sortKey="daysUntilExpiry" sort={table.sort} onSort={table.onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="موجودی انبار" sortKey="onHand" sort={table.sort} onSort={table.onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="کنترل کیفیت" sortKey="qc" sort={table.sort} onSort={table.onSort} className="px-3 py-2.5 font-medium" />
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
-                  {rows.map((row) => (
+                  {table.pageRows.map((row) => (
                     <tr key={`${row.batchId}:${row.locationId}`} className={row.isExpired ? "bg-destructive/5 hover:bg-destructive/10" : "hover:bg-muted/40"}>
                       <td className="px-3 py-2 font-mono text-xs">{row.item?.code ?? "-"}</td>
                       <td className="px-3 py-2">
@@ -197,6 +218,7 @@ export default function ExpiryReportPage() {
               </table>
             </div>
           )}
+              {table.total > table.pageSize ? <ListPagination page={table.page} pageSize={table.pageSize} total={table.total} onPageChange={table.setPage} className="mt-3" /> : null}
         </div>
       </div>
     </div>

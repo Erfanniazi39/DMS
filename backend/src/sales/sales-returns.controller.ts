@@ -1,6 +1,7 @@
-import { Body, Controller, Get, Param, ParseIntPipe, Post, Query, Req, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Param, ParseIntPipe, Post, Query, Req, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
-import { parsePagination } from '../common/pagination';
+import { isFeatureEnabled } from '../common/feature-flags';
+import { parsePagination, parseSort } from '../common/pagination';
 import { ZodValidationPipe } from '../common/zod-validation.pipe';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
@@ -53,6 +54,7 @@ export class SalesReturnsController {
         deliveryId: query.deliveryId,
         dateFrom: query.dateFrom,
         dateTo: query.dateTo,
+        sort: parseSort(query.sortBy, query.sortDir),
       },
       parsePagination(query.page, query.pageSize),
     );
@@ -118,6 +120,9 @@ export class SalesReturnsController {
   @Post(':id/inspect')
   @RequirePermissions('sales.approve')
   inspect(@Param('id', ParseIntPipe) id: number, @Body(new ZodValidationPipe(inspectSalesReturnSchema)) dto: InspectSalesReturnDto, @Req() req: Request) {
+    if (!isFeatureEnabled('inventoryDamagedAndReturns') && dto.items.some((item) => item.damagedQty > 0)) {
+      throw new BadRequestException('گزینهٔ «آسیب‌دیده» در این نسخه فعال نیست');
+    }
     return this.returns.inspect(id, dto, actorOf(req));
   }
 

@@ -1,4 +1,5 @@
 import { test, expect, type Page, type APIRequestContext, type Locator } from "@playwright/test";
+import { pickJalaliDate } from "./helpers/jalali-date";
 
 // Adversarial UI regression suite for the Purchase / Purchase Request
 // workflow, written during the 2026-10-05 frontend QA pass. Focus areas:
@@ -157,9 +158,8 @@ function jalaliToday(): { year: number; month: number; day: number } {
 
 async function selectJalaliToday(scope: Page | Locator, idPrefix: string) {
   const today = jalaliToday();
-  await scope.locator(`#${idPrefix}-year`).selectOption(String(today.year));
-  await scope.locator(`#${idPrefix}-month`).selectOption(String(today.month));
-  await scope.locator(`#${idPrefix}-day`).selectOption(String(today.day));
+  const page = "goto" in scope ? scope : scope.page();
+  await pickJalaliDate(page, idPrefix, today, scope);
 }
 
 async function getRequest(request: APIRequestContext, id: number) {

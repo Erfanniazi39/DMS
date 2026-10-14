@@ -1,4 +1,5 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { AUDIT_ENTITY, AuditService } from '../audit/audit.service';
 import { PrismaService } from '../prisma/prisma.service';
 
 export const PERMISSION_CATALOG = [
@@ -57,13 +58,21 @@ export const PERMISSION_CATALOG = [
   // and requesting a recount use inventory.approve instead — same
   // separation of duties as adjustments (B10), no self-approval.
   { code: 'inventory.count', label: 'شمارش موجودی', module: 'موجودی' },
+  // Internal correspondence (نامه‌نگاری): every role holds it — letters are
+  // between any two system users; visibility is per letter, not per permission.
+  { code: 'letters.use', label: 'نامه‌نگاری', module: 'نامه‌ها' },
+  // Management oversight: read-only access to every SENT letter (never drafts); each view is audited.
+  { code: 'letters.readAll', label: 'مشاهدهٔ همهٔ نامه‌ها (نظارت مدیریتی)', module: 'نامه‌ها' },
   { code: 'documents.upload', label: 'بارگذاری اسناد', module: 'اسناد' },
   { code: 'reports.view', label: 'مشاهده گزارش‌ها', module: 'گزارش‌ها' },
 ] as const;
 
 @Injectable()
 export class AccessService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly audit: AuditService,
+  ) {}
 
   async listRoles() {
     const roles = await this.prisma.role.findMany({
@@ -91,24 +100,26 @@ export class AccessService {
     }));
   }
 
-  async createRole(name: string, permissionCodes: string[]) {
+  async createRole(name: string, permissionCodes: string[], actorId: number | null = null, ipAddress?: string) {
     const existing = await this.prisma.role.findUnique({ where: { name } });
     if (existing) throw new ConflictException('این نقش قبلاً وجود دارد');
     const permissions = await this.findPermissions(permissionCodes);
-    return this.prisma.role.create({
+    const role = await this.prisma.role.create({
       data: {
         name,
         permissions: { create: permissions.map((permission) => ({ permissionId: permission.id })) },
       },
       include: { permissions: { include: { permission: true } } },
     });
+    await this.audit.log({ userId: actorId, action: 'ROLE_CREATED', entityType: AUDIT_ENTITY.ROLE, entityId: role.id, details: `${name} · ${permissions.length} دسترسی`, ipAddress });
+    return role;
   }
 
-  async updateRole(id: number, permissionCodes: string[]) {
+  async updateRole(id: number, permissionCodes: string[], actorId: number | null = null, ipAddress?: string) {
     const role = await this.prisma.role.findUnique({ where: { id } });
     if (!role) throw new NotFoundException('نقش پیدا نشد');
     const permissions = await this.findPermissions(permissionCodes);
-    return this.prisma.$transaction(async (tx) => {
+    const updated = await this.prisma.$transaction(async (tx) => {
       await tx.rolePermission.deleteMany({ where: { roleId: id } });
       return tx.role.update({
         where: { id },
@@ -116,6 +127,8 @@ export class AccessService {
         include: { permissions: { include: { permission: true } } },
       });
     });
+    await this.audit.log({ userId: actorId, action: 'ROLE_PERMISSIONS_UPDATED', entityType: AUDIT_ENTITY.ROLE, entityId: id, details: `${role.name} · ${permissions.length} دسترسی`, ipAddress });
+    return updated;
   }
 
   // Users & Access is independent of Employee — a user is identified here
@@ -143,12 +156,13 @@ export class AccessService {
     });
   }
 
-  async setUserPermissions(userId: number, permissionCodes: string[]) {
+  async setUserPermissions(userId: number, permissionCodes: string[], actorId: number | null = null, ipAddress?: string) {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user) throw new NotFoundException('کاربر پیدا نشد');
     const permissions = await this.findPermissions(permissionCodes);
     await this.prisma.userPermission.deleteMany({ where: { userId } });
     await this.prisma.userPermission.createMany({ data: permissions.map((permission) => ({ userId, permissionId: permission.id })) });
+    await this.audit.log({ userId: actorId, action: 'USER_PERMISSIONS_UPDATED', entityType: AUDIT_ENTITY.USER, entityId: userId, details: `${user.username} · ${permissions.length} دسترسی اضافی`, ipAddress });
     return this.listUserPermissions();
   }
 

@@ -2,7 +2,7 @@ import { BadRequestException, ConflictException, ForbiddenException, NotFoundExc
 import { Prisma } from '@prisma/client';
 import { RECORD_MODIFIED_CODE } from '../common/optimistic-lock';
 import { balanceOf, seedStock, setBucket } from '../inventory/inventory.spec-helpers';
-import { CREDIT_LIMIT_EXCEEDED, SALES_ORDER_APPROVAL_REQUIRED } from './sales-rules';
+import { CREDIT_LIMIT_EXCEEDED, INSUFFICIENT_STOCK, SALES_ORDER_APPROVAL_REQUIRED } from './sales-rules';
 import {
   buildSalesOrdersService,
   createSalesDb,
@@ -25,6 +25,16 @@ import {
 const actions = (db: SalesDb) => db.auditLog.create.mock.calls.map((call: any) => call[0].data.action);
 
 describe('SalesOrdersService', () => {
+  // The credit-limit rule (B4) is hidden in v1; these specs keep exercising it
+  // with the flag on. The v1 behaviour is covered at the end of this file.
+  beforeEach(() => {
+    process.env.DMS_FEATURE_CREDIT_LIMIT = 'true';
+  });
+  afterEach(() => {
+    delete process.env.DMS_FEATURE_CREDIT_LIMIT;
+    delete process.env.DMS_FEATURE_SALES_BACKORDERS;
+  });
+
   describe('create (DRAFT)', () => {
     it('creates a DRAFT with no number and no stock effect; snapshots customer, item, list price and the payment term from the customer policy', async () => {
       const db = createSalesDb();
@@ -143,6 +153,9 @@ describe('SalesOrdersService', () => {
       expect(result.items.map((item: { id: number }) => item.id).sort()).toEqual([1, 2]);
       const args = db.item.findMany.mock.calls.at(-1)[0];
       expect(args.where).toEqual({ status: 'active', itemKind: 'FINISHED_GOOD' });
+      // The order form's category filter.
+      expect(args.select.categoryId).toBe(true);
+      expect(result.categories).toEqual([{ id: 1, nameFa: 'لبنیات' }]);
     });
   });
 
@@ -236,33 +249,80 @@ describe('SalesOrdersService', () => {
       expect(actions(db)).toEqual(['SALES_ORDER_CONFIRMED']);
     });
 
-    it('a stock shortfall is a backorder WARNING, not a block: reserves what is available and confirms', async () => {
+    it('stock block (DMS_FEATURE_SALES_BACKORDERS=false): a stock shortfall is a 409 INSUFFICIENT_STOCK block — still DRAFT, nothing reserved, no number claimed', async () => {
+      process.env.DMS_FEATURE_SALES_BACKORDERS = 'false';
       const db = createSalesDb();
       seedStock(db, 1, 3);
       const current = mockOrder(db);
 
-      const result = await buildSalesOrdersService(db).confirm(11, confirmDto as never, SALESPERSON);
-
-      expect(current().status).toBe('CONFIRMED');
-      expect(result.backorders).toEqual([{ lineNo: 1, itemId: 1, itemName: 'شیر', quantity: '5', reserved: '3', shortfall: '2' }]);
-      expect(balanceOf(db, 1)?.reserved).toBe('3');
-      expect(db.auditLog.create.mock.calls[0][0].data.details).toContain('کسری موجودی');
+      await expect(buildSalesOrdersService(db).confirm(11, confirmDto as never, SALESPERSON)).rejects.toMatchObject({
+        response: expect.objectContaining({
+          code: INSUFFICIENT_STOCK,
+          details: { lines: [{ lineNo: 1, itemId: 1, itemName: 'شیر', requested: '5', available: '3' }] },
+        }),
+      });
+      expect(current().status).toBe('DRAFT');
+      expect(balanceOf(db, 1)?.reserved).toBe('0');
+      expect(db.state.sequences.size).toBe(0);
     });
 
-    it('stock already reserved by other orders is not available; no stock at all reserves nothing (no movement) and still confirms', async () => {
+    it('stock block (DMS_FEATURE_SALES_BACKORDERS=false): stock reserved by other orders is not available — every short line is listed', async () => {
+      process.env.DMS_FEATURE_SALES_BACKORDERS = 'false';
       const db = createSalesDb();
       seedStock(db, 1, 10);
       setBucket(db, 1, 'RESERVED', 8);
       mockOrder(db, draftOrder({ items: [orderLine(), orderLine({ id: 102, lineNo: 2, itemId: 2, itemName: 'ماست', quantity: new Prisma.Decimal(4) })] }));
 
-      const result = await buildSalesOrdersService(db).confirm(11, confirmDto as never, SALESPERSON);
+      await expect(buildSalesOrdersService(db).confirm(11, confirmDto as never, SALESPERSON)).rejects.toMatchObject({
+        response: expect.objectContaining({
+          code: INSUFFICIENT_STOCK,
+          details: {
+            lines: [
+              expect.objectContaining({ lineNo: 1, requested: '5', available: '2' }),
+              expect.objectContaining({ lineNo: 2, requested: '4', available: '0' }),
+            ],
+          },
+        }),
+      });
+      expect(balanceOf(db, 1)?.reserved).toBe('8');
+    });
 
-      expect(balanceOf(db, 1)?.reserved).toBe('10'); // 8 + min(5, 10 − 8)
-      expect(result.backorders.map((b) => [b.lineNo, b.reserved, b.shortfall])).toEqual([
-        [1, '2', '3'],
-        [2, '0', '4'],
-      ]);
-      expect(db.state.movements.filter((m: any) => m.movementType === 'RESERVE')).toHaveLength(1);
+    describe('v1 default: salesBackorders on — a shortfall is a backorder, not a block', () => {
+      beforeEach(() => {
+        process.env.DMS_FEATURE_SALES_BACKORDERS = 'true';
+      });
+      afterEach(() => {
+        delete process.env.DMS_FEATURE_SALES_BACKORDERS;
+      });
+
+      it('a stock shortfall is a backorder WARNING, not a block: reserves what is available and confirms', async () => {
+        const db = createSalesDb();
+        seedStock(db, 1, 3);
+        const current = mockOrder(db);
+
+        const result = await buildSalesOrdersService(db).confirm(11, confirmDto as never, SALESPERSON);
+
+        expect(current().status).toBe('CONFIRMED');
+        expect(result.backorders).toEqual([{ lineNo: 1, itemId: 1, itemName: 'شیر', quantity: '5', reserved: '3', shortfall: '2' }]);
+        expect(balanceOf(db, 1)?.reserved).toBe('3');
+        expect(db.auditLog.create.mock.calls[0][0].data.details).toContain('کسری موجودی');
+      });
+
+      it('stock already reserved by other orders is not available; no stock at all reserves nothing (no movement) and still confirms', async () => {
+        const db = createSalesDb();
+        seedStock(db, 1, 10);
+        setBucket(db, 1, 'RESERVED', 8);
+        mockOrder(db, draftOrder({ items: [orderLine(), orderLine({ id: 102, lineNo: 2, itemId: 2, itemName: 'ماست', quantity: new Prisma.Decimal(4) })] }));
+
+        const result = await buildSalesOrdersService(db).confirm(11, confirmDto as never, SALESPERSON);
+
+        expect(balanceOf(db, 1)?.reserved).toBe('10'); // 8 + min(5, 10 − 8)
+        expect(result.backorders.map((b) => [b.lineNo, b.reserved, b.shortfall])).toEqual([
+          [1, '2', '3'],
+          [2, '0', '4'],
+        ]);
+        expect(db.state.movements.filter((m: any) => m.movementType === 'RESERVE')).toHaveLength(1);
+      });
     });
 
     it('B4: creditLimit = null (cash-only) — a salesperson gets 409 SALES_ORDER_APPROVAL_REQUIRED without credit figures; nothing is numbered or reserved', async () => {
@@ -293,6 +353,20 @@ describe('SalesOrdersService', () => {
       expect(db.state.sequences.size).toBe(0);
       expect(balanceOf(db, 1)?.reserved).toBe('0');
       expect(actions(db)).toEqual(['SALES_ORDER_SUBMITTED_FOR_APPROVAL']);
+    });
+
+    it('stock block (DMS_FEATURE_SALES_BACKORDERS=false): submitForApproval is refused up front (409 INSUFFICIENT_STOCK) when stock is short — stays DRAFT', async () => {
+      process.env.DMS_FEATURE_SALES_BACKORDERS = 'false';
+      const db = createSalesDb();
+      seedStock(db, 1, 3);
+      setCreditPolicy(db, { creditLimit: 1000 });
+      const current = mockOrder(db);
+
+      await expect(buildSalesOrdersService(db).confirm(11, { ...confirmDto, submitForApproval: true } as never, SALESPERSON)).rejects.toMatchObject({
+        response: expect.objectContaining({ code: INSUFFICIENT_STOCK }),
+      });
+      expect(current().status).toBe('DRAFT');
+      expect(actions(db)).toEqual([]);
     });
 
     it('B4: a manager over the limit without a reason gets 409 CREDIT_LIMIT_EXCEEDED with figures — and no number is burned', async () => {
@@ -404,6 +478,20 @@ describe('SalesOrdersService', () => {
       expect(actions(db)).toEqual(['SALES_ORDER_APPROVED', 'SALES_ORDER_CREDIT_OVERRIDE']);
     });
 
+    it('stock block (DMS_FEATURE_SALES_BACKORDERS=false): approve is refused (409 INSUFFICIENT_STOCK) when stock ran out while the order waited — stays PENDING_APPROVAL, no number', async () => {
+      process.env.DMS_FEATURE_SALES_BACKORDERS = 'false';
+      const db = createSalesDb();
+      seedStock(db, 1, 2);
+      const current = mockOrder(db, draftOrder({ status: 'PENDING_APPROVAL' }));
+
+      await expect(buildSalesOrdersService(db).approve(11, { updatedAt: VERSION } as never, MANAGER)).rejects.toMatchObject({
+        response: expect.objectContaining({ code: INSUFFICIENT_STOCK }),
+      });
+      expect(current().status).toBe('PENDING_APPROVAL');
+      expect(db.state.sequences.size).toBe(0);
+      expect(balanceOf(db, 1)?.reserved).toBe('0');
+    });
+
     it('approve refuses an order that is not PENDING_APPROVAL', async () => {
       const db = createSalesDb();
       mockOrder(db);
@@ -467,6 +555,48 @@ describe('SalesOrdersService', () => {
       await expect(service.cancel(11, { updatedAt: VERSION, reason: 'x' } as never, MANAGER)).rejects.toBeInstanceOf(ConflictException);
       await expect(service.close(11, { updatedAt: VERSION, reason: 'x' } as never, MANAGER)).rejects.toBeInstanceOf(ConflictException);
       expect(db.state.movements).toHaveLength(0);
+    });
+  });
+
+  describe('v1: customer credit limit hidden (customerCreditLimit flag off)', () => {
+    const confirmDto = { updatedAt: VERSION, submitForApproval: false };
+    beforeEach(() => {
+      delete process.env.DMS_FEATURE_CREDIT_LIMIT;
+    });
+
+    it('a cash-only customer (creditLimit = null) is confirmed directly by a salesperson — no approval, no number gap', async () => {
+      const db = createSalesDb();
+      seedStock(db, 1, 20);
+      setCreditPolicy(db, { creditLimit: null });
+      const current = mockOrder(db);
+      await buildSalesOrdersService(db).confirm(11, confirmDto as never, SALESPERSON);
+      expect(current()).toEqual(expect.objectContaining({ status: 'CONFIRMED', orderNumber: 'SO-1405-000001' }));
+      expect(current().creditOverrideByUserId).toBeUndefined();
+    });
+
+    it('an order far over a stored limit still confirms — the limit is ignored', async () => {
+      const db = createSalesDb();
+      seedStock(db, 1, 20);
+      setCreditPolicy(db, { creditLimit: 100 });
+      const current = mockOrder(db);
+      await buildSalesOrdersService(db).confirm(11, confirmDto as never, SALESPERSON);
+      expect(current().status).toBe('CONFIRMED');
+    });
+
+    it('credit hold still blocks', async () => {
+      const db = createSalesDb();
+      db.customer.findUnique.mockResolvedValue({ id: 9, status: 'ACTIVE', financialProfile: { creditHold: true } });
+      mockOrder(db);
+      await expect(buildSalesOrdersService(db).confirm(11, confirmDto as never, MANAGER)).rejects.toThrow('توقف اعتباری');
+    });
+
+    it('a discount still needs sales.approve', async () => {
+      const db = createSalesDb();
+      seedStock(db, 1, 20);
+      mockOrder(db, draftOrder({ items: [orderLine({ discountPercent: new Prisma.Decimal(10), discountAmount: new Prisma.Decimal(500) })], totalAmount: new Prisma.Decimal(4500) }));
+      await expect(buildSalesOrdersService(db).confirm(11, confirmDto as never, SALESPERSON)).rejects.toMatchObject({
+        response: expect.objectContaining({ code: SALES_ORDER_APPROVAL_REQUIRED, details: { reasons: ['DISCOUNT'] } }),
+      });
     });
   });
 });

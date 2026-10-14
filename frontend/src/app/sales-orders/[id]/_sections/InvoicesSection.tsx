@@ -1,16 +1,23 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { FilePlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { apiFetch, type ApiError } from "@/lib/api";
 import { InvoicesTable } from "../../../sales-invoices/InvoicesTable";
 import type { SalesInvoiceListItem } from "../../../sales-invoices/shared";
 import { FormSection } from "../../_form/FormSection";
+import type { SalesOrderDetail } from "../../shared";
+import type { SectionToasts } from "../../../receipts/RecordReceiptDialog";
+import { IssueInvoiceDialog } from "./IssueInvoiceDialog";
 
 // «فاکتورها» — this order's invoices: GET /sales-invoices?salesOrderId=
-// (sales.view, unpaginated — one order has few). Read-only here: an invoice
-// is created from a posted delivery (delivery page / invoice queue, B7).
-export function InvoicesSection({ orderId, reloadKey }: { orderId: number; reloadKey: number }) {
+// (sales.view, unpaginated — one order has few). «صدور فاکتور» (sales.invoice)
+// creates + posts an invoice for one of the order's posted deliveries without
+// leaving the page (B7: one invoice per delivery).
+export function InvoicesSection({ order, reloadKey, canInvoice, onChanged, toasts }: { order: SalesOrderDetail; reloadKey: number; canInvoice: boolean; onChanged: () => void; toasts: SectionToasts }) {
+  const orderId = order.id;
+  const [dialogOpen, setDialogOpen] = useState(false);
   const [invoices, setInvoices] = useState<SalesInvoiceListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -37,7 +44,18 @@ export function InvoicesSection({ orderId, reloadKey }: { orderId: number; reloa
   }, [orderId, reloadKey, retryKey]);
 
   return (
-    <FormSection title="فاکتورها" description={invoices.length > 0 ? `${invoices.length.toLocaleString("fa-IR")} فاکتور` : undefined}>
+    <FormSection
+      title="فاکتورها"
+      description={invoices.length > 0 ? `${invoices.length.toLocaleString("fa-IR")} فاکتور` : undefined}
+      action={
+        canInvoice && order.status !== "CANCELLED" ? (
+          <Button size="sm" variant="outline" onClick={() => setDialogOpen(true)}>
+            <FilePlus className="size-3.5" aria-hidden="true" />
+            صدور فاکتور
+          </Button>
+        ) : null
+      }
+    >
       {loading ? (
         <p className="py-4 text-center text-sm text-muted-foreground">در حال بارگذاری...</p>
       ) : loadError ? (
@@ -50,6 +68,7 @@ export function InvoicesSection({ orderId, reloadKey }: { orderId: number; reloa
       ) : (
         <InvoicesTable invoices={invoices} />
       )}
+      <IssueInvoiceDialog open={dialogOpen} onOpenChange={setDialogOpen} orderId={orderId} orderNumber={order.orderNumber} onDone={onChanged} toasts={toasts} />
     </FormSection>
   );
 }

@@ -5,6 +5,7 @@ import { isSameVersion, recordModifiedConflict } from '../common/optimistic-lock
 import { toSkipTake, type PaginationParams } from '../common/pagination';
 import { PrismaService } from '../prisma/prisma.service';
 import { AUDIT_ENTITY, AuditService } from '../audit/audit.service';
+import { archiveDeletedRecord } from '../audit/deleted-records';
 import { InventoryService } from './inventory.service';
 import { EDITABLE_STOCK_DOCUMENT_STATUSES, GOODS_RETURN_DOC_TYPE, STOCK_BUCKET_LABELS_FA } from './inventory-rules';
 import { applyMovements, STOCK_RESERVED_FOR_OTHERS, type MovementInput } from './stock-ledger';
@@ -296,9 +297,10 @@ export class GoodsReturnsService {
   async remove(id: number, userId: number | null, ipAddress?: string) {
     await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM goods_returns WHERE id = ${id} FOR UPDATE`;
-      const goodsReturn = await tx.goodsReturn.findUnique({ where: { id }, select: { id: true, status: true, supplierName: true } });
+      const goodsReturn = await tx.goodsReturn.findUnique({ where: { id }, include: { items: true } });
       if (!goodsReturn) throw new NotFoundException('برگشت کالا پیدا نشد');
       this.ensureEditable(goodsReturn.status);
+      await archiveDeletedRecord(tx, { entityType: AUDIT_ENTITY.GOODS_RETURN, entityId: id, label: goodsReturn.supplierName, record: goodsReturn, userId });
       await tx.goodsReturn.delete({ where: { id } });
       await this.audit.log(
         {

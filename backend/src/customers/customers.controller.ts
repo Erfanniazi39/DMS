@@ -18,7 +18,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import type { Request } from 'express';
 import { memoryStorage } from 'multer';
 import { extname } from 'path';
-import { parsePagination } from '../common/pagination';
+import { parsePagination, parseSort } from '../common/pagination';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { SessionAuthGuard } from '../auth/guards/session-auth.guard';
@@ -26,6 +26,7 @@ import { ZodValidationPipe } from '../auth/zod-validation.pipe';
 import { CustomersService } from './customers.service';
 import { CustomerContactsService } from './customer-contacts.service';
 import { CustomerAddressesService } from './customer-addresses.service';
+import { CustomerBankAccountsService } from './customer-bank-accounts.service';
 import { CustomerNotesService } from './customer-notes.service';
 import { ALLOWED_CUSTOMER_DOCUMENT_EXTENSIONS, CustomerDocumentsService } from './customer-documents.service';
 import { CustomerComplaintsService } from './customer-complaints.service';
@@ -35,6 +36,7 @@ import {
   createCustomerComplaintSchema,
   createCustomerSchema,
   customerAddressSchema,
+  customerBankAccountSchema,
   customerContactSchema,
   customerDocumentSchema,
   customerListQuerySchema,
@@ -46,6 +48,7 @@ import {
   type CreateCustomerComplaintDto,
   type CreateCustomerDto,
   type CustomerAddressDto,
+  type CustomerBankAccountDto,
   type CustomerContactDto,
   type CustomerDocumentDto,
   type CustomerListQuery,
@@ -71,6 +74,7 @@ export class CustomersController {
     private readonly customersService: CustomersService,
     private readonly contactsService: CustomerContactsService,
     private readonly addressesService: CustomerAddressesService,
+    private readonly bankAccountsService: CustomerBankAccountsService,
     private readonly notesService: CustomerNotesService,
     private readonly documentsService: CustomerDocumentsService,
     private readonly complaintsService: CustomerComplaintsService,
@@ -87,6 +91,7 @@ export class CustomersController {
         customerGroupId: query.customerGroupId,
         territoryId: query.territoryId,
         customerKind: query.customerKind,
+        sort: parseSort(query.sortBy, query.sortDir),
       },
       parsePagination(query.page, query.pageSize),
     );
@@ -188,6 +193,32 @@ export class CustomersController {
   @RequirePermissions('customers.manage')
   removeAddress(@Param('id', ParseIntPipe) id: number, @Param('addressId', ParseIntPipe) addressId: number, @Req() req: Request) {
     return this.addressesService.remove(id, addressId, req.session.userId ?? null, req.ip);
+  }
+
+  // --- Bank accounts (served inside the customer detail; full numbers only
+  // to customers.manage / customers.finance, masked otherwise) ----------------
+
+  @Post(':id/bank-accounts')
+  @RequirePermissions('customers.manage')
+  addBankAccount(@Param('id', ParseIntPipe) id: number, @Body(new ZodValidationPipe(customerBankAccountSchema)) dto: CustomerBankAccountDto, @Req() req: Request) {
+    return this.bankAccountsService.create(id, dto, req.session.userId ?? null, req.ip);
+  }
+
+  @Patch(':id/bank-accounts/:accountId')
+  @RequirePermissions('customers.manage')
+  updateBankAccount(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('accountId', ParseIntPipe) accountId: number,
+    @Body(new ZodValidationPipe(customerBankAccountSchema)) dto: CustomerBankAccountDto,
+    @Req() req: Request,
+  ) {
+    return this.bankAccountsService.update(id, accountId, dto, req.session.userId ?? null, req.ip);
+  }
+
+  @Delete(':id/bank-accounts/:accountId')
+  @RequirePermissions('customers.manage')
+  removeBankAccount(@Param('id', ParseIntPipe) id: number, @Param('accountId', ParseIntPipe) accountId: number, @Req() req: Request) {
+    return this.bankAccountsService.remove(id, accountId, req.session.userId ?? null, req.ip);
   }
 
   // --- Notes -------------------------------------------------------------------

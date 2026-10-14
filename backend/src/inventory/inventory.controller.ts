@@ -1,6 +1,7 @@
-import { Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
-import { parsePagination } from '../common/pagination';
+import { isFeatureEnabled, RequireFeature } from '../common/feature-flags';
+import { parsePagination, parseSort } from '../common/pagination';
 import { ZodValidationPipe } from '../common/zod-validation.pipe';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
@@ -38,6 +39,16 @@ import {
   type UpdateStockAdjustmentDto,
 } from './dto/inventory.dto';
 
+// Adjustment kinds that belong to features hidden in v1 can't be drafted.
+function ensureAdjustmentKindEnabled(kind: string) {
+  if (kind === 'BATCH_CUTOVER' && !isFeatureEnabled('inventoryBatchTracking')) {
+    throw new BadRequestException('سند «تبدیل به ردیابی بچ» در این نسخه فعال نیست');
+  }
+  if (kind === 'MARK_DAMAGED' && !isFeatureEnabled('inventoryDamagedAndReturns')) {
+    throw new BadRequestException('سند «اعلام آسیب‌دیدگی» در این نسخه فعال نیست');
+  }
+}
+
 // Reading anything here needs inventory.view; creating/editing/posting/
 // submitting/deleting a stock adjustment needs inventory.adjust.
 // Approving/rejecting a PENDING_APPROVAL document (I2, B10/B20) needs
@@ -57,6 +68,12 @@ export class InventoryController {
   @RequirePermissions('inventory.view')
   listLocations() {
     return this.inventoryService.listLocations();
+  }
+
+  @Get('locations/next-code')
+  @RequirePermissions('inventory.manage')
+  nextLocationCode() {
+    return this.inventoryService.nextLocationCode();
   }
 
   @Post('locations')
@@ -82,8 +99,7 @@ export class InventoryController {
       {
         q: query.q?.trim() || undefined,
         locationId: query.locationId,
-        sortBy: query.sortBy,
-        sortDir: query.sortDir,
+        sort: parseSort(query.sortBy, query.sortDir),
         lowStockOnly: query.lowStockOnly === 'true',
       },
       parsePagination(query.page, query.pageSize),
@@ -141,6 +157,7 @@ export class InventoryController {
         referenceType: query.referenceType,
         dateFrom: query.dateFrom,
         dateTo: query.dateTo,
+        sort: parseSort(query.sortBy, query.sortDir),
       },
       parsePagination(query.page, query.pageSize),
     );
@@ -154,7 +171,7 @@ export class InventoryController {
   @RequirePermissions('inventory.view')
   listAdjustments(@Query(new ZodValidationPipe(stockAdjustmentListQuerySchema)) query: StockAdjustmentListQuery) {
     return this.adjustmentsService.list(
-      { q: query.q?.trim() || undefined, status: query.status, kind: query.kind },
+      { q: query.q?.trim() || undefined, status: query.status, kind: query.kind, sort: parseSort(query.sortBy, query.sortDir) },
       parsePagination(query.page, query.pageSize),
     );
   }
@@ -168,6 +185,7 @@ export class InventoryController {
   @Post('stock-adjustments')
   @RequirePermissions('inventory.adjust')
   createAdjustment(@Body(new ZodValidationPipe(createStockAdjustmentSchema)) dto: CreateStockAdjustmentDto, @Req() req: Request) {
+    ensureAdjustmentKindEnabled(dto.kind);
     return this.adjustmentsService.create(dto, req.session.userId ?? null, req.ip);
   }
 
@@ -178,6 +196,7 @@ export class InventoryController {
     @Body(new ZodValidationPipe(updateStockAdjustmentSchema)) dto: UpdateStockAdjustmentDto,
     @Req() req: Request,
   ) {
+    ensureAdjustmentKindEnabled(dto.kind);
     return this.adjustmentsService.update(id, dto, req.session.userId ?? null, req.ip);
   }
 
@@ -189,7 +208,9 @@ export class InventoryController {
     @Body(new ZodValidationPipe(postStockAdjustmentSchema)) dto: PostStockAdjustmentDto,
     @Req() req: Request,
   ) {
-    return this.adjustmentsService.post(id, dto.updatedAt, req.session.userId ?? null, req.ip);
+    return this.adjustmentsService.post(id, dto.updatedAt, req.session.userId ?? null, req.ip, {
+      canApprove: (req.session.permissions ?? []).includes('inventory.approve'),
+    });
   }
 
   // DRAFT only — a posted adjustment can never be deleted.
@@ -202,6 +223,7 @@ export class InventoryController {
   // DRAFT → PENDING_APPROVAL: only for a kind/net-quantity that needs
   // inventory.approve (B10). post() refuses these; this is the only route in.
   @Post('stock-adjustments/:id/submit')
+  @RequireFeature('inventoryApprovalWorkflow')
   @RequirePermissions('inventory.adjust')
   submitAdjustment(
     @Param('id', ParseIntPipe) id: number,

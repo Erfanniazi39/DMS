@@ -5,7 +5,7 @@ import { z } from 'zod';
 const sortOrderSchema = z
   .number({ error: 'ترتیب نمایش باید عدد باشد' })
   .int('ترتیب نمایش باید عدد صحیح باشد')
-  .min(0, 'ترتیب نمایش نمی‌تواند منفی باشد')
+  .min(1, 'ترتیب نمایش باید حداقل ۱ باشد')
   .max(100000);
 
 const basePaymentTermSchema = z.object({

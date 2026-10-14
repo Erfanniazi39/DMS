@@ -21,6 +21,13 @@ export class UnitsController {
     return this.unitsService.list();
   }
 
+  // Suggested code for a new record — declared before any ':id' route.
+  @Get('next-code')
+  @RequirePermissions('purchases.manage')
+  nextCode() {
+    return this.unitsService.nextCode();
+  }
+
   // Every unit including inactive ones, for the admin/units page.
   @Get('all')
   @RequirePermissions('purchases.manage')

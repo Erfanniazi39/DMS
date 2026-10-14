@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { USERNAME_HINT, sanitizeUsername } from "@/lib/username";
 import { apiFetch, type ApiError } from "@/lib/api";
 import { ROLE_LABELS, type RoleName } from "@/lib/roles";
 
@@ -20,6 +21,7 @@ const statusLabels: Record<AccountStatus, string> = {
 
 const emptyForm = {
   username: "",
+  fullName: "",
   password: "",
   email: "",
   phone: "",
@@ -58,6 +60,7 @@ export default function AddUsersPage() {
         method: "POST",
         body: JSON.stringify({
           username: form.username,
+          fullName: form.fullName.trim() || undefined,
           password: form.password,
           email: form.email.trim() || undefined,
           phone: form.phone.trim() || undefined,
@@ -98,9 +101,22 @@ export default function AddUsersPage() {
                   id="new-username"
                   name="new-username"
                   autoComplete="off"
+                  dir="ltr"
                   value={form.username}
-                  onChange={(event) => update("username", event.target.value)}
+                  onChange={(event) => update("username", sanitizeUsername(event.target.value))}
                   required
+                />
+                <p className="text-xs text-muted-foreground">{USERNAME_HINT}</p>
+              </div>
+              <div className="flex flex-col gap-2">
+                <Label htmlFor="new-fullname">نام و نام خانوادگی (برای نمایش در نامه‌ها)</Label>
+                <Input
+                  id="new-fullname"
+                  name="new-fullname"
+                  autoComplete="off"
+                  maxLength={100}
+                  value={form.fullName}
+                  onChange={(event) => update("fullName", event.target.value)}
                 />
               </div>
               <div className="flex flex-col gap-2">

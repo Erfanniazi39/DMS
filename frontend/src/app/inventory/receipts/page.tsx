@@ -20,6 +20,8 @@ import {
   type GoodsReceiptListItem,
   type StockDocumentStatus,
 } from "../shared";
+import { SortHeader, useTableSort } from "@/components/ui/sortable";
+import { sortQuery } from "@/lib/table-sort";
 
 const toolbarFieldLabel = "text-[11px] font-medium uppercase tracking-wide text-muted-foreground";
 const toolbarSelectClass = "h-8 rounded-md border border-input bg-background px-2 text-xs outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50";
@@ -43,6 +45,8 @@ export default function GoodsReceiptsPage() {
   const [error, setError] = useState<string | null>(null);
   const [filters, setFilters] = useState<Filters>(emptyFilters);
   const [page, setPage] = useState(1);
+  // Server-side column sorting (?sortBy=&sortDir=); a change returns to page 1.
+  const { sort, onSort } = useTableSort(null, () => setPage(1));
   const [total, setTotal] = useState(0);
   const [reloadKey, setReloadKey] = useState(0);
   const lastQueryRef = useRef(filters.q);
@@ -58,7 +62,7 @@ export default function GoodsReceiptsPage() {
         if (filters.status) params.set("status", filters.status);
         params.set("page", String(page));
         params.set("pageSize", String(LIST_PAGE_SIZE));
-        const data = await apiFetch<Paginated<GoodsReceiptListItem>>(`/inventory/goods-receipts?${params.toString()}`);
+        const data = await apiFetch<Paginated<GoodsReceiptListItem>>(`/inventory/goods-receipts?${params.toString()}${sortQuery(sort)}`);
         if (cancelled) return;
         if (data.items.length === 0 && data.total > 0 && page > 1) {
           setPage(totalPages(data.total, LIST_PAGE_SIZE));
@@ -80,7 +84,7 @@ export default function GoodsReceiptsPage() {
       cancelled = true;
       clearTimeout(timeout);
     };
-  }, [filters, page, reloadKey, canView]);
+  }, [filters, page, reloadKey, canView, sort]);
 
   function updateFilter<K extends keyof Filters>(key: K, value: Filters[K]) {
     setFilters((current) => ({ ...current, [key]: value }));
@@ -169,16 +173,16 @@ export default function GoodsReceiptsPage() {
               <table className="w-full text-right text-sm">
                 <thead className="bg-muted/40 text-xs text-muted-foreground">
                   <tr>
-                    <th className="px-3 py-2.5 font-medium">شماره رسید</th>
-                    <th className="px-3 py-2.5 font-medium">تاریخ رسید</th>
-                    <th className="px-3 py-2.5 font-medium">تأمین‌کننده</th>
-                    <th className="px-3 py-2.5 font-medium">سند تأمین‌کننده</th>
-                    <th className="px-3 py-2.5 font-medium">خرید مرتبط</th>
+                    <SortHeader label="شماره رسید" sortKey="receiptNumber" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="تاریخ رسید" sortKey="receiptDate" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="تأمین‌کننده" sortKey="supplier" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="سند تأمین‌کننده" sortKey="supplierDocumentNumber" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="خرید مرتبط" sortKey="purchaseNumber" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
                     <th className="px-3 py-2.5 font-medium">ردیف</th>
-                    <th className="px-3 py-2.5 font-medium">انبار</th>
-                    <th className="px-3 py-2.5 font-medium">کنترل کیفیت</th>
-                    <th className="px-3 py-2.5 font-medium">ثبت‌کننده</th>
-                    <th className="px-3 py-2.5 font-medium">وضعیت</th>
+                    <SortHeader label="انبار" sortKey="location" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="کنترل کیفیت" sortKey="inspectionRequired" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="ثبت‌کننده" sortKey="createdBy" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="وضعیت" sortKey="status" sort={sort} onSort={onSort} className="px-3 py-2.5 font-medium" />
                     {canReceive ? <th className="px-3 py-2.5 font-medium">عملیات</th> : null}
                   </tr>
                 </thead>

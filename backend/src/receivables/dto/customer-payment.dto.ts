@@ -12,6 +12,7 @@ import {
   requiredMoney,
   requiredText,
 } from '../../common/zod-fields';
+import { paymentReceiptInfoFields } from '../../common/payment-receipt-fields';
 
 // Strict field builders from common/zod-fields.ts (same conventions as
 // sales/dto/*.dto.ts) — missing/blank/wrong-type on a required field is a
@@ -38,9 +39,15 @@ const customerPaymentBaseSchema = z
     chequeDueDate: optionalBusinessDate('تاریخ سررسید چک معتبر نیست'),
     bankName: optionalTrimmedString(200),
     note: optionalTrimmedString(2000),
+    // Transfer-receipt info (2026-10-13): informational only, any method.
+    ...paymentReceiptInfoFields,
   })
   .refine((data) => data.method !== 'CHECK' || data.chequeDueDate !== undefined, {
     message: 'برای روش پرداخت «چک» تاریخ سررسید الزامی است',
+    path: ['chequeDueDate'],
+  })
+  .refine((data) => data.chequeDueDate === undefined || data.chequeDueDate.getTime() >= data.paymentDate.getTime(), {
+    message: 'سررسید چک نمی‌تواند پیش از تاریخ دریافت باشد',
     path: ['chequeDueDate'],
   });
 
@@ -76,6 +83,9 @@ export const customerPaymentListQuerySchema = z.object({
   dateTo: optionalDate('تاریخ پایان فیلتر نامعتبر است'),
   page: z.string({ error: 'شماره صفحه نامعتبر است' }).optional(),
   pageSize: z.string({ error: 'تعداد ردیف در هر صفحه نامعتبر است' }).optional(),
+  // Column sorting (?sortBy=&sortDir=) — see common/pagination.ts parseSort().
+  sortBy: z.string().optional(),
+  sortDir: z.string().optional(),
 });
 
 export type CreateCustomerReceiptDto = z.infer<typeof createCustomerReceiptSchema>;

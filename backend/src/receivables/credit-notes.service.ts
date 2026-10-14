@@ -4,6 +4,7 @@ import { nextDocumentNumber } from '../common/document-sequence';
 import { isSameVersion, recordModifiedConflict } from '../common/optimistic-lock';
 import { toSkipTake, type PaginationParams } from '../common/pagination';
 import { AUDIT_ENTITY, AuditService } from '../audit/audit.service';
+import { archiveDeletedRecord } from '../audit/deleted-records';
 import { PrismaService } from '../prisma/prisma.service';
 import { CREDIT_NOTE_DOC_TYPE, EDITABLE_SALES_DOCUMENT_STATUSES, SALES_DOCUMENT_STATUS_LABELS_FA, CREDIT_NOTE_DRAFT_EXISTS } from '../sales/sales-rules';
 import { SalesReturnsService } from '../sales/sales-returns.service';
@@ -233,11 +234,12 @@ export class CreditNotesService {
   async remove(id: number, actor: CreditNoteActor) {
     await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM credit_notes WHERE id = ${id} FOR UPDATE`;
-      const creditNote = await tx.creditNote.findUnique({ where: { id }, select: { id: true, status: true, creditNoteNumber: true } });
+      const creditNote = await tx.creditNote.findUnique({ where: { id }, include: { items: true } });
       if (!creditNote) throw new NotFoundException('یادداشت اعتباری پیدا نشد');
       if (!EDITABLE_SALES_DOCUMENT_STATUSES.includes(creditNote.status)) {
         throw new ConflictException(`فقط یادداشت اعتباری «${SALES_DOCUMENT_STATUS_LABELS_FA.DRAFT}» قابل حذف است`);
       }
+      await archiveDeletedRecord(tx, { entityType: AUDIT_ENTITY.CREDIT_NOTE, entityId: id, label: creditNote.creditNoteNumber, record: creditNote, userId: actor.userId });
       await tx.creditNote.delete({ where: { id } });
       await this.audit.log(
         { userId: actor.userId, ipAddress: actor.ipAddress, action: 'CREDIT_NOTE_DELETED', entityType: AUDIT_ENTITY.CREDIT_NOTE, entityId: id, details: 'پیش‌نویس' },

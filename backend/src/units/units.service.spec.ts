@@ -93,7 +93,7 @@ describe('UnitsService', () => {
       );
     });
 
-    it('starts sortOrder at 0 when no unit exists yet', async () => {
+    it('starts sortOrder at 1 when no unit exists yet', async () => {
       const prisma = createPrismaMock();
       const service = new UnitsService(prisma as never);
       (prisma as any).unit.findFirst.mockResolvedValue(null);
@@ -103,7 +103,7 @@ describe('UnitsService', () => {
       await service.create({ code: 'kg', nameEn: 'Kilogram', nameFa: 'کیلوگرم', isActive: true });
 
       expect((prisma as any).unit.create).toHaveBeenCalledWith(
-        expect.objectContaining({ data: expect.objectContaining({ sortOrder: 0 }) }),
+        expect.objectContaining({ data: expect.objectContaining({ sortOrder: 1 }) }),
       );
     });
 

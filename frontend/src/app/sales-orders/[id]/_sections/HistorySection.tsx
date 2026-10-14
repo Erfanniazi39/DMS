@@ -6,6 +6,9 @@ import { formatJalali } from "@/lib/jalali";
 import { apiFetch, type ApiError } from "@/lib/api";
 import { FormSection } from "../../_form/FormSection";
 import type { SalesOrderHistoryEntry } from "../../shared";
+import { SortHeader, useClientTable } from "@/components/ui/sortable";
+import { ListPagination } from "@/components/ui/list-pagination";
+import type { SortValue } from "@/lib/table-sort";
 
 // «تاریخچه» — GET /sales-orders/:id/history (sales.view): the order's audit
 // trail, newest first. Action codes from backend sales-orders.service.ts
@@ -27,8 +30,17 @@ const actionLabels: Record<string, string> = {
   SALES_ORDER_COMPLETED: "تکمیل سفارش",
 };
 
+// Accessors for in-memory column sorting — each sorts by what its column shows.
+const SALES_ORDERS_ID__SECTIONS_HISTORYSECTION_TSX_SORT_GETTERS: Record<string, (row: SalesOrderHistoryEntry) => SortValue> = {
+  createdAt: (row) => row.createdAt,
+  user: (row) => row.user?.username ?? null,
+  action: (row) => actionLabels[row.action] ?? row.action,
+};
+
 export function HistorySection({ orderId, reloadKey }: { orderId: number; reloadKey: number }) {
   const [entries, setEntries] = useState<SalesOrderHistoryEntry[]>([]);
+  // Sort + page the (small, already loaded) rows in memory; click a header to sort.
+  const table = useClientTable(entries, SALES_ORDERS_ID__SECTIONS_HISTORYSECTION_TSX_SORT_GETTERS, { pageSize: 20 });
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [retryKey, setRetryKey] = useState(0);
@@ -69,14 +81,14 @@ export function HistorySection({ orderId, reloadKey }: { orderId: number; reload
           <table className="w-full min-w-[40rem] text-right text-sm">
             <thead className="bg-muted/40 text-xs text-muted-foreground">
               <tr>
-                <th className="px-3 py-2 font-medium">زمان</th>
-                <th className="px-3 py-2 font-medium">کاربر</th>
-                <th className="px-3 py-2 font-medium">رویداد</th>
+                <SortHeader label="زمان" sortKey="createdAt" sort={table.sort} onSort={table.onSort} className="px-3 py-2 font-medium" />
+                <SortHeader label="کاربر" sortKey="user" sort={table.sort} onSort={table.onSort} className="px-3 py-2 font-medium" />
+                <SortHeader label="رویداد" sortKey="action" sort={table.sort} onSort={table.onSort} className="px-3 py-2 font-medium" />
                 <th className="px-3 py-2 font-medium">جزئیات</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
-              {entries.map((entry) => (
+              {table.pageRows.map((entry) => (
                 <tr key={entry.id} className="align-top">
                   <td className="px-3 py-2 whitespace-nowrap text-muted-foreground">
                     {formatJalali(entry.createdAt)}{" "}
@@ -91,6 +103,7 @@ export function HistorySection({ orderId, reloadKey }: { orderId: number; reload
           </table>
         </div>
       )}
+          {table.total > table.pageSize ? <ListPagination page={table.page} pageSize={table.pageSize} total={table.total} onPageChange={table.setPage} className="mt-3" /> : null}
     </FormSection>
   );
 }

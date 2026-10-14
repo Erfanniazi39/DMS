@@ -9,7 +9,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToasts, ToastViewport } from "@/components/ui/toast";
 import { apiFetch, type ApiError } from "@/lib/api";
+import { fillSuggestedCode } from "@/lib/suggested-code";
 import { useAdminUser } from "@/app/admin/layout";
+import { SortHeader, useClientTable } from "@/components/ui/sortable";
+import { ListPagination } from "@/components/ui/list-pagination";
+import type { SortValue } from "@/lib/table-sort";
 
 // Customer groups — master data consumed by the Customer form's group
 // dropdown (active-only GET /customer-groups). This page reads
@@ -18,10 +22,18 @@ import { useAdminUser } from "@/app/admin/layout";
 // Item Categories page. No delete: a group already used by customers is
 // retired by deactivating it (hidden from the Customer form dropdown).
 type CustomerGroup = { id: number; code: string; nameEn: string; nameFa: string; isActive: boolean; sortOrder: number };
-type FormState = { code: string; nameEn: string; nameFa: string; isActive: boolean; sortOrder: string };
+type FormState = { code: string; nameEn: string; nameFa: string; isActive: boolean };
 type StatusFilter = "all" | "active" | "inactive";
 
-const emptyForm: FormState = { code: "", nameEn: "", nameFa: "", isActive: true, sortOrder: "" };
+const emptyForm: FormState = { code: "", nameEn: "", nameFa: "", isActive: true };
+
+// Accessors for in-memory column sorting — each sorts by what its column shows.
+const CUSTOMER_GROUPS_SORT_GETTERS: Record<string, (row: CustomerGroup) => SortValue> = {
+  nameFa: (row) => row.nameFa,
+  nameEn: (row) => row.nameEn,
+  code: (row) => row.code,
+  isActive: (row) => row.isActive ? "فعال" : "غیرفعال",
+};
 
 export default function CustomerGroupPage() {
   const user = useAdminUser();
@@ -76,6 +88,8 @@ export default function CustomerGroupPage() {
       return matchesQuery && matchesStatus;
     });
   }, [rows, query, statusFilter]);
+  // Sort + page the (small, already loaded) rows in memory; click a header to sort.
+  const table = useClientTable(filteredRows, CUSTOMER_GROUPS_SORT_GETTERS, { pageSize: 20 });
 
   function update<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((current) => ({ ...current, [key]: value }));
@@ -84,6 +98,7 @@ export default function CustomerGroupPage() {
   function openCreateForm() {
     setEditingId(null);
     setForm(emptyForm);
+    fillSuggestedCode("/customer-groups/next-code", (code) => setForm((current) => (current.code === "" ? { ...current, code } : current)));
     setFormOpen(true);
   }
 
@@ -94,7 +109,6 @@ export default function CustomerGroupPage() {
       nameEn: row.nameEn,
       nameFa: row.nameFa,
       isActive: row.isActive,
-      sortOrder: String(row.sortOrder),
     });
     setFormOpen(true);
   }
@@ -107,23 +121,10 @@ export default function CustomerGroupPage() {
 
   async function saveRow(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!form.code.trim() || !form.nameEn.trim() || !form.nameFa.trim()) {
-      pushError("کد، نام انگلیسی و نام فارسی گروه مشتری الزامی است.");
+    if (!form.code.trim() || !form.nameFa.trim()) {
+      pushError("کد و نام فارسی گروه مشتری الزامی است.");
       return;
     }
-    const sortOrderText = form.sortOrder.trim();
-    // Blank sortOrder on create means "append at the end" (server picks it);
-    // on edit the current value is prefilled, so blank is an input error.
-    if (sortOrderText === "" && editingId) {
-      pushError("ترتیب نمایش الزامی است.");
-      return;
-    }
-    const sortOrder = sortOrderText === "" ? undefined : Number(sortOrderText);
-    if (sortOrder !== undefined && (!Number.isInteger(sortOrder) || sortOrder < 0)) {
-      pushError("ترتیب نمایش باید عدد صحیح و نامنفی باشد.");
-      return;
-    }
-
     setSaving(true);
     try {
       const payload = {
@@ -131,7 +132,6 @@ export default function CustomerGroupPage() {
         nameEn: form.nameEn.trim(),
         nameFa: form.nameFa.trim(),
         isActive: form.isActive,
-        ...(sortOrder !== undefined ? { sortOrder } : {}),
       };
       await apiFetch(editingId ? `/customer-groups/${editingId}` : "/customer-groups", {
         method: editingId ? "PATCH" : "POST",
@@ -234,23 +234,21 @@ export default function CustomerGroupPage() {
                 <table className="w-full min-w-[42rem] text-right text-sm">
                   <thead className="bg-muted/50 text-muted-foreground">
                     <tr>
-                      <th className="px-4 py-3 font-medium">نام فارسی</th>
-                      <th className="px-4 py-3 font-medium">نام انگلیسی</th>
-                      <th className="px-4 py-3 font-medium">کد</th>
-                      <th className="px-4 py-3 font-medium">ترتیب نمایش</th>
-                      <th className="px-4 py-3 font-medium">وضعیت</th>
+                      <SortHeader label="نام فارسی" sortKey="nameFa" sort={table.sort} onSort={table.onSort} className="px-4 py-3 font-medium" />
+                      <SortHeader label="نام انگلیسی" sortKey="nameEn" sort={table.sort} onSort={table.onSort} className="px-4 py-3 font-medium" />
+                      <SortHeader label="کد" sortKey="code" sort={table.sort} onSort={table.onSort} className="px-4 py-3 font-medium" />
+                      <SortHeader label="وضعیت" sortKey="isActive" sort={table.sort} onSort={table.onSort} className="px-4 py-3 font-medium" />
                       {canManage ? <th className="px-4 py-3 font-medium">عملیات</th> : null}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">
-                    {filteredRows.map((row) => (
+                    {table.pageRows.map((row) => (
                       <tr key={row.id} className={row.isActive ? "hover:bg-muted/30" : "text-muted-foreground hover:bg-muted/30"}>
                         <td className="px-4 py-3 font-medium">{row.nameFa}</td>
                         <td className="px-4 py-3" dir="ltr">
-                          <span className="block text-right">{row.nameEn}</span>
+                          <span className="block text-right">{row.nameEn || "—"}</span>
                         </td>
                         <td className="px-4 py-3 font-mono text-xs text-muted-foreground">{row.code}</td>
-                        <td className="px-4 py-3">{row.sortOrder.toLocaleString("fa-IR")}</td>
                         <td className="px-4 py-3">
                           <span
                             className={`inline-flex rounded px-2 py-0.5 text-xs ${
@@ -273,6 +271,7 @@ export default function CustomerGroupPage() {
                 </table>
               </div>
             )}
+            {table.total > table.pageSize ? <ListPagination page={table.page} pageSize={table.pageSize} total={table.total} onPageChange={table.setPage} className="mt-3" /> : null}
           </CardContent>
         </Card>
       </div>
@@ -285,7 +284,7 @@ export default function CustomerGroupPage() {
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{editingId ? "ویرایش گروه مشتری" : "افزودن گروه مشتری کالای جدید"}</DialogTitle>
+            <DialogTitle>{editingId ? "ویرایش گروه مشتری" : "افزودن گروه مشتری"}</DialogTitle>
             <DialogCloseButton />
           </DialogHeader>
           <DialogBody>
@@ -295,25 +294,12 @@ export default function CustomerGroupPage() {
                 <Input id="customer-groups-code" dir="ltr" value={form.code} onChange={(event) => update("code", event.target.value)} required />
               </div>
               <div className="flex flex-col gap-2">
-                <Label htmlFor="customer-groups-sort-order">ترتیب نمایش</Label>
-                <Input
-                  id="customer-groups-sort-order"
-                  type="number"
-                  min={0}
-                  step={1}
-                  dir="ltr"
-                  placeholder={editingId ? undefined : "خالی = انتهای فهرست"}
-                  value={form.sortOrder}
-                  onChange={(event) => update("sortOrder", event.target.value)}
-                />
-              </div>
-              <div className="flex flex-col gap-2">
                 <Label htmlFor="customer-groups-name-fa">نام فارسی</Label>
                 <Input id="customer-groups-name-fa" value={form.nameFa} onChange={(event) => update("nameFa", event.target.value)} required />
               </div>
               <div className="flex flex-col gap-2">
-                <Label htmlFor="customer-groups-name-en">نام انگلیسی</Label>
-                <Input id="customer-groups-name-en" dir="ltr" value={form.nameEn} onChange={(event) => update("nameEn", event.target.value)} required />
+                <Label htmlFor="customer-groups-name-en">نام انگلیسی (اختیاری)</Label>
+                <Input id="customer-groups-name-en" dir="ltr" value={form.nameEn} onChange={(event) => update("nameEn", event.target.value)} />
               </div>
               <div className="flex flex-col gap-1 md:col-span-2">
                 <label htmlFor="customer-groups-is-active" className="flex items-center gap-2 text-sm">

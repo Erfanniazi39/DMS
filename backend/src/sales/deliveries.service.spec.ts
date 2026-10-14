@@ -191,6 +191,23 @@ describe('DeliveriesService', () => {
   describe('post', () => {
     const postDto = { updatedAt: VERSION };
 
+    it('salesStockEffects off (v1): posts the delivery and counts delivered qty without any stock movement or stock check', async () => {
+      process.env.DMS_FEATURE_SALES_STOCK = 'false';
+      try {
+        const db = createSalesDb(); // no stock seeded — would be NEGATIVE_STOCK with the flag on
+        const state = world(db);
+
+        await buildDeliveriesService(db).post(31, postDto as never, ACTOR);
+
+        expect(state.delivery).toEqual(expect.objectContaining({ status: 'POSTED', deliveryNumber: 'DN-1405-000001' }));
+        expect(db.state.movements).toHaveLength(0);
+        expect(state.order.items[0].deliveredQty.toString()).toBe('3');
+        expect(state.order.deliveryStatus).toBe('PARTIALLY_DELIVERED');
+      } finally {
+        process.env.DMS_FEATURE_SALES_STOCK = 'true';
+      }
+    });
+
     it('POSTED + DN number + DELIVERY_ISSUE (ON_HAND −q, RESERVED −min(q, reserved)) + counters + PARTIALLY_DELIVERED, in one transaction', async () => {
       const db = createSalesDb();
       seedStock(db, 1, 20);

@@ -5,6 +5,7 @@ import { RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogBody, DialogCloseButton, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { MoneyInput } from "@/components/ui/money-input";
 import { Label } from "@/components/ui/label";
 import { RequiredMark, selectClass, textareaClass } from "@/components/ui/form-field";
 import { JalaliDateInput } from "@/components/ui/jalali-date-input";
@@ -12,6 +13,7 @@ import { formatMoney } from "@/lib/format";
 import { JALALI_MAX_YEAR } from "@/lib/jalali";
 import { parseNumberInput } from "@/lib/number-input";
 import { apiFetch, type ApiError } from "@/lib/api";
+import { TransactionInfoFields, emptyTransactionInfo, transactionInfoErrors, transactionInfoPayload, type TransactionInfo } from "@/components/payments/transaction-info";
 import {
   PAYMENT_METHODS,
   paymentMethodLabels,
@@ -54,9 +56,32 @@ type AllocationLine = { invoiceId: number; invoiceNumber: string | null; dueDate
 //
 // Plain native <select>s only (no Base-UI combobox) — same convention as
 // every other customer/item picker in this project.
-export function RecordReceiptDialog({ open, onOpenChange, onCreated, toasts }: { open: boolean; onOpenChange: (open: boolean) => void; onCreated: (paymentId: number) => void; toasts: SectionToasts }) {
+//
+// Opened from a sales invoice / order (presetCustomerId + presetInvoiceIds): the
+// customer is fixed, the amount defaults to what those invoices still owe and
+// the allocation grid puts the amount on THEM first (other open invoices
+// start at 0 and stay editable).
+export function RecordReceiptDialog({
+  open,
+  onOpenChange,
+  onCreated,
+  toasts,
+  presetCustomerId,
+  presetInvoiceIds,
+  minPaymentDate,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onCreated: (paymentId: number) => void;
+  toasts: SectionToasts;
+  presetCustomerId?: number;
+  presetInvoiceIds?: number[];
+  // Opened from an invoice: the payment can't predate that invoice.
+  minPaymentDate?: string;
+}) {
   const { pushError, pushErrors, pushSuccess } = toasts;
   const [form, setForm] = useState<ReceiptForm>(emptyForm);
+  const [txInfo, setTxInfo] = useState<TransactionInfo>(emptyTransactionInfo);
   const [customers, setCustomers] = useState<CustomerPaymentFormOptions["customers"]>([]);
   const [openInvoices, setOpenInvoices] = useState<OpenInvoiceRow[]>([]);
   const [allocations, setAllocations] = useState<AllocationLine[]>([]);
@@ -71,7 +96,8 @@ export function RecordReceiptDialog({ open, onOpenChange, onCreated, toasts }: {
   if (open !== wasOpen) {
     setWasOpen(open);
     if (open) {
-      setForm(emptyForm);
+      setForm({ ...emptyForm, customerId: presetCustomerId ? String(presetCustomerId) : "" });
+      setTxInfo(emptyTransactionInfo);
       setOpenInvoices([]);
       setAllocations([]);
     }
@@ -84,6 +110,20 @@ export function RecordReceiptDialog({ open, onOpenChange, onCreated, toasts }: {
       .catch((reason) => pushError((reason as ApiError).message ?? "دریافت فهرست مشتریان ناموفق بود."));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
+
+  // Opened from an invoice: default the amount to what that invoice still owes.
+  useEffect(() => {
+    if (!open || !presetCustomerId || !presetInvoiceIds?.length) return;
+    apiFetch<OpenInvoiceRow[]>(`/receivables/customers/${presetCustomerId}/open-invoices`)
+      .then((rows) => {
+        const owed = rows.filter((invoice) => presetInvoiceIds.includes(invoice.id)).reduce((sum, invoice) => sum + Number(invoice.openAmount), 0);
+        if (!(owed > 0)) return;
+        setForm((current) => ({ ...current, amount: String(owed) }));
+        void loadSuggestion(String(presetCustomerId), owed);
+      })
+      .catch((reason) => pushError((reason as ApiError).message ?? "دریافت اطلاعات فاکتور ناموفق بود."));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, presetCustomerId, presetInvoiceIds]);
 
   function update<K extends keyof ReceiptForm>(key: K, value: ReceiptForm[K]) {
     setForm((current) => ({ ...current, [key]: value }));
@@ -103,6 +143,18 @@ export function RecordReceiptDialog({ open, onOpenChange, onCreated, toasts }: {
       ]);
       setOpenInvoices(open);
       const suggested = new Map(suggestion.items.map((item) => [item.invoiceId, item.amount]));
+      if (presetInvoiceIds?.length) {
+        // Fill the preset invoices first (in the order given), up to the amount.
+        suggested.clear();
+        let remaining = amount;
+        for (const invoiceId of presetInvoiceIds) {
+          const target = open.find((invoice) => invoice.id === invoiceId);
+          if (!target || remaining <= 0) continue;
+          const take = Math.min(remaining, Number(target.openAmount));
+          suggested.set(target.id, String(take));
+          remaining -= take;
+        }
+      }
       setAllocations(open.map((invoice) => ({ invoiceId: invoice.id, invoiceNumber: invoice.invoiceNumber, dueDate: invoice.dueDate, openAmount: invoice.openAmount, amount: suggested.get(invoice.id) ?? "0" })));
     } catch (reason) {
       pushError((reason as ApiError).message ?? "دریافت فاکتورهای باز مشتری ناموفق بود.");
@@ -140,6 +192,9 @@ export function RecordReceiptDialog({ open, onOpenChange, onCreated, toasts }: {
     if (!form.paymentDate) problems.push("تاریخ دریافت را وارد کنید.");
     if (!(amountValue > 0)) problems.push("مبلغ باید بزرگ‌تر از صفر باشد.");
     if (form.method === "CHECK" && !form.chequeDueDate) problems.push("برای روش پرداخت «چک» تاریخ سررسید الزامی است.");
+    if (minPaymentDate && form.paymentDate && form.paymentDate < minPaymentDate) problems.push("تاریخ دریافت نمی‌تواند پیش از تاریخ فاکتور باشد.");
+    if (form.chequeDueDate && form.paymentDate && form.chequeDueDate < form.paymentDate) problems.push("سررسید چک نمی‌تواند پیش از تاریخ دریافت باشد.");
+    problems.push(...transactionInfoErrors(txInfo));
     if (allocatedTotal > amountValue) problems.push("جمع تخصیص‌ها نمی‌تواند از مبلغ دریافت بیشتر باشد.");
     if (problems.length > 0) {
       pushErrors(problems);
@@ -158,6 +213,7 @@ export function RecordReceiptDialog({ open, onOpenChange, onCreated, toasts }: {
           chequeDueDate: form.method === "CHECK" ? form.chequeDueDate : undefined,
           bankName: form.method === "CHECK" ? form.bankName.trim() : undefined,
           note: form.note.trim(),
+          ...transactionInfoPayload(txInfo),
         }),
       });
       const items = allocations.filter((line) => (parseNumberInput(line.amount) || 0) > 0).map((line) => ({ invoiceId: line.invoiceId, amount: parseNumberInput(line.amount) }));
@@ -195,7 +251,7 @@ export function RecordReceiptDialog({ open, onOpenChange, onCreated, toasts }: {
             <div className="grid gap-4 md:grid-cols-2">
               <div className="flex flex-col gap-2">
                 <Label htmlFor="receipt-customer">مشتری<RequiredMark /></Label>
-                <select id="receipt-customer" className={selectClass} value={form.customerId} onChange={(event) => changeCustomer(event.target.value)}>
+                <select id="receipt-customer" className={selectClass} disabled={Boolean(presetCustomerId)} value={form.customerId} onChange={(event) => changeCustomer(event.target.value)}>
                   <option value="">— انتخاب کنید —</option>
                   {customers.map((customer) => (
                     <option key={customer.id} value={customer.id}>{customer.name} ({customer.customerNumber})</option>
@@ -204,11 +260,11 @@ export function RecordReceiptDialog({ open, onOpenChange, onCreated, toasts }: {
               </div>
               <div className="flex flex-col gap-2">
                 <Label htmlFor="receipt-date">تاریخ دریافت<RequiredMark /></Label>
-                <JalaliDateInput idPrefix="receipt-date" value={form.paymentDate} onChange={(value) => update("paymentDate", value)} maxYear={JALALI_MAX_YEAR} required />
+                <JalaliDateInput idPrefix="receipt-date" value={form.paymentDate} minDate={minPaymentDate} onChange={(value) => update("paymentDate", value)} maxYear={JALALI_MAX_YEAR} required />
               </div>
               <div className="flex flex-col gap-2">
                 <Label htmlFor="receipt-amount">مبلغ (ریال)<RequiredMark /></Label>
-                <Input id="receipt-amount" inputMode="decimal" value={form.amount} onChange={(event) => update("amount", event.target.value)} onBlur={refreshSuggestion} required />
+                <MoneyInput id="receipt-amount" value={form.amount} onChange={(value) => update("amount", value)} onBlur={refreshSuggestion} required />
               </div>
               <div className="flex flex-col gap-2">
                 <Label htmlFor="receipt-method">روش پرداخت</Label>
@@ -222,7 +278,7 @@ export function RecordReceiptDialog({ open, onOpenChange, onCreated, toasts }: {
                 <>
                   <div className="flex flex-col gap-2">
                     <Label htmlFor="receipt-cheque-due">سررسید چک<RequiredMark /></Label>
-                    <JalaliDateInput idPrefix="receipt-cheque-due" value={form.chequeDueDate} onChange={(value) => update("chequeDueDate", value)} maxYear={JALALI_MAX_YEAR} required />
+                    <JalaliDateInput idPrefix="receipt-cheque-due" value={form.chequeDueDate} minDate={form.paymentDate || undefined} onChange={(value) => update("chequeDueDate", value)} maxYear={JALALI_MAX_YEAR} required />
                   </div>
                   <div className="flex flex-col gap-2">
                     <Label htmlFor="receipt-bank">نام بانک</Label>
@@ -231,10 +287,11 @@ export function RecordReceiptDialog({ open, onOpenChange, onCreated, toasts }: {
                 </>
               ) : null}
               <div className="flex flex-col gap-2">
-                <Label htmlFor="receipt-reference">شماره مرجع</Label>
+                <Label htmlFor="receipt-reference">{form.method === "CHECK" ? "شماره چک" : "کد پیگیری / شماره مرجع"}</Label>
                 <Input id="receipt-reference" value={form.referenceNumber} onChange={(event) => update("referenceNumber", event.target.value)} />
               </div>
             </div>
+            <TransactionInfoFields idPrefix="receipt" value={txInfo} onChange={setTxInfo} />
             <div className="flex flex-col gap-2">
               <Label htmlFor="receipt-note">یادداشت</Label>
               <textarea id="receipt-note" className={textareaClass} value={form.note} onChange={(event) => update("note", event.target.value)} />
@@ -271,7 +328,7 @@ export function RecordReceiptDialog({ open, onOpenChange, onCreated, toasts }: {
                             <td className="px-3 py-2 text-muted-foreground">{line.dueDate ? line.dueDate.slice(0, 10) : "-"}</td>
                             <td className="px-3 py-2 tabular-nums">{formatMoney(line.openAmount)}</td>
                             <td className="px-3 py-2">
-                              <Input className="h-7 w-28" inputMode="decimal" value={line.amount} onChange={(event) => setAllocationAmount(line.invoiceId, event.target.value)} />
+                              <MoneyInput className="h-7 w-32" value={line.amount} onChange={(value) => setAllocationAmount(line.invoiceId, value)} />
                             </td>
                           </tr>
                         ))}

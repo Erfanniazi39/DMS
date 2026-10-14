@@ -9,6 +9,7 @@ import { RequiredMark, selectClass } from "@/components/ui/form-field";
 import { JalaliDateInput } from "@/components/ui/jalali-date-input";
 import { formatJalali, toJalali } from "@/lib/jalali";
 import { parseNumberInput } from "@/lib/number-input";
+import { useFeature } from "@/lib/session";
 import { batchHasStock, formatQuantity, type ItemBatchRow, type ItemOption, type StockAdjustmentKind } from "../../shared";
 import { FormSection } from "./FormSection";
 
@@ -271,6 +272,7 @@ function LineBatchPicker({
   batches: BatchesState | undefined;
   onChange: (patch: Partial<AdjustmentLineRow>) => void;
 }) {
+  const batchTrackingOn = useFeature("inventoryBatchTracking");
   if (!line.itemId) return <span className="text-xs text-muted-foreground">-</span>;
   if (batches === undefined || batches === "loading") return <span className="text-xs text-muted-foreground">در حال بارگذاری بچ‌ها...</span>;
 
@@ -280,6 +282,9 @@ function LineBatchPicker({
   // lines may top up any batch of the item (including a depleted one).
   const choices = batches === "error" ? [] : decrease ? batches.filter(batchHasStock) : batches;
   const known = batches !== "error" && batches.length > 0;
+  // v1: batch tracking is hidden, so an item with no batches is treated as
+  // untracked — no optional "new lot" entry. Already-tracked items keep it.
+  if (!known && batches !== "error" && !batchTrackingOn) return <span className="text-xs text-muted-foreground">-</span>;
   const value = line.batchMode === "existing" ? `batch:${line.batchId}` : line.batchMode === "new" ? "new" : "";
 
   function select(next: string) {

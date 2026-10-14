@@ -9,7 +9,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToasts, ToastViewport } from "@/components/ui/toast";
 import { apiFetch, type ApiError } from "@/lib/api";
+import { fillSuggestedCode } from "@/lib/suggested-code";
 import { useAdminUser } from "@/app/admin/layout";
+import { SortHeader, useClientTable } from "@/components/ui/sortable";
+import { ListPagination } from "@/components/ui/list-pagination";
+import type { SortValue } from "@/lib/table-sort";
 
 // Item categories are master data consumed by the Item form (its dropdown
 // reads the active-only GET /item-categories). This page reads
@@ -23,12 +27,23 @@ type StatusFilter = "all" | "active" | "inactive";
 
 const emptyForm: FormState = { code: "", nameEn: "", nameFa: "", isActive: true, sortOrder: "" };
 
+// Accessors for in-memory column sorting — each sorts by what its column shows.
+const ITEM_CATEGORIES_SORT_GETTERS: Record<string, (row: ItemCategory) => SortValue> = {
+  sortOrder: (row) => row.sortOrder,
+  nameFa: (row) => row.nameFa,
+  nameEn: (row) => row.nameEn,
+  code: (row) => row.code,
+  isActive: (row) => row.isActive ? "فعال" : "غیرفعال",
+};
+
 export default function ItemCategoriesPage() {
   const user = useAdminUser();
   const canView = user?.permissions.includes("items.view") ?? false;
   // Write actions (create/edit) are hidden without items.manage — the
   // backend would reject them anyway, this just avoids offering them.
   const canManage = user?.permissions.includes("items.manage") ?? false;
+  // Delete is admin-only: users.create is held by the ADMIN role alone (the backend route checks the same).
+  const canDelete = user?.permissions.includes("users.create") ?? false;
 
   const [categories, setCategories] = useState<ItemCategory[]>([]);
   const [loading, setLoading] = useState(true);
@@ -40,6 +55,8 @@ export default function ItemCategoriesPage() {
   const [formOpen, setFormOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<FormState>(emptyForm);
+  const [deleteTarget, setDeleteTarget] = useState<ItemCategory | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const { toasts, pushError, pushErrors, pushSuccess, dismiss } = useToasts();
 
@@ -52,6 +69,22 @@ export default function ItemCategoriesPage() {
       setLoadError((reason as ApiError).message ?? "دریافت فهرست دسته‌بندی‌های کالا ناموفق بود.");
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function confirmDelete() {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      await apiFetch(`/item-categories/${deleteTarget.id}`, { method: "DELETE" });
+      pushSuccess(`دسته‌بندی «${deleteTarget.nameFa}» حذف شد.`);
+      setDeleteTarget(null);
+      await loadAll();
+    } catch (reason) {
+      pushError((reason as ApiError).message ?? "حذف دسته‌بندی ناموفق بود.");
+      setDeleteTarget(null);
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -76,6 +109,8 @@ export default function ItemCategoriesPage() {
       return matchesQuery && matchesStatus;
     });
   }, [categories, query, statusFilter]);
+  // Sort + page the (small, already loaded) rows in memory; click a header to sort.
+  const table = useClientTable(filteredCategories, ITEM_CATEGORIES_SORT_GETTERS, { pageSize: 20 });
 
   function update<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((current) => ({ ...current, [key]: value }));
@@ -84,6 +119,7 @@ export default function ItemCategoriesPage() {
   function openCreateForm() {
     setEditingId(null);
     setForm(emptyForm);
+    fillSuggestedCode("/item-categories/next-code", (code) => setForm((current) => (current.code === "" ? { ...current, code } : current)));
     setFormOpen(true);
   }
 
@@ -119,8 +155,8 @@ export default function ItemCategoriesPage() {
       return;
     }
     const sortOrder = sortOrderText === "" ? undefined : Number(sortOrderText);
-    if (sortOrder !== undefined && (!Number.isInteger(sortOrder) || sortOrder < 0)) {
-      pushError("ترتیب نمایش باید عدد صحیح و نامنفی باشد.");
+    if (sortOrder !== undefined && (!Number.isInteger(sortOrder) || sortOrder < 1)) {
+      pushError("ترتیب نمایش باید عدد صحیح و حداقل ۱ باشد.");
       return;
     }
 
@@ -234,37 +270,44 @@ export default function ItemCategoriesPage() {
                 <table className="w-full min-w-[42rem] text-right text-sm">
                   <thead className="bg-muted/50 text-muted-foreground">
                     <tr>
-                      <th className="px-4 py-3 font-medium">نام فارسی</th>
-                      <th className="px-4 py-3 font-medium">نام انگلیسی</th>
-                      <th className="px-4 py-3 font-medium">کد</th>
-                      <th className="px-4 py-3 font-medium">ترتیب نمایش</th>
-                      <th className="px-4 py-3 font-medium">وضعیت</th>
-                      {canManage ? <th className="px-4 py-3 font-medium">عملیات</th> : null}
+                      <SortHeader label="ترتیب نمایش" sortKey="sortOrder" sort={table.sort} onSort={table.onSort} className="px-4 py-3 font-medium" />
+                      <SortHeader label="نام فارسی" sortKey="nameFa" sort={table.sort} onSort={table.onSort} className="px-4 py-3 font-medium" />
+                      <SortHeader label="نام انگلیسی" sortKey="nameEn" sort={table.sort} onSort={table.onSort} className="px-4 py-3 font-medium" />
+                      <SortHeader label="کد" sortKey="code" sort={table.sort} onSort={table.onSort} className="px-4 py-3 font-medium" />
+                      <SortHeader label="وضعیت" sortKey="isActive" sort={table.sort} onSort={table.onSort} className="px-4 py-3 font-medium" />
+                      {canManage || canDelete ? <th className="px-4 py-3 font-medium">عملیات</th> : null}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">
-                    {filteredCategories.map((category) => (
+                    {table.pageRows.map((category) => (
                       <tr key={category.id} className={category.isActive ? "hover:bg-muted/30" : "text-muted-foreground hover:bg-muted/30"}>
+                        <td className="px-4 py-3">{category.sortOrder.toLocaleString("fa-IR")}</td>
                         <td className="px-4 py-3 font-medium">{category.nameFa}</td>
                         <td className="px-4 py-3" dir="ltr">
                           <span className="block text-right">{category.nameEn}</span>
                         </td>
                         <td className="px-4 py-3 font-mono text-xs text-muted-foreground">{category.code}</td>
-                        <td className="px-4 py-3">{category.sortOrder.toLocaleString("fa-IR")}</td>
                         <td className="px-4 py-3">
                           <span
                             className={`inline-flex rounded px-2 py-0.5 text-xs ${
-                              category.isActive ? "bg-emerald-100 text-emerald-800" : "bg-muted text-muted-foreground"
+                              category.isActive ? "bg-emerald-100 text-emerald-800" : "bg-destructive/10 text-destructive"
                             }`}
                           >
                             {category.isActive ? "فعال" : "غیرفعال"}
                           </span>
                         </td>
-                        {canManage ? (
+                        {canManage || canDelete ? (
                           <td className="px-4 py-3">
-                            <Button variant="link" size="sm" onClick={() => openEditForm(category)}>
-                              ویرایش
-                            </Button>
+                            {canManage ? (
+                              <Button variant="link" size="sm" onClick={() => openEditForm(category)}>
+                                ویرایش
+                              </Button>
+                            ) : null}
+                            {canDelete ? (
+                              <Button variant="link" size="sm" className="text-destructive" onClick={() => setDeleteTarget(category)}>
+                                حذف
+                              </Button>
+                            ) : null}
                           </td>
                         ) : null}
                       </tr>
@@ -273,6 +316,7 @@ export default function ItemCategoriesPage() {
                 </table>
               </div>
             )}
+            {table.total > table.pageSize ? <ListPagination page={table.page} pageSize={table.pageSize} total={table.total} onPageChange={table.setPage} className="mt-3" /> : null}
           </CardContent>
         </Card>
       </div>
@@ -335,6 +379,28 @@ export default function ItemCategoriesPage() {
               {saving ? "در حال ذخیره..." : editingId ? "ذخیره تغییرات" : "ایجاد دسته‌بندی"}
             </Button>
             <Button type="button" variant="outline" onClick={closeForm}>
+              انصراف
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={deleteTarget !== null} onOpenChange={(open) => (!open && !deleting ? setDeleteTarget(null) : undefined)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>حذف دسته‌بندی</DialogTitle>
+            <DialogCloseButton />
+          </DialogHeader>
+          <DialogBody>
+            <p className="text-sm">
+              دسته‌بندی «{deleteTarget?.nameFa}» برای همیشه حذف شود؟ اگر کالایی از آن استفاده کند، حذف انجام نمی‌شود و باید آن را غیرفعال کنید. یک نسخهٔ فقط‌خواندنی از آن در «سوابق حذف» نگهداری می‌شود.
+            </p>
+          </DialogBody>
+          <DialogFooter>
+            <Button type="button" variant="destructive" disabled={deleting} onClick={() => void confirmDelete()}>
+              {deleting ? "در حال حذف..." : "حذف"}
+            </Button>
+            <Button type="button" variant="outline" disabled={deleting} onClick={() => setDeleteTarget(null)}>
               انصراف
             </Button>
           </DialogFooter>

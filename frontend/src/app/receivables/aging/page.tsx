@@ -8,10 +8,20 @@ import { formatMoney } from "@/lib/format";
 import { apiFetch, type ApiError } from "@/lib/api";
 import { useAdminUser } from "@/app/admin/layout";
 import { AGING_BUCKETS, agingBucketLabels, NoAccess, type AgingRow } from "../../receipts/shared";
+import { SortHeader, useClientTable } from "@/components/ui/sortable";
+import { ListPagination } from "@/components/ui/list-pagination";
+import type { SortValue } from "@/lib/table-sort";
 
 type AgingReportRow = { customerId: number; customerNumber: string; customerName: string; aging: AgingRow };
 
 const ZERO_ROW: AgingRow = { CURRENT: "0", D1_30: "0", D31_60: "0", D61_90: "0", D90_PLUS: "0", total: "0" };
+
+// Accessors for in-memory column sorting — each sorts by what its column shows.
+const RECEIVABLES_AGING_SORT_GETTERS: Record<string, (row: AgingReportRow) => SortValue> = {
+  customer: (row) => row.customerName,
+  total: (row) => Number(row.aging.total),
+  ...Object.fromEntries(AGING_BUCKETS.map((bucket) => [bucket, (row: AgingReportRow) => Number(row.aging[bucket])])),
+};
 
 // سالمندی مطالبات — GET /receivables/aging (receivables.view): every
 // customer with at least one open invoice, bucketed by days overdue vs
@@ -23,6 +33,8 @@ export default function ReceivablesAgingPage() {
   const canView = user?.permissions.includes("receivables.view") ?? false;
 
   const [rows, setRows] = useState<AgingReportRow[]>([]);
+  // Sort + page the (small, already loaded) rows in memory; click a header to sort.
+  const table = useClientTable(rows, RECEIVABLES_AGING_SORT_GETTERS, { pageSize: 20 });
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
@@ -83,15 +95,15 @@ export default function ReceivablesAgingPage() {
               <table className="w-full text-right text-sm">
                 <thead className="bg-muted/40 text-xs text-muted-foreground">
                   <tr>
-                    <th className="px-3 py-2.5 font-medium">مشتری</th>
+                    <SortHeader label="مشتری" sortKey="customer" sort={table.sort} onSort={table.onSort} className="px-3 py-2.5 font-medium" />
                     {AGING_BUCKETS.map((bucket) => (
-                      <th key={bucket} className="px-3 py-2.5 font-medium">{agingBucketLabels[bucket]}</th>
+                      <SortHeader key={bucket} label={agingBucketLabels[bucket]} sortKey={bucket} sort={table.sort} onSort={table.onSort} className="px-3 py-2.5 font-medium" />
                     ))}
-                    <th className="px-3 py-2.5 font-medium">جمع</th>
+                    <SortHeader label="جمع" sortKey="total" sort={table.sort} onSort={table.onSort} className="px-3 py-2.5 font-medium" />
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
-                  {rows.map((row) => (
+                  {table.pageRows.map((row) => (
                     <tr key={row.customerId} className="hover:bg-muted/30">
                       <td className="px-3 py-2.5">
                         <Link href={`/customers/${row.customerId}`} className="text-primary hover:underline"><bdi>{row.customerName}</bdi></Link>{" "}
@@ -118,6 +130,7 @@ export default function ReceivablesAgingPage() {
               </table>
             </div>
           )}
+              {table.total > table.pageSize ? <ListPagination page={table.page} pageSize={table.pageSize} total={table.total} onPageChange={table.setPage} className="mt-3" /> : null}
         </div>
       </div>
     </div>

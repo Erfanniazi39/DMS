@@ -7,6 +7,7 @@ import { ZodValidationPipe } from '../common/zod-validation.pipe';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { SessionAuthGuard } from '../auth/guards/session-auth.guard';
+import { RequireFeature } from '../common/feature-flags';
 import { GoodsReturnsService } from './goods-returns.service';
 import {
   createGoodsReturnSchema,
@@ -28,6 +29,7 @@ const goodsReceiptOptionsQuerySchema = z.object({ supplierId: requiredId('تأم
 // permission).
 @Controller('inventory/goods-returns')
 @UseGuards(SessionAuthGuard, PermissionsGuard)
+@RequireFeature('inventoryDamagedAndReturns')
 export class GoodsReturnsController {
   constructor(private readonly returnsService: GoodsReturnsService) {}
 

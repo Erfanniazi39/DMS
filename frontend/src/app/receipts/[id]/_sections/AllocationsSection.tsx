@@ -5,7 +5,7 @@ import Link from "next/link";
 import { Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogBody, DialogCloseButton, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
+import { MoneyInput } from "@/components/ui/money-input";
 import { formatMoney } from "@/lib/format";
 import { formatJalali } from "@/lib/jalali";
 import { apiFetch, type ApiError } from "@/lib/api";
@@ -206,7 +206,7 @@ export function AllocationsSection({
                         <td className="px-3 py-2 text-muted-foreground">{line.dueDate ? formatJalali(line.dueDate) : "-"}</td>
                         <td className="px-3 py-2 tabular-nums">{formatMoney(line.openAmount)}</td>
                         <td className="px-3 py-2">
-                          <Input className="h-7 w-28" inputMode="decimal" value={line.amount} onChange={(event) => setLineAmount(line.invoiceId, event.target.value)} />
+                          <MoneyInput className="h-7 w-32" value={line.amount} onChange={(value) => setLineAmount(line.invoiceId, value)} />
                         </td>
                       </tr>
                     ))}

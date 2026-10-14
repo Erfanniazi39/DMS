@@ -1,15 +1,25 @@
 "use client";
 
-import type { Dispatch, FormEvent, SetStateAction } from "react";
+import { useEffect, useState, type Dispatch, type FormEvent, type SetStateAction } from "react";
 import { AlertTriangle, Pencil, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogBody, DialogCloseButton, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { MoneyInput } from "@/components/ui/money-input";
 import { Label } from "@/components/ui/label";
 import { JalaliDateInput } from "@/components/ui/jalali-date-input";
 import { JALALI_MAX_YEAR, formatJalali } from "@/lib/jalali";
 import { apiFetch, type ApiError } from "@/lib/api";
 import { parseNumberInput } from "@/lib/number-input";
+import {
+  TransactionInfoFields,
+  emptyTransactionInfo,
+  transactionInfoErrors,
+  transactionInfoFromRow,
+  transactionInfoPayload,
+  type DestinationOption,
+  type TransactionInfo,
+} from "@/components/payments/transaction-info";
 import {
   PAYMENT_METHODS,
   PAYMENT_RECORD_STATUSES,
@@ -28,8 +38,11 @@ import {
   type PurchaseStatus,
 } from "../../shared";
 import { DetailSection, type SectionToasts } from "./DetailSection";
+import { SortHeader, useClientTable } from "@/components/ui/sortable";
+import { ListPagination } from "@/components/ui/list-pagination";
+import type { SortValue } from "@/lib/table-sort";
 
-export type PaymentFormState = {
+export type PaymentFormState = TransactionInfo & {
   paymentDate: string;
   amount: string;
   method: PaymentMethod;
@@ -48,12 +61,22 @@ export const emptyPaymentForm: PaymentFormState = {
   referenceNumber: "",
   status: "COMPLETED",
   note: "",
+  ...emptyTransactionInfo,
 };
 
 // Which purchase statuses allow recording a payment — mirrors the backend
 // (purchase-rules.ts PAYABLE_PURCHASE_STATUSES); the backend stays
 // authoritative, this just hides actions that would be refused.
 const PAYABLE_STATUSES: PurchaseStatus[] = ["CONFIRMED", "RECEIVED", "CLOSED"];
+
+// Accessors for in-memory column sorting — each sorts by what its column shows.
+const PURCHASES_ID__SECTIONS_PAYMENTSSECTION_TSX_SORT_GETTERS: Record<string, (row: PurchasePaymentRow) => SortValue> = {
+  paymentDate: (row) => row.paymentDate,
+  amount: (row) => Number(row.amount),
+  method: (row) => paymentMethodLabels[row.method],
+  referenceNumber: (row) => row.referenceNumber,
+  status: (row) => paymentRecordStatusLabels[row.status],
+};
 
 // «پرداخت‌ها» section plus its add/edit dialog. All form/dialog state lives
 // in page.tsx and is passed in; `onChanged` reloads the purchase (its
@@ -90,6 +113,38 @@ export function PaymentsSection({
   toasts: SectionToasts;
 }) {
   const { pushError, pushErrors, pushSuccess } = toasts;
+  // Sort + page the (small, already loaded) rows in memory; click a header to sort.
+  const table = useClientTable(purchase.payments, PURCHASES_ID__SECTIONS_PAYMENTSSECTION_TSX_SORT_GETTERS, { pageSize: 20 });
+
+  // The supplier's registered bank accounts, to fill «حساب مقصد» from. Needs
+  // suppliers.view; without it (or on any failure) the field stays plain
+  // free text — the value is never linked to the account.
+  const [destinations, setDestinations] = useState<DestinationOption[]>([]);
+  const supplierId = purchase.supplier.id;
+  useEffect(() => {
+    if (!dialogOpen) return;
+    let ignore = false;
+    apiFetch<{ name: string; bankAccounts: { id: number; bankName: string | null; accountNumber: string | null; shebaNumber: string | null; accountHolderName: string | null; isActive: boolean }[] }>(`/suppliers/${supplierId}`)
+      .then((supplier) => {
+        if (ignore) return;
+        setDestinations(
+          supplier.bankAccounts
+            .filter((account) => account.isActive)
+            .map((account) => ({
+              key: String(account.id),
+              label: [account.bankName, account.shebaNumber ?? account.accountNumber].filter(Boolean).join(" — "),
+              account: account.shebaNumber ?? account.accountNumber ?? "",
+              holder: account.accountHolderName ?? supplier.name,
+            })),
+        );
+      })
+      .catch(() => {
+        if (!ignore) setDestinations([]);
+      });
+    return () => {
+      ignore = true;
+    };
+  }, [dialogOpen, supplierId]);
 
   function openPaymentDialog() {
     setEditingPaymentId(null);
@@ -106,6 +161,7 @@ export function PaymentsSection({
       referenceNumber: payment.referenceNumber ?? "",
       status: payment.status,
       note: payment.note ?? "",
+      ...transactionInfoFromRow(payment),
     });
     setDialogOpen(true);
   }
@@ -114,6 +170,11 @@ export function PaymentsSection({
     event.preventDefault();
     if (!form.paymentDate || !form.amount) {
       pushError("تاریخ و مبلغ پرداخت الزامی است.");
+      return;
+    }
+    const infoProblems = transactionInfoErrors(form);
+    if (infoProblems.length > 0) {
+      pushErrors(infoProblems);
       return;
     }
     setSaving(true);
@@ -127,6 +188,7 @@ export function PaymentsSection({
           referenceNumber: form.referenceNumber.trim(),
           status: form.status,
           note: form.note.trim(),
+          ...transactionInfoPayload(form),
         }),
       });
       pushSuccess(editingPaymentId === null ? "پرداخت با موفقیت ثبت شد." : "پرداخت با موفقیت ویرایش شد.");
@@ -217,21 +279,26 @@ export function PaymentsSection({
               <table className="w-full min-w-[40rem] text-right text-sm">
                 <thead className="bg-muted/40 text-xs text-muted-foreground">
                   <tr>
-                    <th className="px-3 py-2 font-medium">تاریخ</th>
-                    <th className="px-3 py-2 font-medium">مبلغ</th>
-                    <th className="px-3 py-2 font-medium">روش پرداخت</th>
-                    <th className="px-3 py-2 font-medium">شماره مرجع</th>
-                    <th className="px-3 py-2 font-medium">وضعیت</th>
+                    <SortHeader label="تاریخ" sortKey="paymentDate" sort={table.sort} onSort={table.onSort} className="px-3 py-2 font-medium" />
+                    <SortHeader label="مبلغ" sortKey="amount" sort={table.sort} onSort={table.onSort} className="px-3 py-2 font-medium" />
+                    <SortHeader label="روش پرداخت" sortKey="method" sort={table.sort} onSort={table.onSort} className="px-3 py-2 font-medium" />
+                    <SortHeader label="کد پیگیری / شماره مرجع" sortKey="referenceNumber" sort={table.sort} onSort={table.onSort} className="px-3 py-2 font-medium" />
+                    <SortHeader label="وضعیت" sortKey="status" sort={table.sort} onSort={table.onSort} className="px-3 py-2 font-medium" />
                     <th className="px-3 py-2 font-medium">عملیات</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
-                  {purchase.payments.map((payment) => (
+                  {table.pageRows.map((payment) => (
                     <tr key={payment.id}>
                       <td className="px-3 py-2 text-muted-foreground">{formatJalali(payment.paymentDate)}</td>
                       <td className="px-3 py-2 tabular-nums">{formatMoney(payment.amount)} ریال</td>
                       <td className="px-3 py-2 text-muted-foreground">{paymentMethodLabels[payment.method]}</td>
-                      <td className="px-3 py-2 text-muted-foreground">{payment.referenceNumber || "-"}</td>
+                      <td className="px-3 py-2 text-muted-foreground">
+                        {payment.referenceNumber || "-"}
+                        {payment.transactionType || payment.transactionTime ? (
+                          <span className="block text-xs">{[payment.transactionType, payment.transactionTime].filter(Boolean).join(" — ")}</span>
+                        ) : null}
+                      </td>
                       <td className="px-3 py-2">
                         <StatusBadge label={paymentRecordStatusLabels[payment.status]} tone={paymentRecordStatusTone[payment.status]} />
                       </td>
@@ -262,6 +329,7 @@ export function PaymentsSection({
               </table>
             </div>
           )}
+              {table.total > table.pageSize ? <ListPagination page={table.page} pageSize={table.pageSize} total={table.total} onPageChange={table.setPage} className="mt-3" /> : null}
         </div>
       </DetailSection>
 
@@ -288,11 +356,10 @@ export function PaymentsSection({
               </div>
               <div className="flex flex-col gap-2">
                 <Label htmlFor="payment-amount">مبلغ (ریال)<RequiredMark /></Label>
-                <Input
+                <MoneyInput
                   id="payment-amount"
-                  inputMode="decimal"
                   value={form.amount}
-                  onChange={(event) => setForm((current) => ({ ...current, amount: event.target.value }))}
+                  onChange={(amount) => setForm((current) => ({ ...current, amount }))}
                   required
                 />
               </div>
@@ -310,13 +377,19 @@ export function PaymentsSection({
                 </select>
               </div>
               <div className="flex flex-col gap-2">
-                <Label htmlFor="payment-reference">شماره مرجع</Label>
+                <Label htmlFor="payment-reference">{form.method === "CHECK" ? "شماره چک" : "کد پیگیری / شماره مرجع"}</Label>
                 <Input
                   id="payment-reference"
                   value={form.referenceNumber}
                   onChange={(event) => setForm((current) => ({ ...current, referenceNumber: event.target.value }))}
                 />
               </div>
+              <TransactionInfoFields
+                idPrefix="payment"
+                value={form}
+                onChange={(next) => setForm((current) => ({ ...current, ...next }))}
+                destinations={destinations}
+              />
               <div className="flex flex-col gap-2">
                 <Label htmlFor="payment-status">وضعیت</Label>
                 <select

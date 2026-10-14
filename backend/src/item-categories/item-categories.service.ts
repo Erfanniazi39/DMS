@@ -1,16 +1,25 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
+import { suggestNextCode } from '../common/next-code';
 import { PrismaService } from '../prisma/prisma.service';
+import { AUDIT_ENTITY, AuditService } from '../audit/audit.service';
+import { archiveDeletedRecord } from '../audit/deleted-records';
 import type { CreateItemCategoryDto, UpdateItemCategoryDto } from './dto/item-category.dto';
 
 // Mirrors UnitsService. list() is the active-only list used by the Item
 // form's category dropdown; listAll()/create()/update() back the
 // /item-categories page. There's deliberately no delete: categories are
 // referenced by items (onDelete: Restrict), so retiring one is done by
-// setting isActive=false. No audit logging, same as Units — this is small
-// reference data, not a business record.
+// setting isActive=false. No audit logging on create/update, same as Units —
+// small reference data. The one exception is remove() (admin only, and only
+// for a category no item uses): it keeps a view-only snapshot like every
+// other business delete.
 @Injectable()
 export class ItemCategoriesService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly audit: AuditService,
+  ) {}
 
   list() {
     return this.prisma.itemCategory.findMany({
@@ -25,13 +34,18 @@ export class ItemCategoriesService {
     });
   }
 
+  // The suggested code for the create form (PREFIX-000001, editable there).
+  nextCode() {
+    return suggestNextCode('ICT', (startsWith) => this.prisma.itemCategory.findMany({ where: { code: { startsWith } }, select: { code: true } }));
+  }
+
   async create(dto: CreateItemCategoryDto) {
     await this.ensureUnique(dto.code, dto.nameFa);
 
     let sortOrder = dto.sortOrder;
     if (sortOrder === undefined) {
       const { _max } = await this.prisma.itemCategory.aggregate({ _max: { sortOrder: true } });
-      sortOrder = (_max.sortOrder ?? -1) + 1;
+      sortOrder = (_max.sortOrder ?? 0) + 1;
     }
 
     return this.prisma.itemCategory.create({
@@ -77,5 +91,28 @@ export class ItemCategoriesService {
     });
     if (duplicate?.code === code) throw new ConflictException('این کد قبلاً برای دسته‌بندی دیگری استفاده شده است');
     if (duplicate?.nameFa === nameFa) throw new ConflictException('دسته‌بندی با این نام فارسی از قبل وجود دارد');
+  }
+
+  // Admin-only (enforced on the route). Refused while any item still uses the
+  // category — retire it with isActive=false instead.
+  async remove(id: number, userId: number | null, ipAddress?: string) {
+    const category = await this.prisma.itemCategory.findUnique({ where: { id } });
+    if (!category) throw new NotFoundException('دسته‌بندی کالا پیدا نشد');
+    const itemCount = await this.prisma.item.count({ where: { categoryId: id } });
+    if (itemCount > 0) {
+      throw new ConflictException(`این دسته‌بندی در ${itemCount} کالا استفاده شده است و قابل حذف نیست؛ به‌جای حذف، آن را غیرفعال کنید.`);
+    }
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        await archiveDeletedRecord(tx, { entityType: AUDIT_ENTITY.ITEM_CATEGORY, entityId: id, label: category.code, record: category, userId });
+        await tx.itemCategory.delete({ where: { id } });
+      });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003') {
+        throw new ConflictException('این دسته‌بندی در اسناد دیگر استفاده شده است و قابل حذف نیست؛ به‌جای حذف، آن را غیرفعال کنید.');
+      }
+      throw error;
+    }
+    await this.audit.log({ userId, ipAddress, action: 'ITEM_CATEGORY_DELETED', entityType: AUDIT_ENTITY.ITEM_CATEGORY, entityId: id, details: category.code });
   }
 }

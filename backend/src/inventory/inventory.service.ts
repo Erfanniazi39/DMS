@@ -2,7 +2,8 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException }
 import { Prisma, type StockBucket, type StockMovementType, type StockReferenceType } from '@prisma/client';
 import { AUDIT_ENTITY, AuditService, diffChanges } from '../audit/audit.service';
 import { tehranToday } from '../common/business-date';
-import { toSkipTake, type PaginationParams } from '../common/pagination';
+import { toSkipTake, type PaginationParams, buildOrderBy, type SortParams } from '../common/pagination';
+import { suggestNextCode } from '../common/next-code';
 import { PrismaService } from '../prisma/prisma.service';
 import { isExpiredBatch } from './batch-allocation';
 import type { CreateLocationDto, UpdateLocationDto } from './dto/inventory.dto';
@@ -12,11 +13,10 @@ import { listExpiredOnHandByItem, sumExpiredOnHand } from './inventory-queries';
 export type StockBalanceListFilters = {
   q?: string;
   locationId?: number;
-  // 'available' sorts by onHand − reserved (قابل فروش) — surfaces the
-  // lowest-stock items first when sortDir is 'asc' (the default). Plain item
-  // name is the page's original sort and stays the default sortBy.
-  sortBy?: 'name' | 'available';
-  sortDir?: 'asc' | 'desc';
+  // Column sort. Every column is a DB orderBy except 'available' (onHand −
+  // reserved, قابل فروش), which has no column and is sorted in memory —
+  // surfacing the lowest-stock items first when ascending. Default: item name.
+  sort?: SortParams;
   // I3 (B14): only rows whose available is below their own ItemStockLevel
   // threshold. An item+location with no configured threshold never matches —
   // the system never invents one.
@@ -32,6 +32,7 @@ export type StockMovementListFilters = {
   referenceType?: StockReferenceType;
   dateFrom?: Date;
   dateTo?: Date;
+  sort?: SortParams;
 };
 
 export type BalanceMismatch = {
@@ -80,6 +81,28 @@ function withOverCommitted<T extends { onHand: Prisma.Decimal | string; reserved
   return { ...row, overCommitted };
 }
 
+// Columns the stock list / movement browser can be sorted by. «قابل فروش»
+// (available) is the one computed column — see listBalances().
+const STOCK_BALANCE_SORT_COLUMNS: Record<string, (dir: 'asc' | 'desc') => Prisma.StockBalanceOrderByWithRelationInput> = {
+  code: (dir) => ({ item: { code: dir } }),
+  name: (dir) => ({ item: { name: dir } }),
+  unit: (dir) => ({ item: { unit: { nameFa: dir } } }),
+  location: (dir) => ({ location: { name: dir } }),
+  onHand: (dir) => ({ onHand: dir }),
+  reserved: (dir) => ({ reserved: dir }),
+  qc: (dir) => ({ qc: dir }),
+};
+const STOCK_MOVEMENT_SORT_COLUMNS: Record<string, (dir: 'asc' | 'desc') => Prisma.StockMovementOrderByWithRelationInput> = {
+  movementDate: (dir) => ({ movementDate: dir }),
+  item: (dir) => ({ item: { name: dir } }),
+  location: (dir) => ({ location: { name: dir } }),
+  bucket: (dir) => ({ bucket: dir }),
+  movementType: (dir) => ({ movementType: dir }),
+  quantity: (dir) => ({ quantity: dir }),
+  referenceType: (dir) => ({ referenceType: dir }),
+  createdBy: (dir) => ({ createdByUser: { username: dir } }),
+};
+
 // Read side of Inventory: locations, balances, availability, and the
 // ledger-vs-balance consistency check. Never writes stock — every write goes
 // through stock-ledger.ts applyMovements() (called by
@@ -95,6 +118,11 @@ export class InventoryService {
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
   ) {}
+
+  // Suggested code for a new location (LOC-000001, editable on the form).
+  nextLocationCode() {
+    return suggestNextCode('LOC', (startsWith) => this.prisma.inventoryLocation.findMany({ where: { code: { startsWith } }, select: { code: true } }));
+  }
 
   listLocations() {
     return this.prisma.inventoryLocation.findMany({ orderBy: [{ isDefault: 'desc' }, { code: 'asc' }] });
@@ -229,8 +257,9 @@ export class InventoryService {
       return { items: low.slice(skip, skip + take), total: low.length, page: pagination.page, pageSize: pagination.pageSize };
     }
 
-    if (filters.sortBy !== 'available') {
-      const query = { where, include, orderBy: [{ item: { name: 'asc' } }, { id: 'asc' }] } satisfies Prisma.StockBalanceFindManyArgs;
+    if (filters.sort?.sortBy !== 'available') {
+      const orderBy = buildOrderBy(filters.sort, STOCK_BALANCE_SORT_COLUMNS, [{ item: { name: 'asc' } }, { id: 'asc' }], [{ id: 'asc' }]);
+      const query = { where, include, orderBy } satisfies Prisma.StockBalanceFindManyArgs;
       if (!pagination) return (await this.prisma.stockBalance.findMany(query)).map(withOverCommitted);
       const [items, total] = await Promise.all([
         this.prisma.stockBalance.findMany({ ...query, ...toSkipTake(pagination) }),
@@ -246,7 +275,7 @@ export class InventoryService {
     // in-memory and paginating after is a deliberate, bounded exception to
     // "never sort/paginate in application code" rather than a scalability
     // risk.
-    const sortDir = filters.sortDir ?? 'asc';
+    const sortDir = filters.sort.sortDir;
     const rows = await this.prisma.stockBalance.findMany({ where, include, orderBy: [{ item: { name: 'asc' } }, { id: 'asc' }] });
     const availableOf = (row: (typeof rows)[number]) => new Prisma.Decimal(row.onHand).minus(row.reserved);
     const sorted = [...rows].sort((a, b) => {
@@ -556,7 +585,8 @@ export class InventoryService {
     } satisfies Prisma.StockMovementInclude;
     // I5 (B15): unitCost omitted — cost is inventory.cost-only, this is an
     // inventory.view read.
-    const query = { where, include, omit: { unitCost: true }, orderBy: [{ id: 'desc' }] } satisfies Prisma.StockMovementFindManyArgs;
+    const orderBy = buildOrderBy(filters.sort, STOCK_MOVEMENT_SORT_COLUMNS, [{ id: 'desc' }], [{ id: 'desc' }]);
+    const query = { where, include, omit: { unitCost: true }, orderBy } satisfies Prisma.StockMovementFindManyArgs;
 
     if (!pagination) return this.prisma.stockMovement.findMany(query);
     const [items, total] = await Promise.all([

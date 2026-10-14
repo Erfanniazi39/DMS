@@ -11,6 +11,18 @@ import { apiFetch, type ApiError } from "@/lib/api";
 import { deliveryStatusLabels, deliveryStatusTone, deliveryTitle, type DeliveryListItem } from "../../../deliveries/shared";
 import { FormSection } from "../../_form/FormSection";
 import type { SalesOrderDetail } from "../../shared";
+import { SortHeader, useClientTable } from "@/components/ui/sortable";
+import { ListPagination } from "@/components/ui/list-pagination";
+import type { SortValue } from "@/lib/table-sort";
+
+// Accessors for in-memory column sorting — each sorts by what its column shows.
+const SALES_ORDERS_ID__SECTIONS_DELIVERIESSECTION_TSX_SORT_GETTERS: Record<string, (row: DeliveryListItem) => SortValue> = {
+  deliveryNumber: (row) => row.deliveryNumber,
+  deliveryDate: (row) => row.deliveryDate,
+  lines: (row) => row._count.items,
+  receivedByName: (row) => row.receivedByName,
+  status: (row) => deliveryStatusLabels[row.status],
+};
 
 // «تحویل‌ها» — this order's delivery notes: GET /deliveries?salesOrderId=
 // (sales.view, unpaginated — one order has few). «ایجاد تحویل»
@@ -19,6 +31,8 @@ import type { SalesOrderDetail } from "../../shared";
 export function DeliveriesSection({ order, canDeliver, reloadKey }: { order: SalesOrderDetail; canDeliver: boolean; reloadKey: number }) {
   const router = useRouter();
   const [deliveries, setDeliveries] = useState<DeliveryListItem[]>([]);
+  // Sort + page the (small, already loaded) rows in memory; click a header to sort.
+  const table = useClientTable(deliveries, SALES_ORDERS_ID__SECTIONS_DELIVERIESSECTION_TSX_SORT_GETTERS, { pageSize: 20 });
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [retryKey, setRetryKey] = useState(0);
@@ -75,15 +89,15 @@ export function DeliveriesSection({ order, canDeliver, reloadKey }: { order: Sal
           <table className="w-full min-w-[36rem] text-right text-sm">
             <thead className="bg-muted/40 text-xs text-muted-foreground">
               <tr>
-                <th className="px-3 py-2 font-medium">شماره حواله</th>
-                <th className="px-3 py-2 font-medium">تاریخ تحویل</th>
-                <th className="px-3 py-2 font-medium">ردیف</th>
-                <th className="px-3 py-2 font-medium">تحویل‌گیرنده</th>
-                <th className="px-3 py-2 font-medium">وضعیت</th>
+                <SortHeader label="شماره حواله" sortKey="deliveryNumber" sort={table.sort} onSort={table.onSort} className="px-3 py-2 font-medium" />
+                <SortHeader label="تاریخ تحویل" sortKey="deliveryDate" sort={table.sort} onSort={table.onSort} className="px-3 py-2 font-medium" />
+                <SortHeader label="ردیف" sortKey="lines" sort={table.sort} onSort={table.onSort} className="px-3 py-2 font-medium" />
+                <SortHeader label="تحویل‌گیرنده" sortKey="receivedByName" sort={table.sort} onSort={table.onSort} className="px-3 py-2 font-medium" />
+                <SortHeader label="وضعیت" sortKey="status" sort={table.sort} onSort={table.onSort} className="px-3 py-2 font-medium" />
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
-              {deliveries.map((delivery) => (
+              {table.pageRows.map((delivery) => (
                 <tr key={delivery.id}>
                   <td className="px-3 py-2 whitespace-nowrap">
                     <Link href={`/deliveries/${delivery.id}`} className={`text-primary hover:underline ${delivery.deliveryNumber ? "font-mono text-xs" : "text-xs"}`}>
@@ -102,6 +116,7 @@ export function DeliveriesSection({ order, canDeliver, reloadKey }: { order: Sal
           </table>
         </div>
       )}
+          {table.total > table.pageSize ? <ListPagination page={table.page} pageSize={table.pageSize} total={table.total} onPageChange={table.setPage} className="mt-3" /> : null}
     </FormSection>
   );
 }

@@ -9,7 +9,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToasts, ToastViewport } from "@/components/ui/toast";
 import { apiFetch, type ApiError } from "@/lib/api";
+import { fillSuggestedCode } from "@/lib/suggested-code";
 import { useAdminUser } from "@/app/admin/layout";
+import { SortHeader, useClientTable } from "@/components/ui/sortable";
+import { ListPagination } from "@/components/ui/list-pagination";
+import type { SortValue } from "@/lib/table-sort";
 
 // Units are master data consumed by the Purchase / Purchase Request item
 // forms (their dropdown reads the active-only GET /units). This page reads
@@ -22,6 +26,15 @@ type FormState = { code: string; nameEn: string; nameFa: string; isActive: boole
 type StatusFilter = "all" | "active" | "inactive";
 
 const emptyForm: FormState = { code: "", nameEn: "", nameFa: "", isActive: true, sortOrder: "" };
+
+// Accessors for in-memory column sorting — each sorts by what its column shows.
+const UNITS_SORT_GETTERS: Record<string, (row: Unit) => SortValue> = {
+  sortOrder: (row) => row.sortOrder,
+  nameFa: (row) => row.nameFa,
+  nameEn: (row) => row.nameEn,
+  code: (row) => row.code,
+  isActive: (row) => row.isActive ? "فعال" : "غیرفعال",
+};
 
 export default function UnitsPage() {
   const user = useAdminUser();
@@ -73,6 +86,8 @@ export default function UnitsPage() {
       return matchesQuery && matchesStatus;
     });
   }, [units, query, statusFilter]);
+  // Sort + page the (small, already loaded) rows in memory; click a header to sort.
+  const table = useClientTable(filteredUnits, UNITS_SORT_GETTERS, { pageSize: 20 });
 
   function update<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((current) => ({ ...current, [key]: value }));
@@ -81,6 +96,7 @@ export default function UnitsPage() {
   function openCreateForm() {
     setEditingId(null);
     setForm(emptyForm);
+    fillSuggestedCode("/units/next-code", (code) => setForm((current) => (current.code === "" ? { ...current, code } : current)));
     setFormOpen(true);
   }
 
@@ -116,8 +132,8 @@ export default function UnitsPage() {
       return;
     }
     const sortOrder = sortOrderText === "" ? undefined : Number(sortOrderText);
-    if (sortOrder !== undefined && (!Number.isInteger(sortOrder) || sortOrder < 0)) {
-      pushError("ترتیب نمایش باید عدد صحیح و نامنفی باشد.");
+    if (sortOrder !== undefined && (!Number.isInteger(sortOrder) || sortOrder < 1)) {
+      pushError("ترتیب نمایش باید عدد صحیح و حداقل ۱ باشد.");
       return;
     }
 
@@ -229,27 +245,27 @@ export default function UnitsPage() {
                 <table className="w-full min-w-[42rem] text-right text-sm">
                   <thead className="bg-muted/50 text-muted-foreground">
                     <tr>
-                      <th className="px-4 py-3 font-medium">نام فارسی</th>
-                      <th className="px-4 py-3 font-medium">نام انگلیسی</th>
-                      <th className="px-4 py-3 font-medium">کد</th>
-                      <th className="px-4 py-3 font-medium">ترتیب نمایش</th>
-                      <th className="px-4 py-3 font-medium">وضعیت</th>
+                      <SortHeader label="ترتیب نمایش" sortKey="sortOrder" sort={table.sort} onSort={table.onSort} className="px-4 py-3 font-medium" />
+                      <SortHeader label="نام فارسی" sortKey="nameFa" sort={table.sort} onSort={table.onSort} className="px-4 py-3 font-medium" />
+                      <SortHeader label="نام انگلیسی" sortKey="nameEn" sort={table.sort} onSort={table.onSort} className="px-4 py-3 font-medium" />
+                      <SortHeader label="کد" sortKey="code" sort={table.sort} onSort={table.onSort} className="px-4 py-3 font-medium" />
+                      <SortHeader label="وضعیت" sortKey="isActive" sort={table.sort} onSort={table.onSort} className="px-4 py-3 font-medium" />
                       <th className="px-4 py-3 font-medium">عملیات</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">
-                    {filteredUnits.map((unit) => (
+                    {table.pageRows.map((unit) => (
                       <tr key={unit.id} className={unit.isActive ? "hover:bg-muted/30" : "text-muted-foreground hover:bg-muted/30"}>
+                        <td className="px-4 py-3">{unit.sortOrder.toLocaleString("fa-IR")}</td>
                         <td className="px-4 py-3 font-medium">{unit.nameFa}</td>
                         <td className="px-4 py-3" dir="ltr">
                           <span className="block text-right">{unit.nameEn}</span>
                         </td>
                         <td className="px-4 py-3 font-mono text-xs text-muted-foreground">{unit.code}</td>
-                        <td className="px-4 py-3">{unit.sortOrder.toLocaleString("fa-IR")}</td>
                         <td className="px-4 py-3">
                           <span
                             className={`inline-flex rounded px-2 py-0.5 text-xs ${
-                              unit.isActive ? "bg-emerald-100 text-emerald-800" : "bg-muted text-muted-foreground"
+                              unit.isActive ? "bg-emerald-100 text-emerald-800" : "bg-destructive/10 text-destructive"
                             }`}
                           >
                             {unit.isActive ? "فعال" : "غیرفعال"}
@@ -266,6 +282,7 @@ export default function UnitsPage() {
                 </table>
               </div>
             )}
+            {table.total > table.pageSize ? <ListPagination page={table.page} pageSize={table.pageSize} total={table.total} onPageChange={table.setPage} className="mt-3" /> : null}
           </CardContent>
         </Card>
       </div>

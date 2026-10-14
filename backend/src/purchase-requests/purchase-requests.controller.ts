@@ -1,6 +1,6 @@
 import { Body, Controller, Get, Param, ParseIntPipe, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
-import { parsePagination } from '../common/pagination';
+import { parsePagination, parseSort } from '../common/pagination';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { SessionAuthGuard } from '../auth/guards/session-auth.guard';
@@ -32,6 +32,7 @@ export class PurchaseRequestsController {
       status: query.status,
       priority: query.priority,
       requesterDepartmentId: query.requesterDepartmentId,
+      sort: parseSort(query.sortBy, query.sortDir),
     }, pagination);
   }
 

@@ -24,7 +24,7 @@ describe('ItemCategoriesService', () => {
   describe('list (active only, for the Item-form dropdown)', () => {
     it('lists only active categories, ordered by sortOrder', async () => {
       const prisma = createPrismaMock();
-      const service = new ItemCategoriesService(prisma as never);
+      const service = new ItemCategoriesService(prisma as never, { log: jest.fn() } as never);
       const rows = [
         { id: 1, code: 'KG', nameFa: 'کیلوگرم', sortOrder: 0, isActive: true },
         { id: 2, code: 'PCS', nameFa: 'عدد', sortOrder: 1, isActive: true },
@@ -40,7 +40,7 @@ describe('ItemCategoriesService', () => {
 
     it('returns an empty list rather than throwing when no active category exists', async () => {
       const prisma = createPrismaMock();
-      const service = new ItemCategoriesService(prisma as never);
+      const service = new ItemCategoriesService(prisma as never, { log: jest.fn() } as never);
       (prisma as any).itemCategory.findMany.mockResolvedValue([]);
 
       await expect(service.list()).resolves.toEqual([]);
@@ -50,7 +50,7 @@ describe('ItemCategoriesService', () => {
   describe('listAll (admin page)', () => {
     it('lists every category including inactive ones, with no isActive filter', async () => {
       const prisma = createPrismaMock();
-      const service = new ItemCategoriesService(prisma as never);
+      const service = new ItemCategoriesService(prisma as never, { log: jest.fn() } as never);
       const rows = [
         { id: 1, code: 'kg', nameFa: 'کیلوگرم', sortOrder: 0, isActive: true },
         { id: 2, code: 'old', nameFa: 'قدیمی', sortOrder: 1, isActive: false },
@@ -67,7 +67,7 @@ describe('ItemCategoriesService', () => {
   describe('create', () => {
     it('creates a category with the given sortOrder and isActive', async () => {
       const prisma = createPrismaMock();
-      const service = new ItemCategoriesService(prisma as never);
+      const service = new ItemCategoriesService(prisma as never, { log: jest.fn() } as never);
       (prisma as any).itemCategory.findFirst.mockResolvedValue(null);
       (prisma as any).itemCategory.create.mockResolvedValue({ id: 5 });
 
@@ -81,7 +81,7 @@ describe('ItemCategoriesService', () => {
 
     it('appends after the current highest sortOrder when none is given', async () => {
       const prisma = createPrismaMock();
-      const service = new ItemCategoriesService(prisma as never);
+      const service = new ItemCategoriesService(prisma as never, { log: jest.fn() } as never);
       (prisma as any).itemCategory.findFirst.mockResolvedValue(null);
       (prisma as any).itemCategory.aggregate.mockResolvedValue({ _max: { sortOrder: 17 } });
       (prisma as any).itemCategory.create.mockResolvedValue({ id: 19 });
@@ -93,9 +93,9 @@ describe('ItemCategoriesService', () => {
       );
     });
 
-    it('starts sortOrder at 0 when no category exists yet', async () => {
+    it('starts sortOrder at 1 when no category exists yet', async () => {
       const prisma = createPrismaMock();
-      const service = new ItemCategoriesService(prisma as never);
+      const service = new ItemCategoriesService(prisma as never, { log: jest.fn() } as never);
       (prisma as any).itemCategory.findFirst.mockResolvedValue(null);
       (prisma as any).itemCategory.aggregate.mockResolvedValue({ _max: { sortOrder: null } });
       (prisma as any).itemCategory.create.mockResolvedValue({ id: 1 });
@@ -103,13 +103,13 @@ describe('ItemCategoriesService', () => {
       await service.create({ code: 'kg', nameEn: 'Kilogram', nameFa: 'کیلوگرم', isActive: true });
 
       expect((prisma as any).itemCategory.create).toHaveBeenCalledWith(
-        expect.objectContaining({ data: expect.objectContaining({ sortOrder: 0 }) }),
+        expect.objectContaining({ data: expect.objectContaining({ sortOrder: 1 }) }),
       );
     });
 
     it('rejects a duplicate code', async () => {
       const prisma = createPrismaMock();
-      const service = new ItemCategoriesService(prisma as never);
+      const service = new ItemCategoriesService(prisma as never, { log: jest.fn() } as never);
       (prisma as any).itemCategory.findFirst.mockResolvedValue({ code: 'kg', nameFa: 'چیز دیگر' });
 
       await expect(
@@ -120,7 +120,7 @@ describe('ItemCategoriesService', () => {
 
     it('rejects a duplicate Persian name, even with a different code', async () => {
       const prisma = createPrismaMock();
-      const service = new ItemCategoriesService(prisma as never);
+      const service = new ItemCategoriesService(prisma as never, { log: jest.fn() } as never);
       (prisma as any).itemCategory.findFirst.mockResolvedValue({ code: 'kg', nameFa: 'کیلوگرم' });
 
       await expect(
@@ -132,7 +132,7 @@ describe('ItemCategoriesService', () => {
 
     it('checks uniqueness against both code and nameFa, with no id exclusion', async () => {
       const prisma = createPrismaMock();
-      const service = new ItemCategoriesService(prisma as never);
+      const service = new ItemCategoriesService(prisma as never, { log: jest.fn() } as never);
       (prisma as any).itemCategory.findFirst.mockResolvedValue(null);
       (prisma as any).itemCategory.create.mockResolvedValue({ id: 1 });
 
@@ -149,7 +149,7 @@ describe('ItemCategoriesService', () => {
 
     it('updates every editable field, including deactivating the category', async () => {
       const prisma = createPrismaMock();
-      const service = new ItemCategoriesService(prisma as never);
+      const service = new ItemCategoriesService(prisma as never, { log: jest.fn() } as never);
       (prisma as any).itemCategory.findUnique.mockResolvedValue({ id: 4, code: 'kg' });
       (prisma as any).itemCategory.findFirst.mockResolvedValue(null);
       (prisma as any).itemCategory.update.mockResolvedValue({ id: 4, ...dto });
@@ -160,7 +160,7 @@ describe('ItemCategoriesService', () => {
 
     it('excludes the category itself from the uniqueness check, so saving unchanged code/name works', async () => {
       const prisma = createPrismaMock();
-      const service = new ItemCategoriesService(prisma as never);
+      const service = new ItemCategoriesService(prisma as never, { log: jest.fn() } as never);
       (prisma as any).itemCategory.findUnique.mockResolvedValue({ id: 4 });
       (prisma as any).itemCategory.findFirst.mockResolvedValue(null);
       (prisma as any).itemCategory.update.mockResolvedValue({ id: 4 });
@@ -173,7 +173,7 @@ describe('ItemCategoriesService', () => {
 
     it('rejects changing the code to one used by another category', async () => {
       const prisma = createPrismaMock();
-      const service = new ItemCategoriesService(prisma as never);
+      const service = new ItemCategoriesService(prisma as never, { log: jest.fn() } as never);
       (prisma as any).itemCategory.findUnique.mockResolvedValue({ id: 4 });
       (prisma as any).itemCategory.findFirst.mockResolvedValue({ code: 'kg', nameFa: 'دیگر' });
 
@@ -183,7 +183,7 @@ describe('ItemCategoriesService', () => {
 
     it('rejects changing the Persian name to one used by another category', async () => {
       const prisma = createPrismaMock();
-      const service = new ItemCategoriesService(prisma as never);
+      const service = new ItemCategoriesService(prisma as never, { log: jest.fn() } as never);
       (prisma as any).itemCategory.findUnique.mockResolvedValue({ id: 4 });
       (prisma as any).itemCategory.findFirst.mockResolvedValue({ code: 'other', nameFa: 'کیلوگرم' });
 
@@ -193,12 +193,41 @@ describe('ItemCategoriesService', () => {
 
     it('throws NotFound for an unknown category id', async () => {
       const prisma = createPrismaMock();
-      const service = new ItemCategoriesService(prisma as never);
+      const service = new ItemCategoriesService(prisma as never, { log: jest.fn() } as never);
       (prisma as any).itemCategory.findUnique.mockResolvedValue(null);
 
       await expect(service.update(999, dto)).rejects.toBeInstanceOf(NotFoundException);
       expect((prisma as any).itemCategory.findFirst).not.toHaveBeenCalled();
       expect((prisma as any).itemCategory.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('remove', () => {
+    function build(category: unknown, itemCount: number) {
+      const tx = { deletedRecord: { create: jest.fn().mockResolvedValue({}) }, itemCategory: { delete: jest.fn().mockResolvedValue({}) } };
+      const prisma = {
+        itemCategory: { findUnique: jest.fn().mockResolvedValue(category) },
+        item: { count: jest.fn().mockResolvedValue(itemCount) },
+        $transaction: jest.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+      };
+      const audit = { log: jest.fn().mockResolvedValue(undefined) };
+      return { service: new ItemCategoriesService(prisma as never, audit as never), tx, audit };
+    }
+
+    it('404s an unknown category and refuses one that items still use (nothing archived or deleted)', async () => {
+      await expect(build(null, 0).service.remove(9, 1)).rejects.toBeInstanceOf(NotFoundException);
+      const used = build({ id: 9, code: 'ICT-1' }, 3);
+      await expect(used.service.remove(9, 1)).rejects.toBeInstanceOf(ConflictException);
+      expect(used.tx.itemCategory.delete).not.toHaveBeenCalled();
+      expect(used.tx.deletedRecord.create).not.toHaveBeenCalled();
+    });
+
+    it('archives a snapshot, deletes the category and audits it', async () => {
+      const { service, tx, audit } = build({ id: 9, code: 'ICT-1', nameFa: 'شیر' }, 0);
+      await service.remove(9, 1, '127.0.0.1');
+      expect(tx.deletedRecord.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ entityType: 'ItemCategory', entityId: 9, label: 'ICT-1' }) }));
+      expect(tx.itemCategory.delete).toHaveBeenCalledWith({ where: { id: 9 } });
+      expect(audit.log).toHaveBeenCalledWith(expect.objectContaining({ action: 'ITEM_CATEGORY_DELETED', entityId: 9 }));
     });
   });
 

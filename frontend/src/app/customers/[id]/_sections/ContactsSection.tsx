@@ -10,10 +10,23 @@ import { apiFetch, type ApiError } from "@/lib/api";
 import { normalizeDigits } from "@/lib/number-input";
 import { RequiredMark, StatusBadge, textareaClass, type CustomerContactRow, type CustomerDetail } from "../../shared";
 import { DetailSection, type SectionToasts } from "./DetailSection";
+import { SortHeader, useClientTable } from "@/components/ui/sortable";
+import { ListPagination } from "@/components/ui/list-pagination";
+import type { SortValue } from "@/lib/table-sort";
 
 type ContactForm = { name: string; roleTitle: string; mobile: string; phone: string; email: string; isPrimary: boolean; isActive: boolean; note: string };
 
 const emptyContactForm: ContactForm = { name: "", roleTitle: "", mobile: "", phone: "", email: "", isPrimary: false, isActive: true, note: "" };
+
+// Accessors for in-memory column sorting — each sorts by what its column shows.
+const CUSTOMERS_ID__SECTIONS_CONTACTSSECTION_TSX_SORT_GETTERS: Record<string, (row: CustomerContactRow) => SortValue> = {
+  name: (row) => row.name,
+  roleTitle: (row) => row.roleTitle,
+  mobile: (row) => row.mobile,
+  phone: (row) => row.phone,
+  email: (row) => row.email,
+  isActive: (row) => row.isActive ? "فعال" : "غیرفعال",
+};
 
 // «مخاطبین» — POST/PATCH/DELETE /customers/:id/contacts[/:contactId]
 // (customers.manage). Marking a contact primary unsets the previous primary
@@ -30,6 +43,8 @@ export function ContactsSection({
   toasts: SectionToasts;
 }) {
   const { pushError, pushErrors, pushSuccess } = toasts;
+  // Sort + page the (small, already loaded) rows in memory; click a header to sort.
+  const table = useClientTable(customer.contacts, CUSTOMERS_ID__SECTIONS_CONTACTSSECTION_TSX_SORT_GETTERS, { pageSize: 20 });
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<ContactForm>(emptyContactForm);
@@ -125,17 +140,17 @@ export function ContactsSection({
             <table className="w-full min-w-[40rem] text-right text-sm">
               <thead className="bg-muted/40 text-xs text-muted-foreground">
                 <tr>
-                  <th className="px-3 py-2 font-medium">نام</th>
-                  <th className="px-3 py-2 font-medium">سمت</th>
-                  <th className="px-3 py-2 font-medium">موبایل</th>
-                  <th className="px-3 py-2 font-medium">تلفن</th>
-                  <th className="px-3 py-2 font-medium">ایمیل</th>
-                  <th className="px-3 py-2 font-medium">وضعیت</th>
+                  <SortHeader label="نام" sortKey="name" sort={table.sort} onSort={table.onSort} className="px-3 py-2 font-medium" />
+                  <SortHeader label="سمت" sortKey="roleTitle" sort={table.sort} onSort={table.onSort} className="px-3 py-2 font-medium" />
+                  <SortHeader label="موبایل" sortKey="mobile" sort={table.sort} onSort={table.onSort} className="px-3 py-2 font-medium" />
+                  <SortHeader label="تلفن" sortKey="phone" sort={table.sort} onSort={table.onSort} className="px-3 py-2 font-medium" />
+                  <SortHeader label="ایمیل" sortKey="email" sort={table.sort} onSort={table.onSort} className="px-3 py-2 font-medium" />
+                  <SortHeader label="وضعیت" sortKey="isActive" sort={table.sort} onSort={table.onSort} className="px-3 py-2 font-medium" />
                   {canManage ? <th className="px-3 py-2 font-medium">عملیات</th> : null}
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
-                {customer.contacts.map((contact) => (
+                {table.pageRows.map((contact) => (
                   <tr key={contact.id} className={contact.isActive ? "" : "text-muted-foreground"}>
                     <td className="px-3 py-2">
                       <span className="inline-flex items-center gap-1">
@@ -170,6 +185,7 @@ export function ContactsSection({
             </table>
           </div>
         )}
+            {table.total > table.pageSize ? <ListPagination page={table.page} pageSize={table.pageSize} total={table.total} onPageChange={table.setPage} className="mt-3" /> : null}
       </DetailSection>
 
       <Dialog open={dialogOpen} onOpenChange={(open) => setDialogOpen(open)}>

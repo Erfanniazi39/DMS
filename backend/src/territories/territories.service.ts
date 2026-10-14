@@ -1,4 +1,5 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { suggestNextCode } from '../common/next-code';
 import { PrismaService } from '../prisma/prisma.service';
 import { AUDIT_ENTITY, AuditService } from '../audit/audit.service';
 import type { CreateTerritoryDto, UpdateTerritoryDto } from './dto/territory.dto';
@@ -28,13 +29,18 @@ export class TerritoriesService {
     });
   }
 
+  // The suggested code for the create form (PREFIX-000001, editable there).
+  nextCode() {
+    return suggestNextCode('TER', (startsWith) => this.prisma.territory.findMany({ where: { code: { startsWith } }, select: { code: true } }));
+  }
+
   async create(dto: CreateTerritoryDto, userId: number | null = null, ipAddress?: string) {
     await this.ensureUnique(dto.code, dto.nameFa);
 
     let sortOrder = dto.sortOrder;
     if (sortOrder === undefined) {
       const { _max } = await this.prisma.territory.aggregate({ _max: { sortOrder: true } });
-      sortOrder = (_max.sortOrder ?? -1) + 1;
+      sortOrder = (_max.sortOrder ?? 0) + 1;
     }
 
     const created = await this.prisma.territory.create({

@@ -203,6 +203,14 @@ export type PurchasePaymentRow = {
   referenceNumber: string | null;
   status: PaymentRecordStatus;
   note: string | null;
+  // Transfer-receipt info (informational only).
+  transactionTime: string | null;
+  transactionType: string | null;
+  depositId: string | null;
+  withdrawalId: string | null;
+  sourceAccount: string | null;
+  destinationAccount: string | null;
+  destinationAccountHolder: string | null;
 };
 
 export type PurchaseDocumentRow = {

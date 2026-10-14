@@ -10,6 +10,9 @@ import { useToasts, ToastViewport } from "@/components/ui/toast";
 import { apiFetch, type ApiError } from "@/lib/api";
 import { useAdminUser } from "@/app/admin/layout";
 import { NoAccess, type InventoryLocation, type ItemOption, type ItemStockLevelRow } from "../shared";
+import { SortHeader, useClientTable } from "@/components/ui/sortable";
+import { ListPagination } from "@/components/ui/list-pagination";
+import type { SortValue } from "@/lib/table-sort";
 
 const toolbarFieldLabel = "text-[11px] font-medium uppercase tracking-wide text-muted-foreground";
 
@@ -30,6 +33,13 @@ function rowFromLevel(level: ItemStockLevelRow | undefined): RowState {
 function sameRow(a: RowState, b: RowState) {
   return a.minQty === b.minQty && a.reorderQty === b.reorderQty && a.maxQty === b.maxQty && a.note === b.note;
 }
+
+// Accessors for in-memory column sorting — each sorts by what its column shows.
+const INVENTORY_STOCK_LEVELS_SORT_GETTERS: Record<string, (row: ItemOption) => SortValue> = {
+  code: (row) => row.code,
+  name: (row) => row.name,
+  unit: (row) => row.unit.nameFa,
+};
 
 // آستانه‌های موجودی (I3, B14): min/reorder/max per item × location, entered
 // by the user — nothing here is ever defaulted or invented by the system.
@@ -108,6 +118,8 @@ export default function StockLevelsPage() {
     if (!term) return items;
     return items.filter((item) => item.name.toLowerCase().includes(term) || item.code.toLowerCase().includes(term));
   }, [items, q]);
+  // Sort + page the (small, already loaded) rows in memory; click a header to sort.
+  const table = useClientTable(filteredItems, INVENTORY_STOCK_LEVELS_SORT_GETTERS, { pageSize: 20 });
 
   function updateRow(itemId: number, patch: Partial<RowState>) {
     setRows((current) => ({ ...current, [itemId]: { ...(current[itemId] ?? rowFromLevel(undefined)), ...patch } }));
@@ -241,9 +253,9 @@ export default function StockLevelsPage() {
               <table className="w-full text-right text-sm">
                 <thead className="bg-muted/40 text-xs text-muted-foreground">
                   <tr>
-                    <th className="px-3 py-2.5 font-medium">کد کالا</th>
-                    <th className="px-3 py-2.5 font-medium">نام کالا</th>
-                    <th className="px-3 py-2.5 font-medium">واحد</th>
+                    <SortHeader label="کد کالا" sortKey="code" sort={table.sort} onSort={table.onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="نام کالا" sortKey="name" sort={table.sort} onSort={table.onSort} className="px-3 py-2.5 font-medium" />
+                    <SortHeader label="واحد" sortKey="unit" sort={table.sort} onSort={table.onSort} className="px-3 py-2.5 font-medium" />
                     <th className="w-28 px-3 py-2.5 font-medium">حداقل موجودی</th>
                     <th className="w-32 px-3 py-2.5 font-medium">مقدار سفارش مجدد</th>
                     <th className="w-28 px-3 py-2.5 font-medium">حداکثر موجودی</th>
@@ -252,7 +264,7 @@ export default function StockLevelsPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
-                  {filteredItems.map((item) => {
+                  {table.pageRows.map((item) => {
                     const row = rows[item.id] ?? rowFromLevel(undefined);
                     const existing = levelByItem.get(item.id);
                     const saved = rowFromLevel(existing);
@@ -332,6 +344,7 @@ export default function StockLevelsPage() {
               </table>
             </div>
           )}
+              {table.total > table.pageSize ? <ListPagination page={table.page} pageSize={table.pageSize} total={table.total} onPageChange={table.setPage} className="mt-3" /> : null}
         </div>
       </div>
     </div>

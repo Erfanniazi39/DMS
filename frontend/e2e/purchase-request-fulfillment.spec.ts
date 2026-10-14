@@ -1,4 +1,5 @@
 import { test, expect, type Page, type APIRequestContext } from "@playwright/test";
+import { pickJalaliDate } from "./helpers/jalali-date";
 
 // Closes the "no E2E coverage of Purchase Request → Purchase fulfillment"
 // gap: the header "ثبت خرید" (formerly "ایجاد خرید کامل") and per-item
@@ -137,9 +138,7 @@ async function expectItemQuantities(page: Page, itemName: string, purchased: num
 }
 
 async function selectJalaliDate(page: Page, idPrefix: string, date: { year: number; month: number; day: number }) {
-  await page.locator(`#${idPrefix}-year`).selectOption(String(date.year));
-  await page.locator(`#${idPrefix}-month`).selectOption(String(date.month));
-  await page.locator(`#${idPrefix}-day`).selectOption(String(date.day));
+  await pickJalaliDate(page, idPrefix, date);
 }
 
 async function selectFirstRealOption(page: Page, selectId: string) {

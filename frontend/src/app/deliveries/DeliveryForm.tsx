@@ -290,7 +290,7 @@ export function DeliveryForm(props: Props) {
             <div className="grid gap-x-3 gap-y-2.5 sm:grid-cols-2 lg:grid-cols-4">
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="delivery-date-year">تاریخ تحویل<RequiredMark /></Label>
-                <JalaliDateInput idPrefix="delivery-date" value={form.deliveryDate} onChange={(value) => update("deliveryDate", value)} required />
+                <JalaliDateInput idPrefix="delivery-date" value={form.deliveryDate} minDate={context?.orderDate.slice(0, 10)} onChange={(value) => update("deliveryDate", value)} required />
               </div>
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="delivery-received-by">تحویل‌گیرنده</Label>

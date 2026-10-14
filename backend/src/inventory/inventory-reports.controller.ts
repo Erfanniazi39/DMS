@@ -2,6 +2,7 @@ import { Controller, Get, Query, UseGuards } from '@nestjs/common';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { SessionAuthGuard } from '../auth/guards/session-auth.guard';
+import { RequireFeature } from '../common/feature-flags';
 import { ZodValidationPipe } from '../common/zod-validation.pipe';
 import { expiryReportQuerySchema, type ExpiryReportQuery } from './dto/item-setting.dto';
 import { lowStockQuerySchema, type LowStockQuery } from './dto/stock-level.dto';
@@ -24,6 +25,7 @@ export class InventoryReportsController {
   // I4 (build plan §5.4/§16 resume step 7): which dated batches are
   // expiring soon or have already expired.
   @Get('expiry')
+  @RequireFeature('inventoryBatchTracking')
   @RequirePermissions('inventory.view')
   expiry(@Query(new ZodValidationPipe(expiryReportQuerySchema)) query: ExpiryReportQuery) {
     return this.reportsService.expiryReport({ withinDays: query.withinDays, includeExpired: query.includeExpired === 'true' });

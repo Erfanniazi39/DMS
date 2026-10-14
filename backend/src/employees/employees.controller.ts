@@ -21,7 +21,17 @@ import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { SessionAuthGuard } from '../auth/guards/session-auth.guard';
 import { ZodValidationPipe } from '../auth/zod-validation.pipe';
 import { EmployeesService } from './employees.service';
-import { createEmployeeSchema, updateEmployeeSchema, type CreateEmployeeDto, type UpdateEmployeeDto } from './dto/employee.dto';
+import {
+  createEmployeeContractSchema,
+  createEmployeeSchema,
+  terminateEmployeeSchema,
+  updateEmployeeContractSchema,
+  updateEmployeeSchema,
+  type CreateEmployeeDto,
+  type EmployeeContractDto,
+  type TerminateEmployeeDto,
+  type UpdateEmployeeDto,
+} from './dto/employee.dto';
 
 const ALLOWED_PHOTO_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp']);
 const ALLOWED_CONTRACT_DOCUMENT_EXTENSIONS = new Set(['.pdf', '.png', '.jpg', '.jpeg']);
@@ -93,10 +103,43 @@ export class EmployeesController {
     return this.employeesService.updatePhoto(id, null);
   }
 
-  // Contract document (اختیاری/optional): a scan or photo of the signed
-  // contract — PDF or image. Same on-disk/separate-upload pattern as the
-  // employee photo above, reusing the same uploads/employees folder.
-  @Post(':id/contract-document')
+  // --- پایان همکاری / بازگشت به کار -------------------------------------------
+
+  @Post(':id/terminate')
+  @RequirePermissions('employees.manage')
+  terminate(@Param('id', ParseIntPipe) id: number, @Body(new ZodValidationPipe(terminateEmployeeSchema)) dto: TerminateEmployeeDto) {
+    return this.employeesService.terminate(id, dto);
+  }
+
+  @Post(':id/reactivate')
+  @RequirePermissions('employees.manage')
+  reactivate(@Param('id', ParseIntPipe) id: number) {
+    return this.employeesService.reactivate(id);
+  }
+
+  // --- Contract history (an extension is just another contract) ----------------
+
+  @Post(':id/contracts')
+  @RequirePermissions('employees.manage')
+  addContract(@Param('id', ParseIntPipe) id: number, @Body(new ZodValidationPipe(createEmployeeContractSchema)) dto: EmployeeContractDto) {
+    return this.employeesService.addContract(id, dto);
+  }
+
+  @Patch(':id/contracts/:contractId')
+  @RequirePermissions('employees.manage')
+  updateContract(@Param('id', ParseIntPipe) id: number, @Param('contractId', ParseIntPipe) contractId: number, @Body(new ZodValidationPipe(updateEmployeeContractSchema)) dto: EmployeeContractDto) {
+    return this.employeesService.updateContract(id, contractId, dto);
+  }
+
+  @Delete(':id/contracts/:contractId')
+  @RequirePermissions('employees.manage')
+  removeContract(@Param('id', ParseIntPipe) id: number, @Param('contractId', ParseIntPipe) contractId: number) {
+    return this.employeesService.removeContract(id, contractId);
+  }
+
+  // One contract's scanned document (PDF or image) — same on-disk,
+  // separate-upload pattern as the employee photo, in uploads/employees.
+  @Post(':id/contracts/:contractId/document')
   @RequirePermissions('employees.manage')
   @UseInterceptors(
     FileInterceptor('file', {
@@ -118,14 +161,14 @@ export class EmployeesController {
       limits: { fileSize: 10 * 1024 * 1024 },
     }),
   )
-  uploadContractDocument(@Param('id', ParseIntPipe) id: number, @UploadedFile() file?: Express.Multer.File) {
+  uploadContractDocument(@Param('id', ParseIntPipe) id: number, @Param('contractId', ParseIntPipe) contractId: number, @UploadedFile() file?: Express.Multer.File) {
     if (!file) throw new BadRequestException('فایلی ارسال نشده است');
-    return this.employeesService.updateContractDocument(id, `/uploads/employees/${file.filename}`);
+    return this.employeesService.setContractDocument(id, contractId, `/uploads/employees/${file.filename}`);
   }
 
-  @Delete(':id/contract-document')
+  @Delete(':id/contracts/:contractId/document')
   @RequirePermissions('employees.manage')
-  removeContractDocument(@Param('id', ParseIntPipe) id: number) {
-    return this.employeesService.updateContractDocument(id, null);
+  removeContractDocument(@Param('id', ParseIntPipe) id: number, @Param('contractId', ParseIntPipe) contractId: number) {
+    return this.employeesService.setContractDocument(id, contractId, null);
   }
 }

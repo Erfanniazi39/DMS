@@ -19,6 +19,9 @@ import {
   type SalesByCustomerResponse,
   type SalesByItemResponse,
 } from "./shared";
+import { SortHeader, useClientTable } from "@/components/ui/sortable";
+import { ListPagination } from "@/components/ui/list-pagination";
+import type { SortValue } from "@/lib/table-sort";
 
 // echarts draws into a real DOM canvas — client-only.
 const DailyTrendChart = dynamic(() => import("./DailyTrendChart"), {
@@ -58,6 +61,24 @@ function ErrorState({ message, onRetry }: { message: string; onRetry: () => void
 }
 
 const thClass = "px-3 py-2.5 font-medium";
+
+// In-memory column sorting for the two report tables — each sorts by what its column shows.
+const NO_ITEM_ROWS: SalesByItemResponse["rows"] = [];
+const NO_CUSTOMER_ROWS: SalesByCustomerResponse["rows"] = [];
+const ITEM_SORT_GETTERS: Record<string, (row: SalesByItemResponse["rows"][number]) => SortValue> = {
+  code: (row) => row.item.code,
+  name: (row) => row.item.name,
+  unit: (row) => row.item.unit?.nameFa ?? null,
+  quantity: (row) => Number(row.quantity),
+  invoiceLineCount: (row) => row.invoiceLineCount,
+  revenue: (row) => Number(row.revenue),
+};
+const CUSTOMER_SORT_GETTERS: Record<string, (row: SalesByCustomerResponse["rows"][number]) => SortValue> = {
+  customer: (row) => row.customer.name,
+  quantity: (row) => Number(row.quantity),
+  invoiceCount: (row) => row.invoiceCount,
+  revenue: (row) => Number(row.revenue),
+};
 const tdClass = "px-3 py-2.5";
 
 // گزارش‌های فروش — Sales reports (build plan §6/§8, Batch 7). Four
@@ -82,6 +103,8 @@ export default function SalesReportsPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
+  const itemTable = useClientTable(byItem?.rows ?? NO_ITEM_ROWS, ITEM_SORT_GETTERS, { pageSize: 20 });
+  const customerTable = useClientTable(byCustomer?.rows ?? NO_CUSTOMER_ROWS, CUSTOMER_SORT_GETTERS, { pageSize: 20 });
 
   const customIncomplete = period === "custom" && (!customFrom || !customTo);
   const customReversed = period === "custom" && !!customFrom && !!customTo && customFrom > customTo;
@@ -191,32 +214,35 @@ export default function SalesReportsPage() {
     if (loading || !byItem) return <p className="py-14 text-center text-sm text-muted-foreground">در حال بارگذاری...</p>;
     if (byItem.rows.length === 0) return <EmptyState message={`در بازه «${periodDescription(byItem.period)}» فروشی ثبت نشده است.`} />;
     return (
-      <div className="overflow-x-auto rounded-lg border border-border">
-        <table className="w-full min-w-[40rem] text-right text-sm">
-          <thead className="bg-muted/40 text-xs text-muted-foreground">
-            <tr>
-              <th className={thClass}>کد کالا</th>
-              <th className={thClass}>نام کالا</th>
-              <th className={thClass}>واحد</th>
-              <th className={thClass}>مقدار فروش‌رفته</th>
-              <th className={thClass}>تعداد ردیف فاکتور</th>
-              <th className={thClass}>درآمد</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-border">
-            {byItem.rows.map((row) => (
-              <tr key={row.item.id} className="hover:bg-muted/30">
-                <td className={`${tdClass} font-mono text-xs`}>{row.item.code}</td>
-                <td className={tdClass}>{row.item.name}</td>
-                <td className={`${tdClass} text-muted-foreground`}>{row.item.unit?.nameFa ?? "-"}</td>
-                <td className={`${tdClass} tabular-nums`}>{toPersianDigits(Number(row.quantity))}</td>
-                <td className={`${tdClass} tabular-nums`}>{toPersianDigits(row.invoiceLineCount)}</td>
-                <td className={`${tdClass} font-medium tabular-nums`}>{formatMoney(row.revenue)} ریال</td>
+      <>
+        <div className="overflow-x-auto rounded-lg border border-border">
+          <table className="w-full min-w-[40rem] text-right text-sm">
+            <thead className="bg-muted/40 text-xs text-muted-foreground">
+              <tr>
+                <SortHeader label="کد کالا" sortKey="code" sort={itemTable.sort} onSort={itemTable.onSort} className={thClass} />
+                <SortHeader label="نام کالا" sortKey="name" sort={itemTable.sort} onSort={itemTable.onSort} className={thClass} />
+                <SortHeader label="واحد" sortKey="unit" sort={itemTable.sort} onSort={itemTable.onSort} className={thClass} />
+                <SortHeader label="مقدار فروش‌رفته" sortKey="quantity" sort={itemTable.sort} onSort={itemTable.onSort} className={thClass} />
+                <SortHeader label="تعداد ردیف فاکتور" sortKey="invoiceLineCount" sort={itemTable.sort} onSort={itemTable.onSort} className={thClass} />
+                <SortHeader label="درآمد" sortKey="revenue" sort={itemTable.sort} onSort={itemTable.onSort} className={thClass} />
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody className="divide-y divide-border">
+              {itemTable.pageRows.map((row) => (
+                <tr key={row.item.id} className="hover:bg-muted/30">
+                  <td className={`${tdClass} font-mono text-xs`}>{row.item.code}</td>
+                  <td className={tdClass}>{row.item.name}</td>
+                  <td className={`${tdClass} text-muted-foreground`}>{row.item.unit?.nameFa ?? "-"}</td>
+                  <td className={`${tdClass} tabular-nums`}>{toPersianDigits(Number(row.quantity))}</td>
+                  <td className={`${tdClass} tabular-nums`}>{toPersianDigits(row.invoiceLineCount)}</td>
+                  <td className={`${tdClass} font-medium tabular-nums`}>{formatMoney(row.revenue)} ریال</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {itemTable.total > itemTable.pageSize ? <ListPagination page={itemTable.page} pageSize={itemTable.pageSize} total={itemTable.total} onPageChange={itemTable.setPage} className="mt-3" /> : null}
+      </>
     );
   }
 
@@ -225,31 +251,34 @@ export default function SalesReportsPage() {
     if (loading || !byCustomer) return <p className="py-14 text-center text-sm text-muted-foreground">در حال بارگذاری...</p>;
     if (byCustomer.rows.length === 0) return <EmptyState message={`در بازه «${periodDescription(byCustomer.period)}» فروشی ثبت نشده است.`} />;
     return (
-      <div className="overflow-x-auto rounded-lg border border-border">
-        <table className="w-full min-w-[36rem] text-right text-sm">
-          <thead className="bg-muted/40 text-xs text-muted-foreground">
-            <tr>
-              <th className={thClass}>مشتری</th>
-              <th className={thClass}>مقدار فروش‌رفته</th>
-              <th className={thClass}>تعداد فاکتور</th>
-              <th className={thClass}>درآمد</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-border">
-            {byCustomer.rows.map((row) => (
-              <tr key={row.customer.id} className="hover:bg-muted/30">
-                <td className={tdClass}>
-                  <bdi>{row.customer.name}</bdi>{" "}
-                  <span className="font-mono text-[11px] text-muted-foreground">{row.customer.customerNumber}</span>
-                </td>
-                <td className={`${tdClass} tabular-nums`}>{toPersianDigits(Number(row.quantity))}</td>
-                <td className={`${tdClass} tabular-nums`}>{toPersianDigits(row.invoiceCount)}</td>
-                <td className={`${tdClass} font-medium tabular-nums`}>{formatMoney(row.revenue)} ریال</td>
+      <>
+        <div className="overflow-x-auto rounded-lg border border-border">
+          <table className="w-full min-w-[36rem] text-right text-sm">
+            <thead className="bg-muted/40 text-xs text-muted-foreground">
+              <tr>
+                <SortHeader label="مشتری" sortKey="customer" sort={customerTable.sort} onSort={customerTable.onSort} className={thClass} />
+                <SortHeader label="مقدار فروش‌رفته" sortKey="quantity" sort={customerTable.sort} onSort={customerTable.onSort} className={thClass} />
+                <SortHeader label="تعداد فاکتور" sortKey="invoiceCount" sort={customerTable.sort} onSort={customerTable.onSort} className={thClass} />
+                <SortHeader label="درآمد" sortKey="revenue" sort={customerTable.sort} onSort={customerTable.onSort} className={thClass} />
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody className="divide-y divide-border">
+              {customerTable.pageRows.map((row) => (
+                <tr key={row.customer.id} className="hover:bg-muted/30">
+                  <td className={tdClass}>
+                    <bdi>{row.customer.name}</bdi>{" "}
+                    <span className="font-mono text-[11px] text-muted-foreground">{row.customer.customerNumber}</span>
+                  </td>
+                  <td className={`${tdClass} tabular-nums`}>{toPersianDigits(Number(row.quantity))}</td>
+                  <td className={`${tdClass} tabular-nums`}>{toPersianDigits(row.invoiceCount)}</td>
+                  <td className={`${tdClass} font-medium tabular-nums`}>{formatMoney(row.revenue)} ریال</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {customerTable.total > customerTable.pageSize ? <ListPagination page={customerTable.page} pageSize={customerTable.pageSize} total={customerTable.total} onPageChange={customerTable.setPage} className="mt-3" /> : null}
+      </>
     );
   }
 

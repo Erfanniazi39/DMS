@@ -12,6 +12,7 @@ import { useToasts, ToastViewport } from "@/components/ui/toast";
 import { formatJalali } from "@/lib/jalali";
 import { apiFetch, type ApiError } from "@/lib/api";
 import { useAdminUser } from "@/app/admin/layout";
+import { useFeature } from "@/lib/session";
 import {
   NoAccess,
   adjustmentTitle,
@@ -43,6 +44,7 @@ export default function StockAdjustmentDetailPage() {
   const canView = user?.permissions.includes("inventory.view") ?? false;
   const canAdjust = user?.permissions.includes("inventory.adjust") ?? false;
   const canApprove = user?.permissions.includes("inventory.approve") ?? false;
+  const approvalWorkflowOn = useFeature("inventoryApprovalWorkflow");
 
   const [adjustment, setAdjustment] = useState<StockAdjustmentDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -283,6 +285,18 @@ export default function StockAdjustmentDetailPage() {
     adjustment.kind,
     adjustment.items.map((line) => Number(line.quantity)),
   );
+  // v1 (approval workflow hidden): a decrease is posted directly by an
+  // inventory.approve holder; BATCH_CUTOVER has no v1 path.
+  const v1DirectKind = adjustment.kind !== "BATCH_CUTOVER";
+  const draftAction: "post" | "submit" | "needs-approver" | "unavailable" = !needsApproval
+    ? "post"
+    : approvalWorkflowOn
+      ? "submit"
+      : !v1DirectKind
+        ? "unavailable"
+        : canApprove
+          ? "post"
+          : "needs-approver";
   const isSelfSubmitted = user !== null && adjustment.submittedByUser?.id === user.id;
   const isCutover = adjustment.kind === "BATCH_CUTOVER";
   const hasBatchColumns = isCutover || adjustment.items.some((line) => line.batchId !== null || line.batchNumber !== null);
@@ -313,15 +327,15 @@ export default function StockAdjustmentDetailPage() {
           </div>
           {showDraftActions ? (
             <div className="flex flex-wrap items-center gap-2">
-              {needsApproval ? (
+              {draftAction === "submit" ? (
                 <Button variant="success" disabled={busy !== null || staleRecord} onClick={() => void submitForApproval()}>
                   {busy === "submit" ? "در حال ارسال..." : "ارسال برای تأیید"}
                 </Button>
-              ) : (
+              ) : draftAction === "post" ? (
                 <Button variant="success" disabled={busy !== null || staleRecord} onClick={() => void post()}>
                   {busy === "post" ? "در حال ثبت نهایی..." : "ثبت نهایی سند"}
                 </Button>
-              )}
+              ) : null}
               <Button variant="outline" disabled={busy !== null} onClick={() => router.push(`/inventory/adjustments/${adjustment.id}/edit`)}>
                 ویرایش
               </Button>
@@ -349,7 +363,17 @@ export default function StockAdjustmentDetailPage() {
         {isDraft ? (
           <p className="rounded-lg border border-warning/40 bg-warning/10 px-4 py-2.5 text-sm">
             این سند پیش‌نویس است و هنوز بر موجودی اثری نداشته است
-            {canAdjust ? (needsApproval ? "؛ این سند نیاز به تأیید دارد — برای ارسال، «ارسال برای تأیید» را بزنید." : "؛ برای اعمال، «ثبت نهایی سند» را بزنید.") : "."}
+            {!canAdjust
+              ? "."
+              : draftAction === "submit"
+                ? "؛ این سند نیاز به تأیید دارد — برای ارسال، «ارسال برای تأیید» را بزنید."
+                : draftAction === "post"
+                  ? needsApproval
+                    ? "؛ این سند کاهش موجودی است و با مجوز تأیید شما مستقیماً ثبت نهایی می‌شود — «ثبت نهایی سند» را بزنید."
+                    : "؛ برای اعمال، «ثبت نهایی سند» را بزنید."
+                  : draftAction === "needs-approver"
+                    ? "؛ این سند کاهش موجودی است و ثبت نهایی آن فقط توسط کاربر دارای مجوز «تأیید اسناد موجودی» ممکن است."
+                    : "؛ این نوع سند در نسخهٔ فعلی سامانه قابل ثبت نیست."}
           </p>
         ) : null}
 

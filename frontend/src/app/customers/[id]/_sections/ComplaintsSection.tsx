@@ -28,6 +28,9 @@ import {
   type UserOption,
 } from "../../shared";
 import { DetailSection, type SectionToasts } from "./DetailSection";
+import { SortHeader, useClientTable } from "@/components/ui/sortable";
+import { ListPagination } from "@/components/ui/list-pagination";
+import type { SortValue } from "@/lib/table-sort";
 
 type ComplaintForm = {
   date: string;
@@ -40,6 +43,16 @@ type ComplaintForm = {
 };
 
 const emptyComplaintForm: ComplaintForm = { date: "", category: "", description: "", severity: "MEDIUM", status: "OPEN", resolution: "", ownerUserId: "" };
+
+// Accessors for in-memory column sorting — each sorts by what its column shows.
+const CUSTOMERS_ID__SECTIONS_COMPLAINTSSECTION_TSX_SORT_GETTERS: Record<string, (row: CustomerComplaintRow) => SortValue> = {
+  date: (row) => row.date,
+  category: (row) => row.category,
+  description: (row) => row.description,
+  severity: (row) => complaintSeverityLabels[row.severity],
+  status: (row) => complaintStatusLabels[row.status],
+  owner: (row) => row.ownerUser?.username ?? null,
+};
 
 // «شکایات» — minimal complaint/issue register (business decision 8):
 // POST/PATCH/DELETE /customers/:id/complaints[/:complaintId]
@@ -58,6 +71,8 @@ export function ComplaintsSection({
   toasts: SectionToasts;
 }) {
   const { pushError, pushErrors, pushSuccess } = toasts;
+  // Sort + page the (small, already loaded) rows in memory; click a header to sort.
+  const table = useClientTable(customer.complaints, CUSTOMERS_ID__SECTIONS_COMPLAINTSSECTION_TSX_SORT_GETTERS, { pageSize: 20 });
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<CustomerComplaintRow | null>(null);
   const [form, setForm] = useState<ComplaintForm>(emptyComplaintForm);
@@ -174,17 +189,17 @@ export function ComplaintsSection({
             <table className="w-full min-w-[48rem] text-right text-sm">
               <thead className="bg-muted/40 text-xs text-muted-foreground">
                 <tr>
-                  <th className="px-3 py-2 font-medium">تاریخ</th>
-                  <th className="px-3 py-2 font-medium">دسته‌بندی</th>
-                  <th className="px-3 py-2 font-medium">شرح</th>
-                  <th className="px-3 py-2 font-medium">شدت</th>
-                  <th className="px-3 py-2 font-medium">وضعیت</th>
-                  <th className="px-3 py-2 font-medium">مسئول پیگیری</th>
+                  <SortHeader label="تاریخ" sortKey="date" sort={table.sort} onSort={table.onSort} className="px-3 py-2 font-medium" />
+                  <SortHeader label="دسته‌بندی" sortKey="category" sort={table.sort} onSort={table.onSort} className="px-3 py-2 font-medium" />
+                  <SortHeader label="شرح" sortKey="description" sort={table.sort} onSort={table.onSort} className="px-3 py-2 font-medium" />
+                  <SortHeader label="شدت" sortKey="severity" sort={table.sort} onSort={table.onSort} className="px-3 py-2 font-medium" />
+                  <SortHeader label="وضعیت" sortKey="status" sort={table.sort} onSort={table.onSort} className="px-3 py-2 font-medium" />
+                  <SortHeader label="مسئول پیگیری" sortKey="owner" sort={table.sort} onSort={table.onSort} className="px-3 py-2 font-medium" />
                   {canManage ? <th className="px-3 py-2 font-medium">عملیات</th> : null}
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
-                {customer.complaints.map((complaint) => (
+                {table.pageRows.map((complaint) => (
                   <tr key={complaint.id}>
                     <td className="px-3 py-2 whitespace-nowrap text-muted-foreground">{formatJalali(complaint.date)}</td>
                     <td className="px-3 py-2">{complaint.category}</td>
@@ -219,6 +234,7 @@ export function ComplaintsSection({
             </table>
           </div>
         )}
+            {table.total > table.pageSize ? <ListPagination page={table.page} pageSize={table.pageSize} total={table.total} onPageChange={table.setPage} className="mt-3" /> : null}
       </DetailSection>
 
       <Dialog open={dialogOpen} onOpenChange={(open) => setDialogOpen(open)}>

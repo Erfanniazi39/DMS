@@ -26,6 +26,8 @@ async function bootstrap() {
   mkdirSync(join(process.cwd(), 'uploads', 'employees'), { recursive: true });
   mkdirSync(join(process.cwd(), 'uploads', 'purchases'), { recursive: true });
   mkdirSync(join(process.cwd(), 'uploads', 'customers'), { recursive: true });
+  mkdirSync(join(process.cwd(), 'uploads', 'customer-payments'), { recursive: true });
+  mkdirSync(join(process.cwd(), 'uploads', 'letters'), { recursive: true });
   app.useStaticAssets(join(process.cwd(), 'uploads', 'employees'), { prefix: '/uploads/employees' });
 
   const PgSession = connectPgSimple(session);

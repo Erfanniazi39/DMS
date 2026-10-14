@@ -2,16 +2,17 @@ import { BadRequestException, ConflictException, ForbiddenException, Injectable,
 import { Prisma, type StockDocumentStatus } from '@prisma/client';
 import { nextDocumentNumber } from '../common/document-sequence';
 import { isSameVersion, recordModifiedConflict } from '../common/optimistic-lock';
-import { toSkipTake, type PaginationParams } from '../common/pagination';
+import { toSkipTake, type PaginationParams, buildOrderBy, type SortParams } from '../common/pagination';
 import { PrismaService } from '../prisma/prisma.service';
 import { AUDIT_ENTITY, AuditService } from '../audit/audit.service';
+import { archiveDeletedRecord } from '../audit/deleted-records';
 import { InventoryService } from './inventory.service';
 import { EDITABLE_STOCK_DOCUMENT_STATUSES, PRODUCTION_OUTPUT_DOC_TYPE, PRODUCTION_OUTPUT_ITEM_KINDS } from './inventory-rules';
 import { ensureInboundBatchFields, ensureInboundItems, maskLineCosts, resolveInboundBatches, type CostAccess } from './inbound-documents';
 import { applyMovements, type MovementInput } from './stock-ledger';
 import type { CreateProductionOutputDto, UpdateProductionOutputDto } from './dto/production-output.dto';
 
-export type ProductionOutputListFilters = { q?: string; status?: StockDocumentStatus };
+export type ProductionOutputListFilters = { q?: string; status?: StockDocumentStatus; sort?: SortParams };
 
 const PRODUCTION_OUTPUT_COST_FIELDS = ['unitCost', 'costIsEstimated'] as const;
 const DOCUMENT_LABEL_FA = '«رسید تولید»';
@@ -40,6 +41,17 @@ type DraftLine = {
   productionDate?: Date;
   expiryDate?: Date;
   note?: string;
+};
+
+// Columns the production-output table can be sorted by (the line count is derived).
+const PRODUCTION_OUTPUT_SORT_COLUMNS: Record<string, (dir: 'asc' | 'desc') => Prisma.ProductionOutputOrderByWithRelationInput> = {
+  outputNumber: (dir) => ({ outputNumber: { sort: dir, nulls: 'last' } }),
+  productionDate: (dir) => ({ productionDate: dir }),
+  producedBy: (dir) => ({ producedByEmployee: { lastName: dir } }),
+  location: (dir) => ({ location: { name: dir } }),
+  note: (dir) => ({ note: { sort: dir, nulls: 'last' } }),
+  createdBy: (dir) => ({ createdByUser: { username: dir } }),
+  status: (dir) => ({ status: dir }),
 };
 
 // Production output (رسید تولید) — Inventory batch I5, build plan §5.11.
@@ -114,7 +126,7 @@ export class ProductionOutputsService {
         createdByUser: { select: { id: true, username: true } },
         _count: { select: { items: true } },
       },
-      orderBy: [{ productionDate: 'desc' }, { id: 'desc' }],
+      orderBy: buildOrderBy(filters.sort, PRODUCTION_OUTPUT_SORT_COLUMNS, [{ productionDate: 'desc' }, { id: 'desc' }], [{ id: 'desc' }]),
     } satisfies Prisma.ProductionOutputFindManyArgs;
 
     if (!pagination) return this.prisma.productionOutput.findMany(query);
@@ -298,9 +310,10 @@ export class ProductionOutputsService {
   async remove(id: number, userId: number | null, ipAddress?: string) {
     await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM production_outputs WHERE id = ${id} FOR UPDATE`;
-      const output = await tx.productionOutput.findUnique({ where: { id }, select: { id: true, status: true } });
+      const output = await tx.productionOutput.findUnique({ where: { id }, include: { items: true } });
       if (!output) throw new NotFoundException('رسید تولید پیدا نشد');
       this.ensureEditable(output.status);
+      await archiveDeletedRecord(tx, { entityType: AUDIT_ENTITY.PRODUCTION_OUTPUT, entityId: id, label: 'پیش‌نویس رسید تولید', record: output, userId });
       await tx.productionOutput.delete({ where: { id } });
       await this.audit.log(
         { userId, ipAddress, action: 'PRODUCTION_OUTPUT_DELETED', entityType: AUDIT_ENTITY.PRODUCTION_OUTPUT, entityId: id, details: 'پیش‌نویس رسید تولید' },

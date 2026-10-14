@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { apiFetch, type ApiError } from "@/lib/api";
+import { PermissionPicker } from "@/components/admin/permission-picker";
 import { roleLabel } from "@/lib/roles";
 
 type Permission = { code: string; label: string; module: string };
@@ -45,7 +46,6 @@ export default function UserPermissionsSection() {
     if (!normalizedQuery) return users;
     return users.filter((user) => `${user.username} ${user.email ?? ""}`.toLocaleLowerCase().includes(normalizedQuery));
   }, [users, userQuery]);
-  function toggle(code: string) { setSelectedAdditional((current) => current.includes(code) ? current.filter((item) => item !== code) : [...current, code]); }
   async function save() {
     if (selectedId === null || !selected) return;
     setSaving(true);
@@ -108,19 +108,11 @@ export default function UserPermissionsSection() {
                 <section>
                   <h3 className="mb-2 text-sm font-medium">دسترسی‌های اضافی</h3>
                   <p className="mb-2 text-xs text-muted-foreground">دسترسی‌هایی که از نقش کاربر به او رسیده، در این فهرست نمایش داده نمی‌شوند.</p>
-                  <div className="grid gap-1 sm:grid-cols-2">
-                    {permissions
-                      .filter((permission) => !selected.rolePermissions.includes(permission.code))
-                      .map((permission) => (
-                        <label className="flex items-center gap-2 rounded-md px-2 py-2 text-sm hover:bg-muted" key={permission.code}>
-                          <input type="checkbox" checked={selectedAdditional.includes(permission.code)} onChange={() => toggle(permission.code)} />
-                          {permission.label}
-                        </label>
-                      ))}
-                    {permissions.every((permission) => selected.rolePermissions.includes(permission.code)) ? (
-                      <p className="text-sm text-muted-foreground sm:col-span-2">تمام دسترسی‌ها از طریق نقش این کاربر تأمین شده است.</p>
-                    ) : null}
-                  </div>
+                  {permissions.every((permission) => selected.rolePermissions.includes(permission.code)) ? (
+                    <p className="text-sm text-muted-foreground">تمام دسترسی‌ها از طریق نقش این کاربر تأمین شده است.</p>
+                  ) : (
+                    <PermissionPicker permissions={permissions.filter((permission) => !selected.rolePermissions.includes(permission.code))} selected={selectedAdditional} onChange={setSelectedAdditional} />
+                  )}
                 </section>
                 <section>
                   <h3 className="mb-2 text-sm font-medium">دسترسی‌های نهایی</h3>

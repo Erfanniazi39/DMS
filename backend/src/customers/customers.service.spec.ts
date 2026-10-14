@@ -189,8 +189,31 @@ describe('CustomersService', () => {
       } as never);
 
       const data = prisma.customer.create.mock.calls[0][0].data;
-      expect(data.addresses).toEqual({ create: { addressType: 'DELIVERY', addressLine: 'خیابان آزادی', isDefault: true } });
-      expect(data.contacts).toEqual({ create: { name: 'آقای احمدی', isPrimary: true } });
+      expect(data.addresses).toEqual({ create: [{ addressType: 'DELIVERY', addressLine: 'خیابان آزادی', isDefault: true }] });
+      expect(data.contacts).toEqual({ create: [{ name: 'آقای احمدی', isPrimary: true }] });
+    });
+
+    it('saves second/third address, bank account and contact as non-default / non-primary', async () => {
+      const prisma = createPrismaMock();
+      const service = buildCustomersService(prisma);
+      mockActiveReferences(prisma);
+      prisma.customer.create.mockResolvedValue({ id: 76 });
+      prisma.customer.findUnique.mockResolvedValue(detailRow);
+
+      await service.create({
+        ...validCreateDto,
+        firstAddress: { addressType: 'BILLING', addressLine: 'الف' },
+        additionalAddresses: [{ addressType: 'DELIVERY', addressLine: 'ب' }],
+        firstBankAccount: { accountNumber: '111' },
+        additionalBankAccounts: [{ accountNumber: '222' }],
+        firstContact: { name: 'اول' },
+        additionalContacts: [{ name: 'دوم' }],
+      } as never);
+
+      const data = prisma.customer.create.mock.calls[0][0].data;
+      expect(data.addresses.create).toEqual([{ addressType: 'BILLING', addressLine: 'الف', isDefault: true }, { addressType: 'DELIVERY', addressLine: 'ب', isDefault: false }]);
+      expect(data.bankAccounts.create).toEqual([{ accountNumber: '111', isDefault: true }, { accountNumber: '222', isDefault: false }]);
+      expect(data.contacts.create).toEqual([{ name: 'اول', isPrimary: true }, { name: 'دوم', isPrimary: false }]);
     });
 
     it('hard-blocks an exact nationalId match (409), even with acknowledgeDuplicates', async () => {
@@ -419,7 +442,7 @@ describe('CustomersService', () => {
   });
 
   describe('remove', () => {
-    const counts = { contacts: 0, addresses: 0, notes: 0, documents: 0, complaints: 0 };
+    const counts = { contacts: 0, addresses: 0, bankAccounts: 0, notes: 0, documents: 0, complaints: 0 };
 
     it('deletes a customer with no child records (and its financial profile), and audits', async () => {
       const prisma = createPrismaMock();
@@ -432,7 +455,7 @@ describe('CustomersService', () => {
       expect(prisma.auditLog.create).toHaveBeenCalledWith({ data: expect.objectContaining({ action: 'CUSTOMER_DELETED', entityId: '5', details: 'CUS-000005' }) });
     });
 
-    it.each(['contacts', 'addresses', 'notes', 'documents', 'complaints'])('refuses when the customer has %s — archive instead', async (child) => {
+    it.each(['contacts', 'addresses', 'bankAccounts', 'notes', 'documents', 'complaints'])('refuses when the customer has %s — archive instead', async (child) => {
       const prisma = createPrismaMock();
       const service = buildCustomersService(prisma);
       prisma.customer.findUnique.mockResolvedValue({ id: 5, _count: { ...counts, [child]: 1 } });

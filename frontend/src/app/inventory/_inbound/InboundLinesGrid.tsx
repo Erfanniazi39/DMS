@@ -4,6 +4,7 @@ import { Fragment } from "react";
 import { Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { MoneyInput } from "@/components/ui/money-input";
 import { Label } from "@/components/ui/label";
 import { RequiredMark, selectClass } from "@/components/ui/form-field";
 import { JalaliDateInput } from "@/components/ui/jalali-date-input";
@@ -133,14 +134,12 @@ export function InboundLinesGrid({
                       {showCost ? (
                         <td className="px-2 py-1">
                           <div className="flex flex-col gap-0.5">
-                            <Input
+                            <MoneyInput
                               aria-label={`بهای واحد ردیف ${index + 1}`}
-                              dir="ltr"
-                              inputMode="numeric"
                               value={line.unitCost}
                               placeholder="اختیاری"
                               // Clearing the cost also clears «برآوردی» (it only means something with a cost).
-                              onChange={(event) => updateLine(line.key, event.target.value.trim() === "" ? { unitCost: event.target.value, costIsEstimated: false } : { unitCost: event.target.value })}
+                              onChange={(value) => updateLine(line.key, value === "" ? { unitCost: value, costIsEstimated: false } : { unitCost: value })}
                             />
                             {showCostEstimated ? (
                               <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground">

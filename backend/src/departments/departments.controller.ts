@@ -16,6 +16,13 @@ export class DepartmentsController {
     return this.departmentsService.list();
   }
 
+  // Suggested code for a new record — declared before any ':id' route.
+  @Get('next-code')
+  @RequirePermissions('employees.manage')
+  nextCode() {
+    return this.departmentsService.nextCode();
+  }
+
   @Get(':id')
   get(@Param('id', ParseIntPipe) id: number) {
     return this.departmentsService.get(id);

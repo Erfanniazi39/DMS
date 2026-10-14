@@ -19,8 +19,9 @@ echarts.use([BarChart, GridComponent, TooltipComponent, CanvasRenderer]);
 
 export type TrendPoint = { date: string; amount: string; count: number };
 
-type ChartTokens = {
+export type ChartTokens = {
   bar: string;
+  bar2: string;
   grid: string;
   axisLabel: string;
   tooltipBg: string;
@@ -36,7 +37,9 @@ function readTokens(): ChartTokens {
   const root = getComputedStyle(document.documentElement);
   const token = (name: string) => root.getPropertyValue(name).trim();
   return {
-    bar: token("--chart-1"),
+    // Purchases = red, sales = green, everywhere on the dashboard.
+    bar: token("--destructive"),
+    bar2: token("--chart-3"),
     grid: token("--border"),
     axisLabel: token("--muted-foreground"),
     tooltipBg: token("--popover"),
@@ -46,7 +49,7 @@ function readTokens(): ChartTokens {
   };
 }
 
-function useChartTokens() {
+export function useChartTokens() {
   const [tokens, setTokens] = useState<ChartTokens>(readTokens);
   useEffect(() => {
     const observer = new MutationObserver(() => setTokens(readTokens()));
@@ -57,19 +60,19 @@ function useChartTokens() {
 }
 
 // "YYYY-MM-DD" is read as a local calendar date — same as JalaliDateInput.
-function localDate(isoDate: string) {
+export function localDate(isoDate: string) {
   return new Date(`${isoDate}T00:00:00`);
 }
 
-function shortJalali(isoDate: string) {
+export function shortJalali(isoDate: string) {
   const jalali = safeToJalali(localDate(isoDate));
   if (!jalali) return isoDate;
   const { jm, jd } = jalali;
   return `${toPersianDigits(jd)} ${JALALI_MONTH_NAMES[jm - 1]}`;
 }
 
-const compactNumber = new Intl.NumberFormat("fa-IR", { notation: "compact", maximumFractionDigits: 1 });
-const fullNumber = new Intl.NumberFormat("fa-IR");
+export const compactNumber = new Intl.NumberFormat("fa-IR", { notation: "compact", maximumFractionDigits: 1 });
+export const fullNumber = new Intl.NumberFormat("fa-IR");
 
 // seriesLabel/ariaLabel default to the original purchases wording so the
 // existing call site needs no change — the sales trend (main/page.tsx) passes
@@ -81,14 +84,18 @@ export default function PurchaseTrendChart({
   seriesLabel = "مبلغ خرید",
   countLabel = "خرید",
   ariaLabel = "نمودار مبلغ خرید در بازه انتخاب‌شده",
+  tone = "purchase",
 }: {
   points: TrendPoint[];
   bucket: "day" | "week";
   seriesLabel?: string;
   countLabel?: string;
   ariaLabel?: string;
+  // red for purchases (default), green for sales
+  tone?: "purchase" | "sales";
 }) {
   const tokens = useChartTokens();
+  const barColor = tone === "sales" ? tokens.bar2 : tokens.bar;
 
   const option = {
     textStyle: { fontFamily: tokens.fontFamily },
@@ -134,8 +141,8 @@ export default function PurchaseTrendChart({
         name: seriesLabel,
         data: points.map((point) => Number(point.amount)),
         barMaxWidth: 22,
-        itemStyle: { color: tokens.bar, borderRadius: [4, 4, 0, 0] },
-        emphasis: { itemStyle: { color: tokens.bar, opacity: 0.85 } },
+        itemStyle: { color: barColor, borderRadius: [4, 4, 0, 0] },
+        emphasis: { itemStyle: { color: barColor, opacity: 0.85 } },
       },
     ],
   };

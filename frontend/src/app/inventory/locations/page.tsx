@@ -9,8 +9,12 @@ import { Label } from "@/components/ui/label";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { useToasts, ToastViewport } from "@/components/ui/toast";
 import { apiFetch, type ApiError } from "@/lib/api";
+import { fillSuggestedCode } from "@/lib/suggested-code";
 import { useAdminUser } from "@/app/admin/layout";
 import { NoAccess } from "../shared";
+import { SortHeader, useClientTable } from "@/components/ui/sortable";
+import { ListPagination } from "@/components/ui/list-pagination";
+import type { SortValue } from "@/lib/table-sort";
 
 // انبارها (I7's location-admin slice — transfers are explicitly out of
 // scope for now). Plain master data: code/name/isActive/isDefault/note.
@@ -29,6 +33,15 @@ type FormState = { code: string; name: string; isActive: boolean; isDefault: boo
 type StatusFilter = "all" | "active" | "inactive";
 
 const emptyForm: FormState = { code: "", name: "", isActive: true, isDefault: false, note: "" };
+
+// Accessors for in-memory column sorting — each sorts by what its column shows.
+const INVENTORY_LOCATIONS_SORT_GETTERS: Record<string, (row: Location) => SortValue> = {
+  code: (row) => row.code,
+  name: (row) => row.name,
+  note: (row) => row.note,
+  isDefault: (row) => row.isDefault,
+  isActive: (row) => row.isActive ? "فعال" : "غیرفعال",
+};
 
 export default function InventoryLocationsPage() {
   const user = useAdminUser();
@@ -77,6 +90,8 @@ export default function InventoryLocationsPage() {
       return matchesQuery && matchesStatus;
     });
   }, [locations, query, statusFilter]);
+  // Sort + page the (small, already loaded) rows in memory; click a header to sort.
+  const table = useClientTable(filteredLocations, INVENTORY_LOCATIONS_SORT_GETTERS, { pageSize: 20 });
 
   function update<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((current) => ({ ...current, [key]: value }));
@@ -85,6 +100,7 @@ export default function InventoryLocationsPage() {
   function openCreateForm() {
     setEditingId(null);
     setForm(emptyForm);
+    fillSuggestedCode("/inventory/locations/next-code", (code) => setForm((current) => (current.code === "" ? { ...current, code } : current)));
     setFormOpen(true);
   }
 
@@ -205,16 +221,16 @@ export default function InventoryLocationsPage() {
             <table className="w-full min-w-[42rem] text-right text-sm">
               <thead className="bg-muted/50 text-muted-foreground">
                 <tr>
-                  <th className="px-4 py-3 font-medium">کد</th>
-                  <th className="px-4 py-3 font-medium">نام</th>
-                  <th className="px-4 py-3 font-medium">یادداشت</th>
-                  <th className="px-4 py-3 font-medium">پیش‌فرض</th>
-                  <th className="px-4 py-3 font-medium">وضعیت</th>
+                  <SortHeader label="کد" sortKey="code" sort={table.sort} onSort={table.onSort} className="px-4 py-3 font-medium" />
+                  <SortHeader label="نام" sortKey="name" sort={table.sort} onSort={table.onSort} className="px-4 py-3 font-medium" />
+                  <SortHeader label="یادداشت" sortKey="note" sort={table.sort} onSort={table.onSort} className="px-4 py-3 font-medium" />
+                  <SortHeader label="پیش‌فرض" sortKey="isDefault" sort={table.sort} onSort={table.onSort} className="px-4 py-3 font-medium" />
+                  <SortHeader label="وضعیت" sortKey="isActive" sort={table.sort} onSort={table.onSort} className="px-4 py-3 font-medium" />
                   {canManage ? <th className="px-4 py-3 font-medium">عملیات</th> : null}
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
-                {filteredLocations.map((location) => (
+                {table.pageRows.map((location) => (
                   <tr key={location.id} className={location.isActive ? "hover:bg-muted/30" : "text-muted-foreground hover:bg-muted/30"}>
                     <td className="px-4 py-3 font-mono text-xs text-muted-foreground">{location.code}</td>
                     <td className="px-4 py-3 font-medium">{location.name}</td>
@@ -236,6 +252,7 @@ export default function InventoryLocationsPage() {
             </table>
           </div>
         )}
+            {table.total > table.pageSize ? <ListPagination page={table.page} pageSize={table.pageSize} total={table.total} onPageChange={table.setPage} className="mt-3" /> : null}
       </div>
 
       <Dialog

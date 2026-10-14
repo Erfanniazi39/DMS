@@ -51,6 +51,7 @@ export function createPrismaMock() {
     // that row exists.
     $queryRaw: jest.fn(),
     auditLog: { create: jest.fn() },
+    deletedRecord: { create: jest.fn() },
   };
   // create()/update() run inside a $transaction — the mock just invokes the
   // callback with itself, same convention as employees.service.spec.ts.
