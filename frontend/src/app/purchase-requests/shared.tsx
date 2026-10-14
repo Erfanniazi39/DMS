@@ -120,14 +120,18 @@ export type LinkedPurchase = {
   id: number;
   purchaseNumber: string;
   purchaseDate: string;
-  status: "DRAFT" | "CONFIRMED" | "RECEIVED" | "CLOSED" | "CANCELLED";
+  status: "DRAFT" | "PENDING_APPROVAL" | "CONFIRMED" | "RECEIVED" | "CLOSED" | "CANCELLED";
   // The Purchase's own derived payment state — display only on the request
   // detail page; never feeds this request's status (recomputeStatus() does).
   paymentStatus: PurchasePaymentStatus;
   totalAmount: string;
 };
 
+import type { DocumentApproval } from "@/lib/approval";
+
 export type PurchaseRequestDetail = {
+  // Workflow approval history + whether the caller may decide it now (GET /purchase-requests/:id only).
+  approval?: DocumentApproval;
   id: number;
   requestNumber: string;
   requestDate: string;

@@ -14,7 +14,8 @@ import { createHistoricalSalesSchema, type CreateHistoricalSalesDto } from './dt
 function actorOf(req: Request): QuickSaleActor {
   const permissions = req.session?.permissions ?? [];
   const canApprove = permissions.includes('sales.approve');
-  return { userId: req.session.userId ?? null, ipAddress: req.ip, canApprove, canViewCredit: canApprove || permissions.includes('customers.finance') };
+  // 'bypass': past records are never held for workflow approval.
+  return { userId: req.session.userId ?? null, ipAddress: req.ip, canApprove, canViewCredit: canApprove || permissions.includes('customers.finance'), workflow: 'bypass' };
 }
 
 @Controller('historical-sales')

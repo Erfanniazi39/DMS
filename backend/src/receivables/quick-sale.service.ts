@@ -4,6 +4,7 @@ import { toIsoDay } from '../common/zod-fields';
 import { DeliveriesService } from '../sales/deliveries.service';
 import { SalesInvoicesService } from '../sales/sales-invoices.service';
 import { SalesOrdersService, type SalesActor } from '../sales/sales-orders.service';
+import { SALES_ORDER_NEEDS_WORKFLOW_APPROVAL } from '../sales/sales-rules';
 import { computeLineAmounts, sumDocumentTotals } from '../sales/sales-totals';
 import { CustomerPaymentsService } from './customer-payments.service';
 import { PaymentAllocationsService } from './payment-allocations.service';
@@ -88,7 +89,17 @@ export class QuickSaleService {
     }
 
     const draft = await this.salesOrders.create({ orderDate: saleDate, customerId, items: input.items } as never, actor);
-    const confirmed = await this.salesOrders.confirm(draft.id, { updatedAt: draft.updatedAt } as never, actor);
+    let confirmed;
+    try {
+      confirmed = await this.salesOrders.confirm(draft.id, { updatedAt: draft.updatedAt } as never, actor);
+    } catch (error) {
+      // A workflow rule holds this order for approval — a quick sale can't wait, so it is
+      // refused and the draft it just created is removed (no orphan draft left behind).
+      if ((error as { response?: { code?: string } }).response?.code === SALES_ORDER_NEEDS_WORKFLOW_APPROVAL) {
+        await this.salesOrders.remove(draft.id, actor).catch(() => undefined);
+      }
+      throw error;
+    }
 
     const draftDelivery = await this.deliveries.createFromOrder({ salesOrderId: confirmed.id, deliveryDate: saleDate } as never, actor);
     const postedDelivery = await this.deliveries.post(draftDelivery.id, { updatedAt: draftDelivery.updatedAt } as never, actor);

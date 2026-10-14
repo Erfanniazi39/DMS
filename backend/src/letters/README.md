@@ -24,3 +24,6 @@ One transaction: re-validate addressees (exist, ACTIVE, not the sender), claim t
 
 ## Left out of v1
 Departments/groups, CC/BCC, forward, recall/edit after send, categories/priority/confidentiality, outside correspondents (دبیرخانه register — owner confirmed internal-only), notifications (the unread badge polls), links to Purchases/Sales.
+
+## System letters (workflow notifications, 2026-10-14)
+`LettersService.sendSystemLetter(tx, { senderUserId, recipientUserIds, subject, body, source })` — the only method other modules use (LettersModule exports LettersService for it). Creates an already-SENT letter inside the caller's transaction (gap-free `LTR-` number, immutable, normal visibility rules), drops the sender and inactive users silently and returns `null` without claiming a number when nobody is left. Audited as `LETTER_SENT` with «(خودکار: <source>)». Used by the workflow engine to tell approvers their turn has come and requesters the outcome; the sender shown is the user whose action triggered it (there is no system user — letters stay users-only).

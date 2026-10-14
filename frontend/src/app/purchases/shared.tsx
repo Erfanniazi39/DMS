@@ -26,7 +26,7 @@ export {
   type UnitOption,
 } from "@/lib/reference-options";
 
-export type PurchaseStatus = "DRAFT" | "CONFIRMED" | "RECEIVED" | "CLOSED" | "CANCELLED";
+export type PurchaseStatus = "DRAFT" | "PENDING_APPROVAL" | "CONFIRMED" | "RECEIVED" | "CLOSED" | "CANCELLED";
 export type PurchasePaymentStatus = "UNPAID" | "PARTIAL" | "PAID";
 export type PaymentMethod = "CASH" | "BANK_TRANSFER" | "CHECK" | "CARD";
 // Status of an individual PurchasePayment row — distinct from
@@ -37,7 +37,7 @@ export type DocumentType = "INVOICE" | "CONTRACT" | "DELIVERY_NOTE" | "WARRANTY"
 // record digitized after the fact — both live in the same Purchase list.
 export type PurchaseSourceType = "OPERATIONAL" | "HISTORICAL_IMPORT";
 
-export const PURCHASE_STATUSES: PurchaseStatus[] = ["DRAFT", "CONFIRMED", "RECEIVED", "CLOSED", "CANCELLED"];
+export const PURCHASE_STATUSES: PurchaseStatus[] = ["DRAFT", "PENDING_APPROVAL", "CONFIRMED", "RECEIVED", "CLOSED", "CANCELLED"];
 export const PURCHASE_PAYMENT_STATUSES: PurchasePaymentStatus[] = ["UNPAID", "PARTIAL", "PAID"];
 export const PAYMENT_METHODS: PaymentMethod[] = ["CASH", "BANK_TRANSFER", "CHECK", "CARD"];
 export const PAYMENT_RECORD_STATUSES: PaymentRecordStatus[] = ["PENDING", "COMPLETED", "CANCELLED"];
@@ -46,6 +46,7 @@ export const PURCHASE_SOURCE_TYPES: PurchaseSourceType[] = ["OPERATIONAL", "HIST
 
 export const purchaseStatusLabels: Record<PurchaseStatus, string> = {
   DRAFT: "پیش‌نویس",
+  PENDING_APPROVAL: "در انتظار تأیید",
   CONFIRMED: "تأییدشده",
   RECEIVED: "دریافت‌شده",
   CLOSED: "بسته‌شده",
@@ -87,6 +88,7 @@ export const purchaseSourceTypeLabels: Record<PurchaseSourceType, string> = {
 
 export const purchaseStatusTone: Record<PurchaseStatus, BadgeTone> = {
   DRAFT: "secondary",
+  PENDING_APPROVAL: "warning",
   CONFIRMED: "primary",
   RECEIVED: "accent",
   CLOSED: "muted",
@@ -245,6 +247,23 @@ export type PurchaseReturnRow = {
   items: PurchaseReturnItemRow[];
 };
 
+// Workflow approval types/labels live in lib/approval.ts (shared by purchases,
+// purchase requests and sales orders); re-exported here for existing imports.
+export {
+  approvalPersonName,
+  approvalRequestStatusLabels,
+  approvalRequestStatusTone,
+  approvalStepStatusLabels,
+  type ApprovalPerson,
+  type ApprovalPreview,
+  type ApprovalRequestRow,
+  type ApprovalRequestStatus,
+  type ApprovalStepRow,
+  type ApprovalStepStatus,
+  type PurchaseApproval,
+} from "@/lib/approval";
+import type { PurchaseApproval } from "@/lib/approval";
+
 export type PurchaseDetail = {
   id: number;
   purchaseNumber: string;
@@ -259,6 +278,7 @@ export type PurchaseDetail = {
   // Optimistic-locking token — sent back on PATCH; a mismatch is a 409
   // with code RECORD_MODIFIED (someone else saved in between).
   updatedAt: string;
+  approval?: PurchaseApproval;
   purchaseType: PurchaseTypeOption;
   // Nullable for the same HISTORICAL_IMPORT reason as buyerEmployee below.
   requesterDepartment: { id: number; code: string; name: string } | null;

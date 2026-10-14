@@ -30,9 +30,9 @@ function groupChildren(children: NavChild[]) {
   return groups;
 }
 
-function UnreadBadge({ count }: { count: number }) {
+function UnreadBadge({ count, label = "نامهٔ خوانده‌نشده" }: { count: number; label?: string }) {
   return (
-    <span className="inline-flex min-w-5 items-center justify-center rounded-full bg-primary px-1.5 text-[11px] font-semibold leading-5 text-primary-foreground" aria-label={`${count} نامهٔ خوانده‌نشده`}>
+    <span className="inline-flex min-w-5 items-center justify-center rounded-full bg-primary px-1.5 text-[11px] font-semibold leading-5 text-primary-foreground" aria-label={`${count} ${label}`}>
       {count > 99 ? "۹۹+" : count.toLocaleString("fa-IR")}
     </span>
   );
@@ -76,6 +76,33 @@ export default function AppShell({ children }: { children: ReactNode }) {
     };
   }, [canUseLetters, pathname]);
 
+  // Approvals waiting for this user (workflow engine), for the «کارتابل تأییدها»
+  // badge — same light polling as letters; the document page fires
+  // "dms:workflow-changed" after a decision so the badge drops at once.
+  const [pendingApprovals, setPendingApprovals] = useState(0);
+  const canUseApprovals = (user?.permissions.includes("workflow.inbox") && user?.features?.workflowApprovals) ?? false;
+  useEffect(() => {
+    if (!canUseApprovals) return;
+    let active = true;
+    const refresh = () => {
+      apiFetch<{ count: number }>("/workflow/inbox/count")
+        .then((data) => {
+          if (active) setPendingApprovals(data.count);
+        })
+        .catch(() => undefined);
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 60_000);
+    window.addEventListener("focus", refresh);
+    window.addEventListener("dms:workflow-changed", refresh);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refresh);
+      window.removeEventListener("dms:workflow-changed", refresh);
+    };
+  }, [canUseApprovals, pathname]);
+
   useEffect(() => {
     let active = true;
     apiFetch<SessionUser>("/auth/me")
@@ -110,7 +137,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
     .map((group) => ({
       ...group,
       items: group.items
-        .filter((item) => user.permissions.includes(item.permission))
+        .filter((item) => user.permissions.includes(item.permission) && (!item.feature || user.features?.[item.feature]))
         .map((item) => ({
           ...item,
           children: item.children?.filter(
@@ -232,7 +259,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
                         );
                       }
 
-                      return <button className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm lg:w-full ${active ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"}`} key={item.href} onClick={() => router.push(item.href)}><ItemIcon className="size-4" /><span className="whitespace-nowrap">{item.label}</span></button>;
+                      return <button className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm lg:w-full ${active ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"}`} key={item.href} onClick={() => router.push(item.href)}><ItemIcon className="size-4" /><span className="whitespace-nowrap">{item.label}</span>{item.href === "/workflow/inbox" && pendingApprovals > 0 ? <UnreadBadge count={pendingApprovals} label="مورد در انتظار تأیید" /> : null}</button>;
                     })}
                   </div>
                 </div>

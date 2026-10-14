@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { InventoryModule } from '../inventory/inventory.module';
+import { WorkflowModule } from '../workflow/workflow.module';
 import { DeliveriesController } from './deliveries.controller';
 import { DeliveriesService } from './deliveries.service';
 import { SalesInvoicesController } from './sales-invoices.controller';
@@ -18,8 +19,10 @@ import { SalesReportsService } from './sales-reports.service';
 // CustomersModule — customers are checked via customers/customer-rules.ts.
 // PrismaModule and AuditModule are global. SalesReturnsService is exported
 // so Receivables' CreditNotesService can call markCredited() (batch 6).
+// Imports WorkflowModule: SalesOrdersService asks the approval engine whether
+// an order needs approval (the engine never imports Sales back).
 @Module({
-  imports: [InventoryModule],
+  imports: [InventoryModule, WorkflowModule],
   controllers: [SalesOrdersController, DeliveriesController, SalesInvoicesController, SalesReturnsController, SalesReportsController],
   providers: [SalesOrdersService, DeliveriesService, SalesInvoicesService, SalesReturnsService, SalesReportsService],
   exports: [SalesOrdersService, DeliveriesService, SalesInvoicesService, SalesReturnsService],

@@ -60,3 +60,12 @@ npm test -- purchase   # purchases/purchase-payments/-documents/-returns/-totals
 
 Shared fixtures are in `purchases.spec-helpers.ts`: one Prisma mock shared by all four
 services. `tsconfig.build.json` excludes the file from the build.
+
+## Workflow approval (engine batch W3, 2026-10-14)
+Purchases ask the workflow engine (`backend/src/workflow/`) whether a purchase needs approval; the engine never reads purchase tables — `purchaseWorkflowFacts()` (purchase-rules.ts) builds the facts (total, largest line, largest unit price, type, supplier, requester department).
+- **Gated paths:** `create()` with status CONFIRMED and `changeStatus()` DRAFT→CONFIRMED → saved as **PENDING_APPROVAL** + an approval request when a rule matches. Drafts and HISTORICAL_IMPORT purchases are never evaluated.
+- **While PENDING_APPROVAL:** no edit (409), no payment (`PAYABLE_PURCHASE_STATUSES`), no forward status change; cancel/delete close the approval request (history kept in the workflow tables).
+- **Endpoints:** `POST /purchases/:id/approve` (comment optional) / `reject` (comment required) — `purchases.view`, eligibility decided by the engine against the DB; `POST /purchases/:id/withdraw` — `purchases.edit`, requester or `purchases.manage`; `POST /purchases/approval-preview[?purchaseId=]` — form preview / edit re-approval check. `GET /purchases/:id` returns `approval: { requests, canDecide, requestedByUserId }`.
+- **Outcomes:** final approve → CONFIRMED; reject/withdraw → DRAFT (resubmitting opens a new request); a level approved with more to go leaves it waiting.
+- **Edit after approval:** for a CONFIRMED/RECEIVED/CLOSED operational purchase, an edit needs approval again when a rule matches AND (total > last approved amount — or > current total if never approved — OR type/supplier/department changed). CONFIRMED → back to PENDING_APPROVAL; RECEIVED/CLOSED → refused (409). Decreases never re-trigger.
+- A pending purchase still counts toward its purchase request's purchased quantity (owner default) and is "open" on the dashboard.

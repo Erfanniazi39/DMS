@@ -97,8 +97,13 @@ enum ItemKind {
   PACKAGING
 }
 
+// PENDING_APPROVAL (workflow engine, 2026-10-14): a purchase a workflow rule
+// says needs approval sits here instead of CONFIRMED until its approval
+// request is approved (→ CONFIRMED), rejected/withdrawn (→ DRAFT) or the
+// purchase is cancelled. Only PurchasesService moves it in or out.
 enum PurchaseStatus {
   DRAFT
+  PENDING_APPROVAL
   CONFIRMED
   RECEIVED
   CLOSED
@@ -146,9 +151,10 @@ enum PurchaseSourceType {
   HISTORICAL_IMPORT
 }
 
-// Deliberately simple — no multi-level approval chain. APPROVED/REJECTED
-// are set the same way Purchase.status is: an edit, not a dedicated
-// approve/reject workflow endpoint.
+// APPROVED/REJECTED are still set by an edit today. Superseded direction
+// (owner, 2026-10-14): approvals move to the workflow engine
+// (backend/src/workflow/) — purchase requests get gated by it in a later
+// batch; the old "no multi-level approval chain" note no longer applies.
 //
 // PARTIALLY_PURCHASED/COMPLETED are the exception — those two are never set
 // by a user edit. They are recomputed automatically by
@@ -789,7 +795,7 @@ model PurchaseType {
 // Optional business event preceding a Purchase — "optional" is the whole
 // point (see the Purchase module architecture note): plenty of purchases
 // are urgent, direct, or recurring and never go through a formal request.
-// No multi-level approval chain — status is a plain edit, same as Purchase.
+// Approval: see the PurchaseRequestStatus note — moving to the workflow engine.
 model PurchaseRequest {
   id            Int      @id @default(autoincrement())
   // System-generated — "REQ-000001" — same placeholder-then-fix pattern as
@@ -2368,10 +2374,13 @@ model PaymentAllocation {
 }
 
 model Role {
-  id          Int              @id @default(autoincrement())
-  name        String           @unique
-  users       User[]
-  permissions RolePermission[]
+  id                Int                @id @default(autoincrement())
+  name              String             @unique
+  users             User[]
+  permissions       RolePermission[]
+  // Workflow engine: approval steps that name this role as the approver.
+  workflowRuleSteps WorkflowRuleStep[]
+  approvalSteps     ApprovalStep[]
 
   @@map("roles")
 }
@@ -2484,6 +2493,13 @@ model User {
   postedCreditNotes            CreditNote[]              @relation("CreditNotePostedBy")
   // Letters (نامه‌نگاری): written, received, and attached by this account.
   sentLetters                  Letter[]                  @relation("LetterSender")
+  // Workflow engine (موتور گردش کار): provenance + named approvers.
+  createdWorkflowRules         WorkflowRule[]            @relation("WorkflowRuleCreatedBy")
+  updatedWorkflowRules         WorkflowRule[]            @relation("WorkflowRuleUpdatedBy")
+  workflowRuleSteps            WorkflowRuleStep[]
+  requestedApprovals           ApprovalRequest[]         @relation("ApprovalRequestedBy")
+  approvalSteps                ApprovalStep[]            @relation("ApprovalStepApprover")
+  decidedApprovalSteps         ApprovalStep[]            @relation("ApprovalStepDecidedBy")
   receivedLetters              LetterRecipient[]         @relation("LetterRecipientUser")
   uploadedLetterAttachments    LetterAttachment[]        @relation("LetterAttachmentUploadedBy")
 
@@ -2648,4 +2664,151 @@ model user_sessions {
 
   @@index([expire], map: "IDX_session_expire")
   @@ignore
+}
+
+// ─── Workflow engine (موتور گردش کار و تأیید) ───────────────────────────────
+// Rules decide WHICH documents need approval and by whom; ApprovalRequest /
+// ApprovalStep are the per-document instances. The owning module (Purchases,
+// Sales, Purchase Requests) passes facts in and changes its own status — the
+// engine never writes another module's tables, and ApprovalRequest has NO FK
+// to the document (documentType + documentId, polymorphic). Scope ids on a
+// rule (purchase type / supplier / department) are plain ints validated by
+// the service, not FKs: they are other modules' master data (CLAUDE.md rule 11).
+enum WorkflowDocumentType {
+  PURCHASE
+  SALES_ORDER
+  PURCHASE_REQUEST
+}
+
+enum WorkflowAmountBasis {
+  TOTAL
+  ANY_LINE_TOTAL
+  ANY_UNIT_PRICE
+}
+
+enum WorkflowApproverType {
+  ROLE
+  USER
+}
+
+enum ApprovalRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  WITHDRAWN
+  CANCELLED
+}
+
+enum ApprovalStepStatus {
+  WAITING
+  OPEN
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+model WorkflowRule {
+  id                    Int                  @id @default(autoincrement())
+  name                  String
+  documentType          WorkflowDocumentType @map("document_type")
+  isActive              Boolean              @default(true) @map("is_active")
+  // First active match by sortOrder wins; higher amount bands go first.
+  sortOrder             Int                  @map("sort_order")
+  version               Int                  @default(1)
+  // Scope — null means "any".
+  purchaseTypeId        Int?                 @map("purchase_type_id")
+  supplierId            Int?                 @map("supplier_id")
+  requesterDepartmentId Int?                 @map("requester_department_id")
+  amountBasis           WorkflowAmountBasis  @default(TOTAL) @map("amount_basis")
+  // minAmount inclusive, maxAmount exclusive; both null = any amount.
+  minAmount             Decimal?             @map("min_amount") @db.Decimal(15, 0)
+  maxAmount             Decimal?             @map("max_amount") @db.Decimal(15, 0)
+  // Sales orders: the rule only applies to an order that carries a discount
+  // whose largest line discount is at least this many percent (0 = any
+  // discount). null = no discount condition.
+  minDiscountPercent    Decimal?             @map("min_discount_percent") @db.Decimal(5, 2)
+  notifyByLetter        Boolean              @default(true) @map("notify_by_letter")
+  note                  String?
+  createdByUserId       Int?                 @map("created_by_user_id")
+  createdByUser         User?                @relation("WorkflowRuleCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  updatedByUserId       Int?                 @map("updated_by_user_id")
+  updatedByUser         User?                @relation("WorkflowRuleUpdatedBy", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+  createdAt             DateTime             @default(now()) @map("created_at")
+  updatedAt             DateTime             @updatedAt @map("updated_at")
+  steps                 WorkflowRuleStep[]
+  requests              ApprovalRequest[]
+
+  @@index([documentType, isActive, sortOrder])
+  @@map("workflow_rules")
+}
+
+// One approver spec per level (levels run in order). Migration adds a CHECK:
+// ROLE => role_id set / user_id null; USER => the reverse.
+model WorkflowRuleStep {
+  id           Int                  @id @default(autoincrement())
+  ruleId       Int                  @map("rule_id")
+  rule         WorkflowRule         @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  level        Int
+  approverType WorkflowApproverType @map("approver_type")
+  roleId       Int?                 @map("role_id")
+  role         Role?                @relation(fields: [roleId], references: [id], onDelete: Restrict)
+  userId       Int?                 @map("user_id")
+  user         User?                @relation(fields: [userId], references: [id], onDelete: Restrict)
+  label        String?
+
+  @@unique([ruleId, level])
+  @@map("workflow_rule_steps")
+}
+
+// A document's approval instance. Everything needed to explain the decision
+// later is snapshotted here, so later edits of the rule never change it.
+// Migration adds a partial unique index: one PENDING request per document.
+model ApprovalRequest {
+  id                Int                   @id @default(autoincrement())
+  documentType      WorkflowDocumentType  @map("document_type")
+  documentId        Int                   @map("document_id")
+  documentNumber    String                @map("document_number")
+  summary           String
+  amount            Decimal               @db.Decimal(15, 0)
+  status            ApprovalRequestStatus @default(PENDING)
+  ruleId            Int?                  @map("rule_id")
+  rule              WorkflowRule?         @relation(fields: [ruleId], references: [id], onDelete: SetNull)
+  ruleVersion       Int                   @map("rule_version")
+  ruleNameSnapshot  String                @map("rule_name_snapshot")
+  notifyByLetter    Boolean               @default(true) @map("notify_by_letter")
+  factsSnapshot     Json                  @map("facts_snapshot")
+  currentLevel      Int                   @map("current_level")
+  requestedByUserId Int                   @map("requested_by_user_id")
+  requestedByUser   User                  @relation("ApprovalRequestedBy", fields: [requestedByUserId], references: [id], onDelete: Restrict)
+  createdAt         DateTime              @default(now()) @map("created_at")
+  decidedAt         DateTime?             @map("decided_at")
+  closeReason       String?               @map("close_reason")
+  steps             ApprovalStep[]
+
+  @@index([documentType, documentId])
+  @@index([status])
+  @@map("approval_requests")
+}
+
+model ApprovalStep {
+  id                   Int                  @id @default(autoincrement())
+  requestId            Int                  @map("request_id")
+  request              ApprovalRequest      @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  level                Int
+  approverType         WorkflowApproverType @map("approver_type")
+  roleId               Int?                 @map("role_id")
+  role                 Role?                @relation(fields: [roleId], references: [id], onDelete: Restrict)
+  userId               Int?                 @map("user_id")
+  user                 User?                @relation("ApprovalStepApprover", fields: [userId], references: [id], onDelete: Restrict)
+  approverLabel        String               @map("approver_label")
+  status               ApprovalStepStatus   @default(WAITING)
+  decidedByUserId      Int?                 @map("decided_by_user_id")
+  decidedByUser        User?                @relation("ApprovalStepDecidedBy", fields: [decidedByUserId], references: [id], onDelete: SetNull)
+  decidedAt            DateTime?            @map("decided_at")
+  comment              String?
+  // Plain id, no FK — the letters tables belong to the Letters module.
+  notificationLetterId Int?                 @map("notification_letter_id")
+
+  @@unique([requestId, level])
+  @@map("approval_steps")
 }

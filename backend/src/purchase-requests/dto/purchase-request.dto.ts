@@ -102,3 +102,16 @@ export const purchaseRequestListQuerySchema = z.object({
 export type CreatePurchaseRequestDto = z.infer<typeof createPurchaseRequestSchema>;
 export type UpdatePurchaseRequestDto = z.infer<typeof updatePurchaseRequestSchema>;
 export type PurchaseRequestListQuery = z.infer<typeof purchaseRequestListQuerySchema>;
+
+// Workflow approval actions on a SUBMITTED request that waits on an approval
+// request (POST /purchase-requests/:id/approve | reject | withdraw). Reject
+// needs a comment; approve/withdraw comments are optional (owner, 2026-10-14).
+export const purchaseRequestApprovalDecisionSchema = z.object({
+  updatedAt: requiredDate('نسخه رکورد (زمان آخرین ویرایش) ارسال نشده یا نامعتبر است'),
+  comment: z.string().trim().max(1000, 'توضیح حداکثر ۱۰۰۰ نویسه است').optional().nullable(),
+});
+export const purchaseRequestApprovalRejectSchema = purchaseRequestApprovalDecisionSchema.extend({
+  comment: z.string({ error: 'نوشتن دلیل رد الزامی است' }).trim().min(1, 'نوشتن دلیل رد الزامی است').max(1000, 'توضیح حداکثر ۱۰۰۰ نویسه است'),
+});
+export type PurchaseRequestApprovalDecisionDto = z.infer<typeof purchaseRequestApprovalDecisionSchema>;
+export type PurchaseRequestApprovalRejectDto = z.infer<typeof purchaseRequestApprovalRejectSchema>;

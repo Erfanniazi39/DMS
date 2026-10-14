@@ -22,7 +22,7 @@ import { paymentReceiptInfoFields } from '../../common/payment-receipt-fields';
 // two decimals (Decimal(12,2)) — anything the column would silently round is
 // rejected here instead.
 
-const PURCHASE_STATUSES = ['DRAFT', 'CONFIRMED', 'RECEIVED', 'CLOSED', 'CANCELLED'] as const;
+const PURCHASE_STATUSES = ['DRAFT', 'PENDING_APPROVAL', 'CONFIRMED', 'RECEIVED', 'CLOSED', 'CANCELLED'] as const;
 // The only statuses a brand-new purchase may be created in (business
 // decision 2026-10-05): entering a purchase means the decision to buy is
 // already made, so it defaults to CONFIRMED (payments possible right away);
@@ -207,6 +207,33 @@ export const purchaseListQuerySchema = z.object({
 export type PurchaseListQuery = z.infer<typeof purchaseListQuerySchema>;
 export type CreatePurchaseDto = z.infer<typeof createPurchaseSchema>;
 export type UpdatePurchaseDto = z.infer<typeof updatePurchaseSchema>;
+// Workflow approval actions on a PENDING_APPROVAL purchase (POST
+// /purchases/:id/approve | reject | withdraw). updatedAt = the same
+// optimistic-locking token. A comment is required to reject (owner
+// 2026-10-14), optional to approve; a withdraw reason is optional.
+export const purchaseApprovalDecisionSchema = z.object({
+  updatedAt: requiredDate('نسخه رکورد (زمان آخرین ویرایش) ارسال نشده یا نامعتبر است'),
+  comment: z.string().trim().max(1000, 'توضیح حداکثر ۱۰۰۰ نویسه است').optional().nullable(),
+});
+export const purchaseApprovalRejectSchema = purchaseApprovalDecisionSchema.extend({
+  comment: z.string({ error: 'نوشتن دلیل رد الزامی است' }).trim().min(1, 'نوشتن دلیل رد الزامی است').max(1000, 'توضیح حداکثر ۱۰۰۰ نویسه است'),
+});
+export type PurchaseApprovalDecisionDto = z.infer<typeof purchaseApprovalDecisionSchema>;
+export type PurchaseApprovalRejectDto = z.infer<typeof purchaseApprovalRejectSchema>;
+
+// POST /purchases/approval-preview — the form asks "would saving this as
+// confirmed need approval, and from whom?" before submitting.
+export const purchaseApprovalPreviewSchema = z.object({
+  purchaseTypeId: z.number().int().positive(),
+  supplierId: z.number().int().positive(),
+  requesterDepartmentId: z.number().int().positive().nullable().optional(),
+  sourceType: z.enum(['OPERATIONAL', 'HISTORICAL_IMPORT']).default('OPERATIONAL'),
+  items: z
+    .array(z.object({ totalPrice: z.coerce.number().min(0), unitPrice: z.coerce.number().min(0).nullable().optional() }))
+    .max(500),
+});
+export type PurchaseApprovalPreviewDto = z.infer<typeof purchaseApprovalPreviewSchema>;
+
 export type ChangePurchaseStatusDto = z.infer<typeof changePurchaseStatusSchema>;
 export type CreatePurchasePaymentDto = z.infer<typeof createPurchasePaymentSchema>;
 export type UpdatePurchasePaymentDto = z.infer<typeof updatePurchasePaymentSchema>;

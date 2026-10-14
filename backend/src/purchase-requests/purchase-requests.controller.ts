@@ -7,9 +7,13 @@ import { SessionAuthGuard } from '../auth/guards/session-auth.guard';
 import { ZodValidationPipe } from '../auth/zod-validation.pipe';
 import {
   createPurchaseRequestSchema,
+  purchaseRequestApprovalDecisionSchema,
+  purchaseRequestApprovalRejectSchema,
   purchaseRequestListQuerySchema,
   updatePurchaseRequestSchema,
   type CreatePurchaseRequestDto,
+  type PurchaseRequestApprovalDecisionDto,
+  type PurchaseRequestApprovalRejectDto,
   type PurchaseRequestListQuery,
   type UpdatePurchaseRequestDto,
 } from './dto/purchase-request.dto';
@@ -38,8 +42,30 @@ export class PurchaseRequestsController {
 
   @Get(':id')
   @RequirePermissions('purchases.view')
-  get(@Param('id', ParseIntPipe) id: number) {
-    return this.purchaseRequestsService.get(id);
+  get(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
+    return this.purchaseRequestsService.getDetail(id, req.session.userId ?? null);
+  }
+
+  // Workflow approval actions. approve/reject need only purchases.view — who
+  // may decide comes from the approval rule (checked by the engine against the
+  // DB). withdraw: the requester, or any purchases.manage holder.
+  @Post(':id/approve')
+  @RequirePermissions('purchases.view')
+  approve(@Param('id', ParseIntPipe) id: number, @Body(new ZodValidationPipe(purchaseRequestApprovalDecisionSchema)) dto: PurchaseRequestApprovalDecisionDto, @Req() req: Request) {
+    return this.purchaseRequestsService.approve(id, dto, req.session.userId as number, req.ip);
+  }
+
+  @Post(':id/reject')
+  @RequirePermissions('purchases.view')
+  reject(@Param('id', ParseIntPipe) id: number, @Body(new ZodValidationPipe(purchaseRequestApprovalRejectSchema)) dto: PurchaseRequestApprovalRejectDto, @Req() req: Request) {
+    return this.purchaseRequestsService.reject(id, dto, req.session.userId as number, req.ip);
+  }
+
+  @Post(':id/withdraw')
+  @RequirePermissions('purchases.edit')
+  withdraw(@Param('id', ParseIntPipe) id: number, @Body(new ZodValidationPipe(purchaseRequestApprovalDecisionSchema)) dto: PurchaseRequestApprovalDecisionDto, @Req() req: Request) {
+    const canManage = (req.session.permissions ?? []).includes('purchases.manage');
+    return this.purchaseRequestsService.withdraw(id, dto, req.session.userId as number, canManage, req.ip);
   }
 
   @Post()

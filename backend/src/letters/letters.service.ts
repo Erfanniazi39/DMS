@@ -237,6 +237,51 @@ export class LettersService {
     return this.get(actor.userId, sent);
   }
 
+  // A letter written by the system on a user's behalf and sent at once — for
+  // other modules' notifications (the workflow engine: "your approval is
+  // needed", "your request was approved/rejected"). Runs inside the CALLER's
+  // transaction so the notice commits or rolls back with the business change.
+  // Tolerant on purpose: inactive users and the sender are dropped silently,
+  // and with nobody left nothing is created (returns null) — a notice must
+  // never block the action it reports. Same numbering, immutability and
+  // visibility as any SENT letter; audited as LETTER_SENT.
+  async sendSystemLetter(
+    tx: Prisma.TransactionClient,
+    input: { senderUserId: number; recipientUserIds: number[]; subject: string; body: string; source: string; ipAddress?: string },
+  ): Promise<{ id: number; letterNumber: string } | null> {
+    const wanted = unique(input.recipientUserIds).filter((userId) => userId !== input.senderUserId);
+    if (wanted.length === 0) return null;
+    const active = await tx.user.findMany({ where: { id: { in: wanted }, status: 'ACTIVE' }, select: { id: true } });
+    const recipientIds = active.map((user) => user.id);
+    if (recipientIds.length === 0) return null;
+    const sentAt = new Date();
+    const letterNumber = await nextDocumentNumber(tx, LETTER_DOC_TYPE, sentAt);
+    const letter = await tx.letter.create({
+      data: {
+        subject: input.subject.slice(0, 200),
+        body: input.body,
+        senderUserId: input.senderUserId,
+        status: 'SENT',
+        letterNumber,
+        sentAt,
+        recipients: { create: recipientIds.map((userId) => ({ userId })) },
+      },
+      select: { id: true },
+    });
+    await this.audit.log(
+      {
+        userId: input.senderUserId,
+        ipAddress: input.ipAddress,
+        action: 'LETTER_SENT',
+        entityType: AUDIT_ENTITY.LETTER,
+        entityId: letter.id,
+        details: `${letterNumber} — ${recipientIds.length} گیرنده (خودکار: ${input.source})`,
+      },
+      tx,
+    );
+    return { id: letter.id, letterNumber };
+  }
+
   // Idempotent. Anyone who can see the letter may call it (the sender opening
   // their own letter is a no-op); only a recipient's own row changes.
   async markRead(userId: number, id: number) {

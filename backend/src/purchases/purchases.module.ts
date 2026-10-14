@@ -9,6 +9,7 @@ import { PurchaseDocumentsService } from './purchase-documents.service';
 import { PurchaseReturnsService } from './purchase-returns.service';
 import { PurchaseQuantitiesModule } from './purchase-quantities.module';
 import { PurchaseRequestsModule } from '../purchase-requests/purchase-requests.module';
+import { WorkflowModule } from '../workflow/workflow.module';
 
 // Imports PurchaseRequestsModule so PurchasesService can call
 // PurchaseRequestsService.recomputeStatus() after a linked Purchase is
@@ -22,8 +23,12 @@ import { PurchaseRequestsModule } from '../purchase-requests/purchase-requests.m
 // Provider graph inside this module (no cycles): PurchasePaymentsService and
 // PurchaseDocumentsService depend on PurchasesService (for get()); it never
 // depends on them. PurchaseReturnsService depends on neither.
+//
+// Imports WorkflowModule (approval engine): PurchasesService asks it whether a
+// purchase needs approval and records decisions; the engine never imports
+// Purchases back, so there is no cycle.
 @Module({
-  imports: [PurchaseRequestsModule, PurchaseQuantitiesModule],
+  imports: [PurchaseRequestsModule, PurchaseQuantitiesModule, WorkflowModule],
   controllers: [PurchasesController, PurchaseFilesController, HistoricalPurchasesController],
   providers: [PurchasesService, PurchasePaymentsService, PurchaseDocumentsService, PurchaseReturnsService, HistoricalPurchasesService],
 })

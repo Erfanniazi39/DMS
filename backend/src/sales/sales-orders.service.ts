@@ -54,6 +54,8 @@ import {
   SALES_ORDER_DOC_TYPE,
   SALES_ORDER_STATUS_LABELS_FA,
   type SalesOrderApprovalReason,
+  SALES_ORDER_NEEDS_WORKFLOW_APPROVAL,
+  salesOrderWorkflowFacts,
 } from './sales-rules';
 import {
   computeLineAmounts,
@@ -61,6 +63,7 @@ import {
   sumOrderTotals,
   type SalesLineAmounts,
 } from './sales-totals';
+import { WorkflowService } from '../workflow/workflow.service';
 import type {
   ApproveSalesOrderDto,
   CancelSalesOrderDto,
@@ -80,11 +83,17 @@ import type {
 //                   customer's credit limit / exposure figures in errors
 //                   and the form's customer panel (the limit itself is
 //                   customers.finance data in the Customer module).
+//   workflow      — how a confirm treats the workflow engine's approval
+//                   rules: omitted = normal (a matching rule sends the order
+//                   to PENDING_APPROVAL); 'refuse' = quick sale (one action,
+//                   no waiting — a matching rule refuses it with a message);
+//                   'bypass' = historical entry (past records, never gated).
 export type SalesActor = {
   userId: number | null;
   ipAddress?: string;
   canApprove: boolean;
   canViewCredit: boolean;
+  workflow?: 'refuse' | 'bypass';
 };
 
 export type SalesOrderListFilters = {
@@ -245,6 +254,11 @@ export class SalesOrdersService {
     private readonly prisma: PrismaService,
     private readonly inventory: InventoryService,
     private readonly audit: AuditService,
+    // Approval engine (workflow module): when an active SALES_ORDER rule
+    // matches, confirm() routes the order through it instead of the built-in
+    // discount / credit approval; with no matching rule (or the flag off) the
+    // built-in behaviour below is untouched.
+    private readonly workflow: WorkflowService,
   ) {}
 
   // Same opt-in pagination contract as the other list endpoints.
@@ -309,6 +323,20 @@ export class SalesOrdersService {
     });
     if (!order) throw new NotFoundException('سفارش فروش پیدا نشد');
     return order;
+  }
+
+  // GET /sales-orders/:id — the order plus its workflow approval history and
+  // whether this user may decide it now. Guarded by sales.view, so the
+  // timeline needs no permission of its own.
+  async getDetail(id: number, userId: number | null) {
+    const order = await this.get(id);
+    const waiting = order.status === 'PENDING_APPROVAL';
+    const [requests, canDecide, pending] = await Promise.all([
+      this.workflow.getTimeline('SALES_ORDER', id),
+      waiting && userId !== null ? this.workflow.canDecide('SALES_ORDER', id, userId) : Promise.resolve(false),
+      waiting ? this.workflow.pendingRequest('SALES_ORDER', id) : Promise.resolve(null),
+    ]);
+    return { ...order, approval: { requests, canDecide, requestedByUserId: pending?.requestedByUserId ?? null } };
   }
 
   // History tab: this order's audit trail, newest first.
@@ -460,6 +488,46 @@ export class SalesOrdersService {
       await ensureTransactableCustomer(tx, order.customerId);
       const credit = await this.checkCredit(tx, order);
 
+      // Workflow rules take over when one matches: the rule — not the
+      // sales.approve permission — says who approves (the requester never
+      // can). Historical entry skips this; a quick sale refuses.
+      if (actor.workflow !== 'bypass') {
+        const facts = salesOrderWorkflowFacts(order);
+        const preview = await this.workflow.evaluate('SALES_ORDER', facts, tx);
+        if (preview.required) {
+          if (actor.workflow === 'refuse') {
+            throw new ConflictException({
+              statusCode: 409,
+              code: SALES_ORDER_NEEDS_WORKFLOW_APPROVAL,
+              message: `این فروش طبق قانون تأیید «${preview.ruleName}» نیاز به تأیید دارد و با «فروش سریع» ثبت نمی‌شود؛ از «سفارش فروش» استفاده کنید.`,
+            });
+          }
+          if (!isFeatureEnabled('salesBackorders')) await this.ensureStockForSubmit(order);
+          await tx.salesOrder.update({ where: { id }, data: { status: 'PENDING_APPROVAL' } });
+          await this.workflow.start(tx, {
+            documentType: 'SALES_ORDER',
+            documentId: id,
+            documentNumber: order.orderNumber ?? `پیش‌نویس ${id}`,
+            summary: `سفارش فروش به ${order.customerName}`,
+            amount: Number(order.totalAmount),
+            facts,
+            actor: { userId: actor.userId ?? 0, ipAddress: actor.ipAddress },
+          });
+          await this.audit.log(
+            {
+              userId: actor.userId,
+              ipAddress: actor.ipAddress,
+              action: 'SALES_ORDER_SUBMITTED_FOR_APPROVAL',
+              entityType: AUDIT_ENTITY.SALES_ORDER,
+              entityId: id,
+              details: `گردش کار: ${preview.ruleName}`,
+            },
+            tx,
+          );
+          return [] as SalesOrderBackorder[];
+        }
+      }
+
       const reasons: SalesOrderApprovalReason[] = [];
       if (hasAnyDiscount(order.items)) reasons.push('DISCOUNT');
       if (credit.exceeded) reasons.push('CREDIT_LIMIT');
@@ -530,7 +598,15 @@ export class SalesOrdersService {
   // PENDING_APPROVAL → CONFIRMED (route requires sales.approve). Customer
   // gate and credit are re-checked now — the situation may have changed
   // since the order was submitted.
+  //
+  // Two kinds of pending order. One waiting on a workflow approval request is
+  // decided by whoever the rule names (any user holding sales.view reaches
+  // this route; the engine checks eligibility against the DB). Any other
+  // (the built-in discount / credit approval) still needs sales.approve.
   async approve(id: number, dto: ApproveSalesOrderDto, actor: SalesActor) {
+    if (dto.creditOverrideReason && !actor.canApprove) {
+      throw new ForbiddenException('فقط کاربر دارای مجوز «تأیید فروش» می‌تواند از سقف اعتبار عبور کند');
+    }
     const backorders = await this.prisma.$transaction(async (tx) => {
       const order = await this.loadLocked(tx, id);
       if (!isSameVersion(order.updatedAt, dto.updatedAt))
@@ -539,6 +615,31 @@ export class SalesOrdersService {
         throw new ConflictException(
           `فقط سفارش «در انتظار تأیید» قابل تأیید است؛ این سفارش «${SALES_ORDER_STATUS_LABELS_FA[order.status]}» است`,
         );
+      }
+      const viaWorkflow = (await this.workflow.pendingRequest('SALES_ORDER', id, tx)) !== null;
+      if (!viaWorkflow && !actor.canApprove) throw new ForbiddenException('برای تأیید این سفارش مجوز «تأیید فروش» لازم است');
+      if (viaWorkflow) {
+        const decision = await this.workflow.decide(tx, {
+          documentType: 'SALES_ORDER',
+          documentId: id,
+          actor: { userId: actor.userId ?? 0, ipAddress: actor.ipAddress },
+          decision: 'APPROVE',
+          comment: dto.note ?? null,
+        });
+        if (decision.outcome === 'ADVANCED') {
+          await this.audit.log(
+            {
+              userId: actor.userId,
+              ipAddress: actor.ipAddress,
+              action: 'SALES_ORDER_APPROVAL_LEVEL_APPROVED',
+              entityType: AUDIT_ENTITY.SALES_ORDER,
+              entityId: id,
+              details: `مرحلهٔ ${decision.level}${dto.note ? `: ${dto.note}` : ''}`,
+            },
+            tx,
+          );
+          return [] as SalesOrderBackorder[];
+        }
       }
       await ensureTransactableCustomer(tx, order.customerId);
       const credit = await this.checkCredit(tx, order);
@@ -568,6 +669,18 @@ export class SalesOrdersService {
           `فقط سفارش «در انتظار تأیید» قابل رد است؛ این سفارش «${SALES_ORDER_STATUS_LABELS_FA[order.status]}» است`,
         );
       }
+      const viaWorkflow = (await this.workflow.pendingRequest('SALES_ORDER', id, tx)) !== null;
+      if (!viaWorkflow && !actor.canApprove) throw new ForbiddenException('برای رد این سفارش مجوز «تأیید فروش» لازم است');
+      if (viaWorkflow) {
+        // The engine enforces eligibility and the mandatory reason.
+        await this.workflow.decide(tx, {
+          documentType: 'SALES_ORDER',
+          documentId: id,
+          actor: { userId: actor.userId ?? 0, ipAddress: actor.ipAddress },
+          decision: 'REJECT',
+          comment: dto.reason ?? null,
+        });
+      }
       ensureSalesOrderTransition(order.status, 'DRAFT');
       await tx.salesOrder.update({ where: { id }, data: { status: 'DRAFT' } });
       await this.audit.log(
@@ -579,6 +692,34 @@ export class SalesOrdersService {
           entityId: id,
           details: dto.reason ? `علت: ${dto.reason}` : undefined,
         },
+        tx,
+      );
+    });
+    return this.get(id);
+  }
+
+  // POST /sales-orders/:id/withdraw — the requester (or a sales.approve
+  // holder) takes an order waiting on a workflow approval back to DRAFT.
+  async withdraw(id: number, dto: { updatedAt: Date; reason?: string | null }, actor: SalesActor) {
+    await this.prisma.$transaction(async (tx) => {
+      const order = await this.loadLocked(tx, id);
+      if (!isSameVersion(order.updatedAt, dto.updatedAt)) throw recordModifiedConflict();
+      const pending = await this.workflow.pendingRequest('SALES_ORDER', id, tx);
+      if (order.status !== 'PENDING_APPROVAL' || !pending) throw new ConflictException('این سفارش در انتظار تأیید گردش کار نیست');
+      if (!actor.canApprove && pending.requestedByUserId !== actor.userId) {
+        throw new ForbiddenException('فقط ارسال‌کنندهٔ درخواست تأیید یا کاربر دارای مجوز «تأیید فروش» می‌تواند آن را پس بگیرد');
+      }
+      await this.workflow.cancel(tx, {
+        documentType: 'SALES_ORDER',
+        documentId: id,
+        actor: { userId: actor.userId ?? 0, ipAddress: actor.ipAddress },
+        kind: 'WITHDRAWN',
+        reason: dto.reason ?? null,
+      });
+      ensureSalesOrderTransition(order.status, 'DRAFT');
+      await tx.salesOrder.update({ where: { id }, data: { status: 'DRAFT' } });
+      await this.audit.log(
+        { userId: actor.userId, ipAddress: actor.ipAddress, action: 'SALES_ORDER_APPROVAL_WITHDRAWN', entityType: AUDIT_ENTITY.SALES_ORDER, entityId: id, details: 'بازگشت به پیش‌نویس' },
         tx,
       );
     });

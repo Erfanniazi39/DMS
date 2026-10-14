@@ -30,6 +30,9 @@ import {
   createPurchasePaymentSchema,
   createPurchaseReturnSchema,
   createPurchaseSchema,
+  purchaseApprovalDecisionSchema,
+  purchaseApprovalPreviewSchema,
+  purchaseApprovalRejectSchema,
   purchaseListQuerySchema,
   updatePurchasePaymentSchema,
   updatePurchaseSchema,
@@ -38,6 +41,9 @@ import {
   type CreatePurchasePaymentDto,
   type CreatePurchaseReturnDto,
   type PurchaseListQuery,
+  type PurchaseApprovalDecisionDto,
+  type PurchaseApprovalPreviewDto,
+  type PurchaseApprovalRejectDto,
   type UpdatePurchaseDto,
   type UpdatePurchasePaymentDto,
 } from './dto/purchase.dto';
@@ -80,10 +86,46 @@ export class PurchasesController {
     }, pagination);
   }
 
+  // Workflow approval preview for the purchase form (declared before ':id'
+  // routes). ?purchaseId= on the edit form → "would saving need re-approval?".
+  @Post('approval-preview')
+  @RequirePermissions('purchases.manage')
+  approvalPreview(
+    @Body(new ZodValidationPipe(purchaseApprovalPreviewSchema)) dto: PurchaseApprovalPreviewDto,
+    @Query('purchaseId') purchaseId?: string,
+  ) {
+    const id = purchaseId === undefined || purchaseId === '' ? undefined : Number(purchaseId);
+    if (id !== undefined && !Number.isInteger(id)) throw new BadRequestException('شناسهٔ خرید نامعتبر است');
+    return this.purchasesService.approvalPreview({ ...dto, purchaseId: id });
+  }
+
+  // Detail + approval timeline + "may I approve this now?" for the caller.
   @Get(':id')
   @RequirePermissions('purchases.view')
-  get(@Param('id', ParseIntPipe) id: number) {
-    return this.purchasesService.get(id);
+  get(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
+    return this.purchasesService.getDetail(id, req.session.userId ?? null);
+  }
+
+  // Workflow approval actions. Approve/reject need only purchases.view — who
+  // may decide comes from the approval rule, checked by the engine against
+  // the database. Withdraw: the requester, or any purchases.manage holder.
+  @Post(':id/approve')
+  @RequirePermissions('purchases.view')
+  approve(@Param('id', ParseIntPipe) id: number, @Body(new ZodValidationPipe(purchaseApprovalDecisionSchema)) dto: PurchaseApprovalDecisionDto, @Req() req: Request) {
+    return this.purchasesService.approve(id, dto, req.session.userId as number, req.ip);
+  }
+
+  @Post(':id/reject')
+  @RequirePermissions('purchases.view')
+  reject(@Param('id', ParseIntPipe) id: number, @Body(new ZodValidationPipe(purchaseApprovalRejectSchema)) dto: PurchaseApprovalRejectDto, @Req() req: Request) {
+    return this.purchasesService.reject(id, dto, req.session.userId as number, req.ip);
+  }
+
+  @Post(':id/withdraw')
+  @RequirePermissions('purchases.edit')
+  withdraw(@Param('id', ParseIntPipe) id: number, @Body(new ZodValidationPipe(purchaseApprovalDecisionSchema)) dto: PurchaseApprovalDecisionDto, @Req() req: Request) {
+    const canManage = (req.session.permissions ?? []).includes('purchases.manage');
+    return this.purchasesService.withdraw(id, dto, req.session.userId as number, canManage, req.ip);
   }
 
   @Post()

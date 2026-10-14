@@ -1,4 +1,4 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma, PurchasePaymentStatus, PurchaseSourceType, PurchaseStatus } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import { toSkipTake, type PaginationParams, buildOrderBy, type SortParams } from '../common/pagination';
@@ -13,8 +13,22 @@ import { AUDIT_ENTITY, AuditService } from '../audit/audit.service';
 import { archiveDeletedRecord } from '../audit/deleted-records';
 import { PurchaseRequestsService } from '../purchase-requests/purchase-requests.service';
 import { LINKABLE_PURCHASE_REQUEST_STATUSES } from '../purchase-requests/purchase-request-rules';
-import { ALLOWED_PURCHASE_STATUS_TRANSITIONS, PURCHASE_STATUS_LABELS_FA, RETURN_BLOCKED_TARGET_STATUSES } from './purchase-rules';
-import type { ChangePurchaseStatusDto, CreatePurchaseDto, UpdatePurchaseDto } from './dto/purchase.dto';
+import { WorkflowService } from '../workflow/workflow.service';
+import { ALLOWED_PURCHASE_STATUS_TRANSITIONS, PURCHASE_STATUS_LABELS_FA, RETURN_BLOCKED_TARGET_STATUSES, purchaseWorkflowFacts } from './purchase-rules';
+import type {
+  ChangePurchaseStatusDto,
+  CreatePurchaseDto,
+  PurchaseApprovalDecisionDto,
+  PurchaseApprovalPreviewDto,
+  PurchaseApprovalRejectDto,
+  UpdatePurchaseDto,
+} from './dto/purchase.dto';
+
+type Tx = Prisma.TransactionClient;
+
+// Statuses whose purchase has already been committed — an edit that pushes
+// one of them into an approval rule needs (re-)approval.
+const COMMITTED_STATUSES: PurchaseStatus[] = ['CONFIRMED', 'RECEIVED', 'CLOSED'];
 
 // Distinct, frontend-detectable 409 for "this purchase buys more than the
 // linked request line still needs" — see ensureRequestOverageConfirmed().
@@ -86,6 +100,10 @@ export class PurchasesService {
     private readonly purchaseRequestsService: PurchaseRequestsService,
     private readonly audit: AuditService,
     private readonly purchaseQuantities: PurchaseQuantitiesService,
+    // Approval engine (workflow module). Purchases sends it the facts and
+    // changes its own status from the result — see the approval section at
+    // the end of this class. HISTORICAL_IMPORT purchases are never evaluated.
+    private readonly workflow: WorkflowService,
   ) {}
 
   // Without `pagination` this returns the full filtered array (original
@@ -144,6 +162,19 @@ export class PurchasesService {
     return purchase;
   }
 
+  // GET /purchases/:id — the detail page: the purchase plus its approval
+  // history and whether this user may approve/reject it right now. Guarded by
+  // purchases.view, so the approval timeline needs no permission of its own.
+  async getDetail(id: number, userId: number | null) {
+    const purchase = await this.get(id);
+    const [requests, canDecide, pending] = await Promise.all([
+      this.workflow.getTimeline('PURCHASE', id),
+      userId !== null && purchase.status === 'PENDING_APPROVAL' ? this.workflow.canDecide('PURCHASE', id, userId) : Promise.resolve(false),
+      purchase.status === 'PENDING_APPROVAL' ? this.workflow.pendingRequest('PURCHASE', id) : Promise.resolve(null),
+    ]);
+    return { ...purchase, approval: { requests, canDecide, requestedByUserId: pending?.requestedByUserId ?? null } };
+  }
+
   // Purchase number (PUR-000001) is generated here, not entered by the
   // user — same placeholder-then-fix pattern used for Employee.code: the id
   // isn't known until the row exists, so it's inserted with a throwaway
@@ -165,7 +196,12 @@ export class PurchasesService {
     const totalAmount = sumItemTotals(dto.items);
     await this.ensureRequestOverageConfirmed(dto.purchaseRequestId, dto.items, dto.confirmOverage);
 
-    const created = await this.prisma.$transaction(async (tx) => {
+    const facts = purchaseWorkflowFacts(dto);
+    const { created, needsApproval } = await this.prisma.$transaction(async (tx) => {
+      // A purchase saved as confirmed that matches an approval rule waits in
+      // PENDING_APPROVAL instead (historical imports are never gated).
+      const needsApproval =
+        dto.status === 'CONFIRMED' && dto.sourceType === 'OPERATIONAL' && (await this.workflow.evaluate('PURCHASE', facts, tx)).required;
       const created = await tx.purchase.create({
         data: {
           purchaseNumber: `PENDING-${randomUUID()}`,
@@ -178,22 +214,31 @@ export class PurchasesService {
           sourceType: dto.sourceType,
           // Explicit (CONFIRMED unless the user chose DRAFT — see
           // createPurchaseSchema), never the column's own @default(DRAFT).
-          status: dto.status,
+          status: needsApproval ? 'PENDING_APPROVAL' : dto.status,
           note: dto.note,
           totalAmount,
           items: { create: dto.items },
         },
       });
       const purchaseNumber = `PUR-${String(created.id).padStart(6, '0')}`;
-      return tx.purchase.update({
+      const numbered = await tx.purchase.update({
         where: { id: created.id },
         data: { purchaseNumber },
         include: purchaseDetailInclude,
       });
+      if (needsApproval) await this.startApproval(tx, numbered, facts, userId, ipAddress);
+      return { created: numbered, needsApproval };
     });
 
     const action = dto.sourceType === 'HISTORICAL_IMPORT' ? 'HISTORICAL_PURCHASE_IMPORTED' : 'PURCHASE_CREATED';
-    await this.audit.log({ userId, ipAddress, action, entityType: AUDIT_ENTITY.PURCHASE, entityId: created.id });
+    await this.audit.log({
+      userId,
+      ipAddress,
+      action,
+      entityType: AUDIT_ENTITY.PURCHASE,
+      entityId: created.id,
+      ...(needsApproval ? { details: 'ارسال برای تأیید' } : {}),
+    });
     // A new Purchase linked to a request may fulfill (part of) it — let the
     // request re-derive its own progress (APPROVED ⇄ PARTIALLY_PURCHASED ⇄
     // COMPLETED) from the actual quantities now on record.
@@ -227,6 +272,9 @@ export class PurchasesService {
     if (!isSameVersion(existing.updatedAt, dto.updatedAt)) throw recordModifiedConflict();
     if (dto.status !== existing.status) {
       throw new ConflictException('تغییر وضعیت از این مسیر مجاز نیست — از دکمه‌های وضعیت استفاده کنید.');
+    }
+    if (existing.status === 'PENDING_APPROVAL') {
+      throw new ConflictException('خریدِ در انتظار تأیید قابل ویرایش نیست. برای ویرایش، ابتدا درخواست تأیید را پس بگیرید.');
     }
     const returnCount = await this.prisma.purchaseReturn.count({ where: { purchaseId: id } });
     if (returnCount > 0) {
@@ -265,11 +313,22 @@ export class PurchasesService {
     const paidAmount = Number(existing.paidAmount);
     const paymentStatus = derivePaymentStatus(totalAmount, paidAmount);
 
-    const updated = await this.prisma.$transaction(async (tx) => {
+    const facts = purchaseWorkflowFacts(dto);
+    const { updated, reapproval } = await this.prisma.$transaction(async (tx) => {
       const claimed = await tx.purchase.updateMany({ where: { id, updatedAt: existing.updatedAt }, data: { updatedAt: new Date() } });
       if (claimed.count !== 1) throw recordModifiedConflict();
+      // Edit after approval (owner default 2026-10-14): raising the amount
+      // above what was approved, or moving the purchase into another rule's
+      // scope, sends a CONFIRMED purchase back for approval; a RECEIVED or
+      // CLOSED one can't go back, so such an edit is refused.
+      const reapproval = await this.needsReapproval(tx, existing, { ...dto, totalAmount }, facts);
+      if (reapproval && existing.status !== 'CONFIRMED') {
+        throw new ConflictException(
+          `این تغییر طبق قوانین گردش کار به تأیید نیاز دارد و خریدِ «${PURCHASE_STATUS_LABELS_FA[existing.status]}» را نمی‌توان دوباره به تأیید فرستاد. مبلغ را از مبلغ تأییدشده بیشتر نکنید.`,
+        );
+      }
       await tx.purchaseItem.deleteMany({ where: { purchaseId: id } });
-      return tx.purchase.update({
+      const saved = await tx.purchase.update({
         where: { id },
         data: {
           purchaseDate: dto.purchaseDate,
@@ -279,7 +338,7 @@ export class PurchasesService {
           supplierId: dto.supplierId,
           purchaseRequestId: dto.purchaseRequestId ?? null,
           sourceType: dto.sourceType,
-          status: dto.status,
+          status: reapproval ? 'PENDING_APPROVAL' : dto.status,
           note: dto.note,
           totalAmount,
           paymentStatus,
@@ -287,11 +346,20 @@ export class PurchasesService {
         },
         include: purchaseDetailInclude,
       });
+      if (reapproval) await this.startApproval(tx, saved, facts, userId, ipAddress);
+      return { updated: saved, reapproval };
     });
 
-    // Status never changes here (see the guard above), so this is always a
-    // plain edit — status changes are audited by changeStatus().
-    await this.audit.log({ userId, ipAddress, action: 'PURCHASE_UPDATED', entityType: AUDIT_ENTITY.PURCHASE, entityId: id });
+    // The user never changes status here (see the guard above); the only
+    // status effect is an automatic return to PENDING_APPROVAL (re-approval).
+    await this.audit.log({
+      userId,
+      ipAddress,
+      action: 'PURCHASE_UPDATED',
+      entityType: AUDIT_ENTITY.PURCHASE,
+      entityId: id,
+      ...(reapproval ? { details: 'نیاز به تأیید مجدد — ارسال برای تأیید' } : {}),
+    });
 
     // Items were just replaced wholesale and/or the linked request may have
     // changed — recompute progress for whichever request(s) the purchase
@@ -330,7 +398,7 @@ export class PurchasesService {
       );
     }
 
-    const updated = await this.prisma.$transaction(async (tx) => {
+    const { updated, target } = await this.prisma.$transaction(async (tx) => {
       const claimed = await tx.purchase.updateMany({ where: { id, updatedAt: existing.updatedAt }, data: { updatedAt: new Date() } });
       if (claimed.count !== 1) throw recordModifiedConflict();
       if (RETURN_BLOCKED_TARGET_STATUSES.includes(dto.status)) {
@@ -339,11 +407,24 @@ export class PurchasesService {
           throw new ConflictException('برای این خرید برگشت به تأمین‌کننده ثبت شده است و قابل لغو نیست. ابتدا برگشت‌ها را حذف کنید.');
         }
       }
-      return tx.purchase.update({ where: { id }, data: { status: dto.status }, include: purchaseDetailInclude });
+      // Confirming a draft that an approval rule matches sends it for
+      // approval instead; cancelling a waiting purchase closes its request.
+      const facts = purchaseWorkflowFacts(existing);
+      const target: PurchaseStatus =
+        dto.status === 'CONFIRMED' && existing.sourceType === 'OPERATIONAL' && (await this.workflow.evaluate('PURCHASE', facts, tx)).required
+          ? 'PENDING_APPROVAL'
+          : dto.status;
+      if (dto.status === 'CANCELLED' && existing.status === 'PENDING_APPROVAL') {
+        await this.workflow.cancel(tx, { documentType: 'PURCHASE', documentId: id, actor: this.actor(userId, ipAddress), kind: 'CANCELLED', reason: 'لغو خرید' });
+      }
+      const result = await tx.purchase.update({ where: { id }, data: { status: target }, include: purchaseDetailInclude });
+      if (target === 'PENDING_APPROVAL') await this.startApproval(tx, result, facts, userId, ipAddress);
+      return { updated: result, target };
     });
 
-    const action = dto.status === 'CANCELLED' ? 'PURCHASE_CANCELLED' : 'PURCHASE_STATUS_CHANGED';
-    await this.audit.log({ userId, ipAddress, action, entityType: AUDIT_ENTITY.PURCHASE, entityId: id, details: `از ${existing.status} به ${dto.status}` });
+    const action =
+      dto.status === 'CANCELLED' ? 'PURCHASE_CANCELLED' : target === 'PENDING_APPROVAL' ? 'PURCHASE_SUBMITTED_FOR_APPROVAL' : 'PURCHASE_STATUS_CHANGED';
+    await this.audit.log({ userId, ipAddress, action, entityType: AUDIT_ENTITY.PURCHASE, entityId: id, details: `از ${existing.status} به ${target}` });
 
     // Only CANCELLED changes what counts toward a request's purchased
     // quantities (COUNTABLE_PURCHASE_WHERE excludes nothing else), so only a
@@ -376,12 +457,136 @@ export class PurchasesService {
     const { _count, ...record } = purchase;
     void _count;
     await this.prisma.$transaction(async (tx) => {
+      // The approval history stays in the workflow tables (no FK to purchases).
+      if (purchase.status === 'PENDING_APPROVAL') {
+        await this.workflow.cancel(tx, { documentType: 'PURCHASE', documentId: id, actor: this.actor(userId, ipAddress), kind: 'CANCELLED', reason: 'حذف خرید' });
+      }
       await archiveDeletedRecord(tx, { entityType: AUDIT_ENTITY.PURCHASE, entityId: id, label: purchase.purchaseNumber, record, userId });
       await tx.purchase.delete({ where: { id } });
     });
     await this.audit.log({ userId, ipAddress, action: 'PURCHASE_DELETED', entityType: AUDIT_ENTITY.PURCHASE, entityId: id, details: purchase.purchaseNumber });
     if (purchase.purchaseRequestId) await this.purchaseRequestsService.recomputeStatus(purchase.purchaseRequestId, userId, ipAddress);
     return { success: true };
+  }
+
+  // ─── Workflow approval ───────────────────────────────────────────────────
+
+  // POST /purchases/approval-preview: would this purchase need approval if
+  // confirmed, and from whom? With `purchaseId` (edit form) it answers the
+  // edit-after-approval question instead: would saving send it back?
+  async approvalPreview(dto: PurchaseApprovalPreviewDto & { purchaseId?: number }) {
+    if (dto.sourceType === 'HISTORICAL_IMPORT') return { required: false as const, reapproval: false };
+    const facts = purchaseWorkflowFacts(dto);
+    const preview = await this.workflow.evaluate('PURCHASE', facts);
+    if (dto.purchaseId === undefined) return { ...preview, reapproval: false };
+    const existing = await this.get(dto.purchaseId);
+    const reapproval = await this.needsReapproval(this.prisma, existing, { ...dto, totalAmount: facts.amountTotal }, facts);
+    return { ...preview, reapproval };
+  }
+
+  // POST /purchases/:id/approve — the engine checks the user may decide the
+  // open level; the final approval confirms the purchase.
+  async approve(id: number, dto: PurchaseApprovalDecisionDto, userId: number, ipAddress?: string) {
+    return this.decide(id, dto.updatedAt, 'APPROVE', dto.comment ?? null, userId, ipAddress);
+  }
+
+  // POST /purchases/:id/reject — comment required; back to DRAFT for editing
+  // and resubmitting (a resubmission opens a new approval request).
+  async reject(id: number, dto: PurchaseApprovalRejectDto, userId: number, ipAddress?: string) {
+    return this.decide(id, dto.updatedAt, 'REJECT', dto.comment, userId, ipAddress);
+  }
+
+  // POST /purchases/:id/withdraw — the requester (or a purchases.manage
+  // holder) takes a waiting purchase back to DRAFT.
+  async withdraw(id: number, dto: PurchaseApprovalDecisionDto, userId: number, canManage: boolean, ipAddress?: string) {
+    const existing = await this.get(id);
+    if (!isSameVersion(existing.updatedAt, dto.updatedAt)) throw recordModifiedConflict();
+    if (existing.status !== 'PENDING_APPROVAL') throw new ConflictException('این خرید در انتظار تأیید نیست');
+    const pending = await this.workflow.pendingRequest('PURCHASE', id);
+    if (!canManage && pending?.requestedByUserId !== userId) {
+      throw new ForbiddenException('فقط ارسال‌کنندهٔ درخواست تأیید یا مدیر خرید می‌تواند آن را پس بگیرد');
+    }
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const claimed = await tx.purchase.updateMany({ where: { id, updatedAt: existing.updatedAt }, data: { updatedAt: new Date() } });
+      if (claimed.count !== 1) throw recordModifiedConflict();
+      await this.workflow.cancel(tx, { documentType: 'PURCHASE', documentId: id, actor: this.actor(userId, ipAddress), kind: 'WITHDRAWN', reason: dto.comment ?? null });
+      return tx.purchase.update({ where: { id }, data: { status: 'DRAFT' }, include: purchaseDetailInclude });
+    });
+    await this.audit.log({ userId, ipAddress, action: 'PURCHASE_APPROVAL_WITHDRAWN', entityType: AUDIT_ENTITY.PURCHASE, entityId: id, details: 'بازگشت به پیش‌نویس' });
+    return updated;
+  }
+
+  private async decide(id: number, updatedAt: Date, decision: 'APPROVE' | 'REJECT', comment: string | null, userId: number, ipAddress?: string) {
+    const existing = await this.get(id);
+    if (!isSameVersion(existing.updatedAt, updatedAt)) throw recordModifiedConflict();
+    if (existing.status !== 'PENDING_APPROVAL') throw new ConflictException('این خرید در انتظار تأیید نیست');
+    const { updated, outcome, level } = await this.prisma.$transaction(async (tx) => {
+      const claimed = await tx.purchase.updateMany({ where: { id, updatedAt: existing.updatedAt }, data: { updatedAt: new Date() } });
+      if (claimed.count !== 1) throw recordModifiedConflict();
+      const result = await this.workflow.decide(tx, { documentType: 'PURCHASE', documentId: id, actor: this.actor(userId, ipAddress), decision, comment });
+      const status: PurchaseStatus | null = result.outcome === 'APPROVED' ? 'CONFIRMED' : result.outcome === 'REJECTED' ? 'DRAFT' : null;
+      const updated = status
+        ? await tx.purchase.update({ where: { id }, data: { status }, include: purchaseDetailInclude })
+        : await tx.purchase.findUniqueOrThrow({ where: { id }, include: purchaseDetailInclude });
+      return { updated, outcome: result.outcome, level: result.level };
+    });
+    const action = outcome === 'APPROVED' ? 'PURCHASE_APPROVED' : outcome === 'REJECTED' ? 'PURCHASE_REJECTED' : 'PURCHASE_APPROVAL_LEVEL_APPROVED';
+    await this.audit.log({
+      userId,
+      ipAddress,
+      action,
+      entityType: AUDIT_ENTITY.PURCHASE,
+      entityId: id,
+      details: comment ? `مرحلهٔ ${level}: ${comment}` : `مرحلهٔ ${level}`,
+    });
+    return updated;
+  }
+
+  // Edit-after-approval rule for a committed operational purchase: needs
+  // approval again when a rule matches the edited purchase AND (its total
+  // rises above the last approved amount — or above its current total if it
+  // was never approved — OR its type/supplier/department changed).
+  private async needsReapproval(
+    db: Tx | PrismaService,
+    existing: { id: number; status: PurchaseStatus; sourceType: PurchaseSourceType; totalAmount: unknown; purchaseTypeId: number; supplierId: number; requesterDepartmentId: number | null },
+    next: { sourceType: PurchaseSourceType; totalAmount: number; purchaseTypeId: number; supplierId: number; requesterDepartmentId?: number | null },
+    facts: ReturnType<typeof purchaseWorkflowFacts>,
+  ): Promise<boolean> {
+    if (!COMMITTED_STATUSES.includes(existing.status)) return false;
+    if (existing.sourceType !== 'OPERATIONAL' && next.sourceType !== 'OPERATIONAL') return false;
+    if (!(await this.workflow.evaluate('PURCHASE', facts, db as Tx)).required) return false;
+    const baseline = (await this.workflow.approvedAmount('PURCHASE', existing.id, db as Tx)) ?? Number(existing.totalAmount);
+    const scopeChanged =
+      next.purchaseTypeId !== existing.purchaseTypeId ||
+      next.supplierId !== existing.supplierId ||
+      (next.requesterDepartmentId ?? null) !== (existing.requesterDepartmentId ?? null);
+    return next.totalAmount > baseline || scopeChanged;
+  }
+
+  private async startApproval(
+    tx: Tx,
+    purchase: { id: number; purchaseNumber: string; totalAmount: unknown; supplier?: { name: string } | null; items?: unknown[] },
+    facts: ReturnType<typeof purchaseWorkflowFacts>,
+    userId: number | null,
+    ipAddress?: string,
+  ) {
+    if (userId === null) throw new ForbiddenException('برای ارسال به تأیید، کاربر واردشده لازم است');
+    const supplierName = purchase.supplier?.name ?? '';
+    const lineCount = purchase.items?.length ?? 0;
+    await this.workflow.start(tx, {
+      documentType: 'PURCHASE',
+      documentId: purchase.id,
+      documentNumber: purchase.purchaseNumber,
+      summary: `خرید از ${supplierName}${lineCount ? ` — ${lineCount.toLocaleString('fa-IR')} قلم` : ''}`,
+      amount: Number(purchase.totalAmount),
+      facts,
+      actor: this.actor(userId, ipAddress),
+    });
+  }
+
+  private actor(userId: number | null, ipAddress?: string) {
+    // Every caller sits behind SessionAuthGuard; null only in direct service use.
+    return { userId: userId ?? 0, ipAddress };
   }
 
   // Buying more than a linked request line still needs is allowed, but only

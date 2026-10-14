@@ -64,6 +64,9 @@ export const AUDIT_ENTITY = {
   // Passwords are never written — a password change is only "changed".
   USER: 'User',
   ROLE: 'Role',
+  // Workflow engine: approval rules (master config) and per-document approval requests.
+  WORKFLOW_RULE: 'WorkflowRule',
+  APPROVAL_REQUEST: 'ApprovalRequest',
 } as const;
 
 // One field-level change recorded in AuditLog.changes (added 2026-10-06 for

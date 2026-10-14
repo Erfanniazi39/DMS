@@ -24,6 +24,7 @@ import {
 } from "../shared";
 import { DetailSection } from "./_sections/DetailSection";
 import { StatusActions } from "./_sections/StatusActions";
+import { ApprovalPanel } from "@/components/workflow/ApprovalPanel";
 import { PaymentsSection, emptyPaymentForm, type PaymentFormState } from "./_sections/PaymentsSection";
 import { DocumentsSection, emptyDocumentForm, type DocumentFormState } from "./_sections/DocumentsSection";
 import { ReturnsSection, emptyReturnForm, type ReturnFormState } from "./_sections/ReturnsSection";
@@ -86,6 +87,17 @@ export default function PurchaseDetailPage() {
       pushError((reason as ApiError).message ?? "دریافت اطلاعات خرید ناموفق بود.");
     } finally {
       setLoading(false);
+    }
+  }
+
+  // Re-reads the purchase without the loading state — the write endpoints
+  // (status change, approve, …) answer without the approval timeline, so the
+  // page refreshes it from GET /purchases/:id afterwards.
+  async function refreshPurchase() {
+    try {
+      setPurchase(await apiFetch<PurchaseDetail>(`/purchases/${purchaseId}`));
+    } catch (reason) {
+      pushError((reason as ApiError).message ?? "دریافت اطلاعات خرید ناموفق بود.");
     }
   }
 
@@ -192,7 +204,10 @@ export default function PurchaseDetailPage() {
             <StatusBadge label={purchaseSourceTypeLabels[purchase.sourceType]} tone={purchaseSourceTypeTone[purchase.sourceType]} />
             <StatusActions
               purchase={purchase}
-              setPurchase={setPurchase}
+              setPurchase={(updated) => {
+                setPurchase(updated);
+                void refreshPurchase();
+              }}
               canEdit={canEdit}
               changingStatusTo={changingStatusTo}
               setChangingStatusTo={setChangingStatusTo}
@@ -200,13 +215,26 @@ export default function PurchaseDetailPage() {
               setStaleRecord={setStaleRecord}
               toasts={toastActions}
             />
-            {canEdit ? (
+            {canEdit && purchase.status !== "PENDING_APPROVAL" ? (
               <Button variant="outline" onClick={() => router.push(`/purchases/${purchase.id}/edit`)}>
                 ویرایش
               </Button>
             ) : null}
           </div>
         </div>
+
+        <ApprovalPanel
+          title="تأیید خرید"
+          documentPath={`/purchases/${purchase.id}`}
+          updatedAt={purchase.updatedAt}
+          approval={purchase.approval}
+          waiting={purchase.status === "PENDING_APPROVAL"}
+          waitingNote="تا پایان تأیید، ویرایش، پرداخت و ثبت دریافت ممکن نیست."
+          canManage={canManageReturns}
+          onChanged={refreshPurchase}
+          setStaleRecord={setStaleRecord}
+          toasts={toastActions}
+        />
 
         {/* 1. اطلاعات خرید */}
         <DetailSection title="اطلاعات خرید">

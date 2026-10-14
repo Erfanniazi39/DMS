@@ -17,3 +17,10 @@ export const LINKABLE_PURCHASE_REQUEST_STATUSES: readonly PurchaseRequestStatus[
 export const OPEN_PURCHASE_REQUEST_WHERE = {
   status: { in: OPEN_PURCHASE_REQUEST_STATUSES },
 } satisfies Prisma.PurchaseRequestWhereInput;
+
+// The facts the workflow engine matches approval rules against
+// (backend/src/workflow/). A purchase request carries no prices, so only the
+// scope fields apply — amount-band rules never match it.
+export function purchaseRequestWorkflowFacts(request: { purchaseTypeId: number; requesterDepartmentId: number }) {
+  return { purchaseTypeId: request.purchaseTypeId, requesterDepartmentId: request.requesterDepartmentId };
+}

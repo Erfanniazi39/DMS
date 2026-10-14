@@ -44,6 +44,7 @@ import {
   Users,
   Wallet,
   Warehouse,
+  Workflow,
   type LucideIcon,
 } from "lucide-react";
 import type { FeatureFlag } from "@/lib/session";
@@ -64,6 +65,8 @@ export type NavItem = {
   href: string;
   icon: LucideIcon;
   permission: string;
+  // Hides the whole item while that feature flag is off (see NavChild.feature).
+  feature?: FeatureFlag;
   // Optional sub-items — rendered as a collapsible group (same pattern as
   // "مدیریت سیستم") instead of navigating directly on click.
   children?: NavChild[];
@@ -91,6 +94,27 @@ export const navGroups: NavGroup[] = [
           // Management oversight (letters.readAll): read-only, every view audited.
           { label: "همهٔ نامه‌ها (نظارت)", href: "/letters/all", permission: "letters.readAll", icon: Eye },
         ],
+      },
+    ],
+  },
+  {
+    // موتور گردش کار و تأیید — the approvals inbox (every role) and the rules
+    // (admin-only, workflow.manage); hidden until the workflowApprovals flag is on.
+    label: "گردش کار",
+    items: [
+      {
+        label: "کارتابل تأییدها",
+        href: "/workflow/inbox",
+        icon: ClipboardCheck,
+        permission: "workflow.inbox",
+        feature: "workflowApprovals",
+      },
+      {
+        label: "قوانین تأیید",
+        href: "/workflow/rules",
+        icon: Workflow,
+        permission: "workflow.manage",
+        feature: "workflowApprovals",
       },
     ],
   },

@@ -36,7 +36,21 @@ function createService(prisma: ReturnType<typeof createPrismaMock>) {
     prisma as never,
     new PurchaseQuantitiesService(prisma as never),
     new AuditService(prisma as never),
+    // No approval rule matches by default — approval tests live in purchase-request-approval.spec.ts.
+    createWorkflowMock() as never,
   );
+}
+
+function createWorkflowMock() {
+  return {
+    evaluate: jest.fn().mockResolvedValue({ required: false }),
+    start: jest.fn(),
+    decide: jest.fn(),
+    cancel: jest.fn().mockResolvedValue(true),
+    getTimeline: jest.fn().mockResolvedValue([]),
+    canDecide: jest.fn().mockResolvedValue(false),
+    pendingRequest: jest.fn().mockResolvedValue(null),
+  };
 }
 
 // The version (updatedAt) the client loaded; existing-row mocks carry the

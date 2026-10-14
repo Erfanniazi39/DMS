@@ -37,6 +37,8 @@ import {
   type PurchaseRequestPickerOption,
   type PurchaseSourceType,
   type PurchaseStatus,
+  type ApprovalPreview,
+  purchaseStatusLabels,
   type PurchaseTypeOption,
   type SupplierOption,
   type UnitOption,
@@ -561,6 +563,45 @@ export function PurchaseForm(props: Props) {
     [form.items],
   );
 
+  // Workflow approval preview: asks the backend whether saving this purchase
+  // as confirmed needs approval (or, on edit, sends it back for approval) so
+  // the user knows before saving. Advisory only — the backend decides on save.
+  const [approvalPreview, setApprovalPreview] = useState<ApprovalPreview | null>(null);
+  const editingPurchaseId = props.mode === "edit" ? props.purchaseId : null;
+  // Only ask once the form has what the rules match on; below that the banner
+  // is simply hidden (state is not reset inside the effect).
+  const previewReady = !loading && form.sourceType === "OPERATIONAL" && !!form.purchaseTypeId && !!form.supplierId && itemsTotal > 0;
+  useEffect(() => {
+    if (!previewReady) return;
+    let ignore = false;
+    const timer = setTimeout(() => {
+      apiFetch<ApprovalPreview>(`/purchases/approval-preview${editingPurchaseId !== null ? `?purchaseId=${editingPurchaseId}` : ""}`, {
+        method: "POST",
+        body: JSON.stringify({
+          purchaseTypeId: Number(form.purchaseTypeId),
+          supplierId: Number(form.supplierId),
+          requesterDepartmentId: form.requesterDepartmentId ? Number(form.requesterDepartmentId) : null,
+          sourceType: form.sourceType,
+          items: form.items.map((item) => ({
+            totalPrice: parseNumberInput(item.totalPrice) || 0,
+            unitPrice: item.unitPrice === "" ? null : parseNumberInput(item.unitPrice) || 0,
+          })),
+        }),
+      })
+        .then((preview) => {
+          if (!ignore) setApprovalPreview(preview);
+        })
+        // The preview is a courtesy (the workflow feature may be off, or the user lacks access) — never an error toast.
+        .catch(() => {
+          if (!ignore) setApprovalPreview(null);
+        });
+    }, 500);
+    return () => {
+      ignore = true;
+      clearTimeout(timer);
+    };
+  }, [previewReady, form.sourceType, form.purchaseTypeId, form.supplierId, form.requesterDepartmentId, form.items, editingPurchaseId]);
+
   // Unsaved-changes guard: the form differs from where it started, or files
   // are staged for upload. Off once the purchase has been saved (document-
   // failure state) and while the record is stale — that banner already says
@@ -766,7 +807,13 @@ export function PurchaseForm(props: Props) {
           return;
         }
       }
-      pushSuccess(props.mode === "edit" ? "خرید با موفقیت ویرایش شد." : "خرید جدید با موفقیت ثبت شد.");
+      pushSuccess(
+        saved.status === "PENDING_APPROVAL"
+          ? "خرید ذخیره شد و برای تأیید ارسال شد."
+          : props.mode === "edit"
+            ? "خرید با موفقیت ویرایش شد."
+            : "خرید جدید با موفقیت ثبت شد.",
+      );
       router.push(`/purchases/${saved.id}`);
     } catch (reason) {
       const apiError = reason as ApiError;
@@ -843,6 +890,8 @@ export function PurchaseForm(props: Props) {
             </Button>
           </div>
         ) : null}
+
+        <ApprovalPreviewBanner preview={previewReady ? approvalPreview : null} mode={props.mode} status={form.status} />
 
         {savedWithDocumentFailures ? (
           <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-warning/40 bg-warning/10 px-4 py-2.5 text-sm">
@@ -1120,6 +1169,32 @@ export function PurchaseForm(props: Props) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+// «این خرید نیاز به تأیید دارد» — shown from the workflow engine's preview.
+function ApprovalPreviewBanner({ preview, mode, status }: { preview: ApprovalPreview | null; mode: "create" | "edit"; status: PurchaseStatus }) {
+  if (!preview || !preview.required) return null;
+  const chain = preview.levels.map((level) => `${level.level.toLocaleString("fa-IR")}. ${level.approverLabel}`).join(" ← ");
+  const committed = status === "CONFIRMED" || status === "RECEIVED" || status === "CLOSED";
+  if (mode === "edit" && committed) {
+    if (!preview.reapproval) return null;
+    return status === "CONFIRMED" ? (
+      <div role="status" className="rounded-lg border border-warning/40 bg-warning/10 px-4 py-2.5 text-sm">
+        ذخیرهٔ این تغییر، خرید را طبق قانون «{preview.ruleName}» دوباره برای تأیید می‌فرستد ({chain}). تا پایان تأیید، پرداخت و ثبت دریافت ممکن نیست.
+      </div>
+    ) : (
+      <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-2.5 text-sm">
+        این تغییر طبق قانون «{preview.ruleName}» به تأیید نیاز دارد، اما خریدِ «{purchaseStatusLabels[status]}» را نمی‌توان دوباره به تأیید فرستاد. مبلغ را از مبلغ تأییدشده بیشتر نکنید.
+      </div>
+    );
+  }
+  return (
+    <div role="status" className="rounded-lg border border-warning/40 bg-warning/10 px-4 py-2.5 text-sm">
+      {mode === "create" || status === "DRAFT"
+        ? `این خرید طبق قانون «${preview.ruleName}» به تأیید نیاز دارد (${chain}). ${mode === "create" ? "پس از ثبت" : "پس از تأیید خرید"}، در وضعیت «در انتظار تأیید» می‌ماند.`
+        : null}
     </div>
   );
 }

@@ -17,7 +17,8 @@ import { createQuickSaleSchema, type CreateQuickSaleDto } from './dto/quick-sale
 function actorOf(req: Request): QuickSaleActor {
   const permissions = req.session?.permissions ?? [];
   const canApprove = permissions.includes('sales.approve');
-  return { userId: req.session.userId ?? null, ipAddress: req.ip, canApprove, canViewCredit: canApprove || permissions.includes('customers.finance') };
+  // 'refuse': a quick sale is one action with no waiting — an order a workflow rule holds for approval is refused here.
+  return { userId: req.session.userId ?? null, ipAddress: req.ip, canApprove, canViewCredit: canApprove || permissions.includes('customers.finance'), workflow: 'refuse' };
 }
 
 @Controller('quick-sale')

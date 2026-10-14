@@ -119,7 +119,11 @@ export function StatusActions({
 
   const nothingDelivered = order.items.every((line) => Number(line.deliveredQty) === 0);
   const showConfirm = canManage && order.status === "DRAFT";
-  const showApproval = canApprove && order.status === "PENDING_APPROVAL";
+  // An order waiting on a workflow approval is decided in the approval panel
+  // (whoever the rule names); the built-in approve/reject buttons are only for
+  // the old sales.approve flow (no approval request open).
+  const workflowPending = order.approval?.requests.some((request) => request.status === "PENDING") ?? false;
+  const showApproval = canApprove && order.status === "PENDING_APPROVAL" && !workflowPending;
   const showClose = canManage && order.status === "CONFIRMED";
   const showCancel = showClose && nothingDelivered;
   const disabled = staleRecord || saving || deleting;
@@ -178,7 +182,7 @@ export function StatusActions({
         onUpdated(updated, backorders);
         pushSuccess(
           updated.status === "PENDING_APPROVAL"
-            ? "سفارش برای تأیید کاربر دارای مجوز «تأیید فروش» ارسال شد."
+            ? "سفارش برای تأیید ارسال شد."
             : `سفارش ${updated.orderNumber ?? ""} تأیید شد و موجودی اقلام رزرو شد.`,
         );
       } else if (action === "approve") {

@@ -10,6 +10,7 @@ import { formatJalali } from "@/lib/jalali";
 import { apiFetch, type ApiError } from "@/lib/api";
 import { useAdminUser } from "@/app/admin/layout";
 import { StatusBadge } from "@/components/ui/status-badge";
+import { ApprovalPanel } from "@/components/workflow/ApprovalPanel";
 import { formatMoney } from "@/lib/format";
 import { employeeFullName } from "@/lib/reference-options";
 import { purchasePaymentStatusLabels, purchasePaymentStatusTone, purchaseStatusLabels, purchaseStatusTone } from "../../purchases/shared";
@@ -52,7 +53,7 @@ export default function PurchaseRequestDetailPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
   const requestId = Number(params.id);
-  const { toasts, pushError, pushSuccess, dismiss } = useToasts();
+  const { toasts, pushError, pushErrors, pushSuccess, dismiss } = useToasts();
   const user = useAdminUser();
   const canView = user?.permissions.includes("purchases.view") ?? false;
   const canEdit = user?.permissions.includes("purchases.edit") ?? false;
@@ -99,8 +100,10 @@ export default function PurchaseRequestDetailPage() {
           })),
         }),
       });
-      setRequest(updated);
-      pushSuccess(successMessage);
+      // A request a rule matches is held for approval (SUBMITTED) instead of APPROVED.
+      const sentForApproval = status === "APPROVED" && updated.status === "SUBMITTED";
+      setRequest(sentForApproval ? await apiFetch<PurchaseRequestDetail>(`/purchase-requests/${request.id}`) : updated);
+      pushSuccess(sentForApproval ? "درخواست برای تأیید ارسال شد." : successMessage);
     } catch (reason) {
       const apiError = reason as ApiError;
       if (apiError.code === "RECORD_MODIFIED") setStaleRecord(true);
@@ -182,7 +185,10 @@ export default function PurchaseRequestDetailPage() {
   const itemsWithRemaining = request.items.filter((item) => item.remainingQuantity > 0);
   // "تایید" is a shortcut for the DRAFT/SUBMITTED → APPROVED step — the same
   // transition the edit form's status field already allows.
-  const canApprove = canEdit && (request.status === "DRAFT" || request.status === "SUBMITTED");
+  // While an approval request is open, deciding happens in the approval panel
+  // (whoever the rule names) — the plain تایید / رد shortcuts would only be refused.
+  const waitingOnWorkflow = request.approval?.waitingOnWorkflow ?? false;
+  const canApprove = canEdit && (request.status === "DRAFT" || request.status === "SUBMITTED") && !waitingOnWorkflow;
 
   return (
     <div className="p-4 sm:p-6 lg:p-8">
@@ -242,13 +248,28 @@ export default function PurchaseRequestDetailPage() {
                 ثبت خرید
               </Button>
             ) : null}
-            {canEdit ? (
+            {canEdit && !waitingOnWorkflow ? (
               <Button variant="outline" onClick={() => router.push(`/purchase-requests/${request.id}/edit`)}>
                 ویرایش
               </Button>
             ) : null}
           </div>
         </div>
+
+        <ApprovalPanel
+          title="تأیید درخواست خرید"
+          documentPath={`/purchase-requests/${request.id}`}
+          updatedAt={request.updatedAt}
+          approval={request.approval}
+          waiting={waitingOnWorkflow}
+          waitingNote="تا پایان تأیید، ویرایش درخواست ممکن نیست."
+          canManage={canManagePurchases}
+          onChanged={async () => {
+            setRequest(await apiFetch<PurchaseRequestDetail>(`/purchase-requests/${request.id}`));
+          }}
+          setStaleRecord={setStaleRecord}
+          toasts={{ pushError, pushErrors, pushSuccess }}
+        />
 
         {/* 1. اطلاعات درخواست */}
         <Card>

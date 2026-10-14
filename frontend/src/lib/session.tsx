@@ -18,7 +18,8 @@ export type FeatureFlag =
   | "customerCreditLimit"
   | "customerTerritories"
   | "paymentTerms"
-  | "salesStockEffects";
+  | "salesStockEffects"
+  | "workflowApprovals";
 
 export type SessionUser = {
   id: number;

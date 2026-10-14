@@ -24,6 +24,7 @@ import { InventoryModule } from './inventory/inventory.module';
 import { SalesModule } from './sales/sales.module';
 import { ReceivablesModule } from './receivables/receivables.module';
 import { LettersModule } from './letters/letters.module';
+import { WorkflowModule } from './workflow/workflow.module';
 import { SearchModule } from './search/search.module';
 
 @Module({
@@ -51,6 +52,7 @@ import { SearchModule } from './search/search.module';
     SalesModule,
     ReceivablesModule,
     LettersModule,
+    WorkflowModule,
     SearchModule,
   ],
   controllers: [AppController],

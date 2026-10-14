@@ -30,6 +30,28 @@ function build() {
 const activeUser = (id: number, extra: Record<string, unknown> = {}) => ({ id, username: `u${id}`, fullName: null, status: 'ACTIVE', ...extra });
 
 describe('LettersService', () => {
+  describe('sendSystemLetter() (workflow notifications)', () => {
+    it('creates a numbered SENT letter to the active addressees only, never the sender, and audits it', async () => {
+      const { db, audit, service } = build();
+      db.user.findMany.mockResolvedValue([{ id: 7 }]);
+      db.letter.create.mockResolvedValue({ id: 41 });
+      const result = await service.sendSystemLetter(db, { senderUserId: ME, recipientUserIds: [7, 8, ME, 7], subject: 's', body: 'b', source: 'گردش کار' });
+      expect(db.user.findMany).toHaveBeenCalledWith({ where: { id: { in: [7, 8] }, status: 'ACTIVE' }, select: { id: true } });
+      expect(db.letter.create.mock.calls[0][0].data).toMatchObject({ status: 'SENT', senderUserId: ME, letterNumber: expect.stringMatching(/^LTR-/), recipients: { create: [{ userId: 7 }] } });
+      expect(result).toEqual({ id: 41, letterNumber: expect.stringMatching(/^LTR-/) });
+      expect(audit.log).toHaveBeenCalledWith(expect.objectContaining({ action: 'LETTER_SENT', entityId: 41 }), db);
+    });
+
+    it('with nobody left to receive it, creates nothing and claims no number', async () => {
+      const { db, service } = build();
+      db.user.findMany.mockResolvedValue([]);
+      expect(await service.sendSystemLetter(db, { senderUserId: ME, recipientUserIds: [8], subject: 's', body: 'b', source: 'x' })).toBeNull();
+      expect(await service.sendSystemLetter(db, { senderUserId: ME, recipientUserIds: [ME], subject: 's', body: 'b', source: 'x' })).toBeNull();
+      expect(db.$queryRaw).not.toHaveBeenCalled();
+      expect(db.letter.create).not.toHaveBeenCalled();
+    });
+  });
+
   describe('reads are fail-closed', () => {
     it('get(): applies visibleLetterWhere and 404s (never 403) when nothing is visible', async () => {
       const { db, service } = build();

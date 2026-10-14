@@ -80,8 +80,8 @@ export class SalesOrdersController {
 
   @Get(':id')
   @RequirePermissions('sales.view')
-  get(@Param('id', ParseIntPipe) id: number) {
-    return this.salesOrders.get(id);
+  get(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
+    return this.salesOrders.getDetail(id, req.session.userId ?? null);
   }
 
   @Get(':id/history')
@@ -110,20 +110,30 @@ export class SalesOrdersController {
   }
 
   // DRAFT → CONFIRMED (number + reservation) or → PENDING_APPROVAL.
+  @Post(':id/withdraw')
+  @RequirePermissions('sales.manage')
+  withdraw(@Param('id', ParseIntPipe) id: number, @Body(new ZodValidationPipe(rejectSalesOrderSchema)) dto: RejectSalesOrderDto, @Req() req: Request) {
+    return this.salesOrders.withdraw(id, dto, actorOf(req));
+  }
+
   @Post(':id/confirm')
   @RequirePermissions('sales.manage')
   confirm(@Param('id', ParseIntPipe) id: number, @Body(new ZodValidationPipe(confirmSalesOrderSchema)) dto: ConfirmSalesOrderDto, @Req() req: Request) {
     return this.salesOrders.confirm(id, dto, actorOf(req));
   }
 
+  // approve / reject need only sales.view at the route: an order waiting on a
+  // workflow approval is decided by whoever the rule names (checked by the
+  // engine); the built-in discount/credit approval still needs sales.approve,
+  // enforced inside SalesOrdersService.
   @Post(':id/approve')
-  @RequirePermissions('sales.approve')
+  @RequirePermissions('sales.view')
   approve(@Param('id', ParseIntPipe) id: number, @Body(new ZodValidationPipe(approveSalesOrderSchema)) dto: ApproveSalesOrderDto, @Req() req: Request) {
     return this.salesOrders.approve(id, dto, actorOf(req));
   }
 
   @Post(':id/reject')
-  @RequirePermissions('sales.approve')
+  @RequirePermissions('sales.view')
   reject(@Param('id', ParseIntPipe) id: number, @Body(new ZodValidationPipe(rejectSalesOrderSchema)) dto: RejectSalesOrderDto, @Req() req: Request) {
     return this.salesOrders.reject(id, dto, actorOf(req));
   }

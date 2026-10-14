@@ -24,6 +24,10 @@ export const FEATURE_ENV = {
   // (no balance change without a StockMovement) still holds. Turn on once
   // Inventory is finished (after v1.0).
   salesStockEffects: 'DMS_FEATURE_SALES_STOCK',
+  // Workflow/approval engine (owner, 2026-10-14): OFF until signed off. Off =
+  // evaluate() always says "no approval needed" and /workflow routes 404, so
+  // Purchases/Sales behave exactly as before.
+  workflowApprovals: 'DMS_FEATURE_WORKFLOW',
 } as const;
 
 export type FeatureFlag = keyof typeof FEATURE_ENV;

@@ -63,7 +63,7 @@ const CANCEL_STATUS_ACTION: StatusAction = {
   variant: "destructive",
 };
 
-const CANCELLABLE_STATUSES: PurchaseStatus[] = ["DRAFT", "CONFIRMED", "RECEIVED"];
+const CANCELLABLE_STATUSES: PurchaseStatus[] = ["DRAFT", "PENDING_APPROVAL", "CONFIRMED", "RECEIVED"];
 
 // The status-transition buttons in the page header (rendered as a fragment
 // so they sit in the header's own flex row, before «ویرایش»). State —
@@ -104,7 +104,8 @@ export function StatusActions({
         body: JSON.stringify({ status: action.target, updatedAt: purchase.updatedAt }),
       });
       setPurchase(updated);
-      pushSuccess(action.successMessage);
+      // A draft that matches an approval rule goes to PENDING_APPROVAL instead of CONFIRMED.
+      pushSuccess(action.target === "CONFIRMED" && updated.status === "PENDING_APPROVAL" ? "خرید برای تأیید ارسال شد." : action.successMessage);
     } catch (reason) {
       const apiError = reason as ApiError;
       if (apiError.code === "RECORD_MODIFIED") setStaleRecord(true);

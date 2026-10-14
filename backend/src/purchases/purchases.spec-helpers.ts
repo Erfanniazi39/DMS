@@ -22,6 +22,7 @@ export function createPrismaMock() {
       findUnique: jest.fn(),
       create: jest.fn(),
       update: jest.fn(),
+      findUniqueOrThrow: jest.fn(),
       delete: jest.fn(),
       // Optimistic-lock compare-and-set inside update() — 1 row = version matched.
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
@@ -68,14 +69,34 @@ export function createPurchaseRequestsServiceMock() {
   return { recomputeStatus: jest.fn() };
 }
 
+// The workflow engine double: by default no approval rule matches, so every
+// existing test sees the pre-engine behaviour. Approval tests override it.
+export function createWorkflowServiceMock() {
+  return {
+    evaluate: jest.fn().mockResolvedValue({ required: false }),
+    start: jest.fn().mockResolvedValue({ requestId: 1, currentLevel: 1, levels: [] }),
+    decide: jest.fn(),
+    cancel: jest.fn().mockResolvedValue(true),
+    getTimeline: jest.fn().mockResolvedValue([]),
+    canDecide: jest.fn().mockResolvedValue(false),
+    pendingRequest: jest.fn().mockResolvedValue(null),
+    approvedAmount: jest.fn().mockResolvedValue(null),
+  };
+}
+
 // PurchaseQuantitiesService is the real one over the same mock, so the
 // overage tests exercise its actual query (purchaseItem.groupBy).
-export function buildPurchasesService(prisma: PrismaMock, purchaseRequestsService = createPurchaseRequestsServiceMock()) {
+export function buildPurchasesService(
+  prisma: PrismaMock,
+  purchaseRequestsService = createPurchaseRequestsServiceMock(),
+  workflow = createWorkflowServiceMock(),
+) {
   return new PurchasesService(
     prisma as never,
     purchaseRequestsService as never,
     new AuditService(prisma as never),
     new PurchaseQuantitiesService(prisma as never),
+    workflow as never,
   );
 }
 

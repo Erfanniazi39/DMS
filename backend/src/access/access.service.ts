@@ -63,6 +63,9 @@ export const PERMISSION_CATALOG = [
   { code: 'letters.use', label: 'نامه‌نگاری', module: 'نامه‌ها' },
   // Management oversight: read-only access to every SENT letter (never drafts); each view is audited.
   { code: 'letters.readAll', label: 'مشاهدهٔ همهٔ نامه‌ها (نظارت مدیریتی)', module: 'نامه‌ها' },
+  // Workflow engine (موتور گردش کار): rule definition is ADMIN only; the inbox is open to every role — who may APPROVE a document comes from the rule, not a permission.
+  { code: 'workflow.manage', label: 'تعریف قوانین گردش کار و تأیید', module: 'گردش کار' },
+  { code: 'workflow.inbox', label: 'کارتابل تأییدها', module: 'گردش کار' },
   { code: 'documents.upload', label: 'بارگذاری اسناد', module: 'اسناد' },
   { code: 'reports.view', label: 'مشاهده گزارش‌ها', module: 'گزارش‌ها' },
 ] as const;

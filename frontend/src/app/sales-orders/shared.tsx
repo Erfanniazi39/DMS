@@ -131,7 +131,11 @@ export type SalesOrderItemRow = {
 };
 
 // GET /sales-orders/:id (and the body of every action response).
+import type { DocumentApproval } from "@/lib/approval";
+
 export type SalesOrderDetail = {
+  // Workflow approval history + whether the caller may decide it now (GET /sales-orders/:id only).
+  approval?: DocumentApproval;
   id: number;
   orderNumber: string | null;
   orderDate: string;

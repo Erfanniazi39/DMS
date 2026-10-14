@@ -133,6 +133,9 @@ export const SALES_ORDER_APPROVAL_REASON_LABELS_FA: Record<SalesOrderApprovalRea
 };
 
 // Distinct, frontend-detectable 409 codes.
+// Quick sale only: a workflow rule holds this order for approval, so the one-shot
+// sale is refused (the draft it created is removed again — see QuickSaleService).
+export const SALES_ORDER_NEEDS_WORKFLOW_APPROVAL = 'SALES_ORDER_NEEDS_WORKFLOW_APPROVAL';
 export const SALES_ORDER_APPROVAL_REQUIRED = 'SALES_ORDER_APPROVAL_REQUIRED';
 export const CREDIT_LIMIT_EXCEEDED = 'CREDIT_LIMIT_EXCEEDED';
 // v1 (salesBackorders flag off): an order can't be confirmed/approved, or
@@ -263,3 +266,29 @@ export const RETURN_REASON_LABELS_FA: Record<ReturnReason, string> = {
   CUSTOMER_REFUSED: 'عدم‌پذیرش مشتری',
   OTHER: 'سایر',
 };
+
+// The facts the workflow engine matches approval rules against (see
+// backend/src/workflow/). Sales decides what its numbers mean — the engine
+// never reads sales tables (CLAUDE.md rule 11). A line's discount percent is
+// its discount relative to its gross (quantity × unit price), whether it was
+// entered as a percent or as an amount.
+export function salesOrderWorkflowFacts(order: {
+  totalAmount: unknown;
+  items: { quantity: unknown; unitPrice: unknown; lineTotal: unknown; discountAmount: unknown; discountPercent?: unknown }[];
+}) {
+  const lineTotals = order.items.map((line) => Number(line.lineTotal));
+  const unitPrices = order.items.map((line) => Number(line.unitPrice));
+  const percents = order.items.map((line) => {
+    const gross = Number(line.quantity) * Number(line.unitPrice);
+    const entered = line.discountPercent == null ? 0 : Number(line.discountPercent);
+    const fromAmount = gross > 0 ? (Number(line.discountAmount) / gross) * 100 : 0;
+    return Math.max(entered, fromAmount);
+  });
+  const maxDiscountPercent = percents.length > 0 ? Math.round(Math.max(...percents) * 100) / 100 : 0;
+  return {
+    amountTotal: Number(order.totalAmount),
+    maxLineTotal: lineTotals.length > 0 ? Math.max(...lineTotals) : null,
+    maxUnitPrice: unitPrices.length > 0 ? Math.max(...unitPrices) : null,
+    maxDiscountPercent,
+  };
+}

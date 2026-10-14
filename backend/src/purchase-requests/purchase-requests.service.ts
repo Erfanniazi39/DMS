@@ -1,4 +1,4 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma, PurchaseRequestPriority, PurchaseRequestStatus } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import { toSkipTake, type PaginationParams, buildOrderBy, type SortParams } from '../common/pagination';
@@ -9,7 +9,14 @@ import { ensureActivePurchaseType } from '../purchase-types/purchase-type-rules'
 import { AUDIT_ENTITY, AuditService } from '../audit/audit.service';
 import { PurchaseQuantitiesService } from '../purchases/purchase-quantities.service';
 import { isSameVersion, recordModifiedConflict } from '../common/optimistic-lock';
-import type { CreatePurchaseRequestDto, UpdatePurchaseRequestDto } from './dto/purchase-request.dto';
+import { WorkflowService } from '../workflow/workflow.service';
+import { purchaseRequestWorkflowFacts } from './purchase-request-rules';
+import type {
+  CreatePurchaseRequestDto,
+  PurchaseRequestApprovalDecisionDto,
+  PurchaseRequestApprovalRejectDto,
+  UpdatePurchaseRequestDto,
+} from './dto/purchase-request.dto';
 
 type IncomingItem = UpdatePurchaseRequestDto['items'][number];
 
@@ -87,6 +94,9 @@ export class PurchaseRequestsService {
     // (CLAUDE.md rule 11).
     private readonly purchaseQuantities: PurchaseQuantitiesService,
     private readonly audit: AuditService,
+    // Approval engine (workflow module). A request is held in SUBMITTED while
+    // an approval request is open; see the approval section below.
+    private readonly workflow: WorkflowService,
   ) {}
 
   // Without `pagination` this returns the full filtered array (original
@@ -281,9 +291,34 @@ export class PurchaseRequestsService {
 
     const { updates, creates, deleteIds } = await this.planItemChanges(existing.items, dto.items);
 
+    // Workflow approval (engine): while an approval request is open the
+    // request is frozen except for leaving it (withdraw / reject / cancel);
+    // with none open, asking for APPROVED — or submitting — a request that a
+    // rule matches sends it for approval instead (status SUBMITTED).
+    const facts = purchaseRequestWorkflowFacts(dto);
+    const pending = existing.status === 'SUBMITTED' ? await this.workflow.pendingRequest('PURCHASE_REQUEST', id) : null;
+    let targetStatus: PurchaseRequestStatus = dto.status;
+    let startApproval = false;
+    let closePending: 'WITHDRAWN' | 'CANCELLED' | null = null;
+    if (pending) {
+      if (dto.status === 'APPROVED') throw new ConflictException('این درخواست در انتظار تأیید گردش کار است؛ فقط تأییدکنندهٔ مرحله می‌تواند آن را تأیید کند.');
+      if (dto.status === 'SUBMITTED') throw new ConflictException('درخواستِ در انتظار تأیید قابل ویرایش نیست. برای ویرایش، ابتدا درخواست تأیید را پس بگیرید.');
+      closePending = dto.status === 'DRAFT' ? 'WITHDRAWN' : 'CANCELLED';
+    } else if (
+      (dto.status === 'APPROVED' || (dto.status === 'SUBMITTED' && existing.status !== 'SUBMITTED')) &&
+      (existing.status === 'DRAFT' || existing.status === 'SUBMITTED') &&
+      (await this.workflow.evaluate('PURCHASE_REQUEST', facts)).required
+    ) {
+      targetStatus = 'SUBMITTED';
+      startApproval = true;
+    }
+
     await this.prisma.$transaction(async (tx) => {
       const claimed = await tx.purchaseRequest.updateMany({ where: { id, updatedAt: existing.updatedAt }, data: { updatedAt: new Date() } });
       if (claimed.count !== 1) throw recordModifiedConflict();
+      if (closePending) {
+        await this.workflow.cancel(tx, { documentType: 'PURCHASE_REQUEST', documentId: id, actor: this.actor(userId, ipAddress), kind: closePending, reason: 'تغییر وضعیت درخواست' });
+      }
       await tx.purchaseRequest.update({
         where: { id },
         data: {
@@ -291,7 +326,7 @@ export class PurchaseRequestsService {
           purchaseTypeId: dto.purchaseTypeId,
           requesterDepartmentId: dto.requesterDepartmentId,
           requestedByEmployeeId: dto.requestedByEmployeeId ?? null,
-          status: dto.status,
+          status: targetStatus,
           priority: dto.priority,
           note: dto.note,
           items: {
@@ -301,16 +336,100 @@ export class PurchaseRequestsService {
           },
         },
       });
+      if (startApproval) {
+        await this.workflow.start(tx, {
+          documentType: 'PURCHASE_REQUEST',
+          documentId: id,
+          documentNumber: existing.requestNumber,
+          summary: `درخواست خرید ${existing.requestNumber} — ${dto.items.length.toLocaleString('fa-IR')} قلم`,
+          amount: 0,
+          facts,
+          actor: this.actor(userId, ipAddress),
+        });
+      }
     });
 
-    const action = existing.status !== dto.status ? 'PURCHASE_REQUEST_STATUS_CHANGED' : 'PURCHASE_REQUEST_UPDATED';
-    const details = existing.status !== dto.status ? `از ${existing.status} به ${dto.status}` : undefined;
+    const action = startApproval
+      ? 'PURCHASE_REQUEST_SUBMITTED_FOR_APPROVAL'
+      : existing.status !== targetStatus
+        ? 'PURCHASE_REQUEST_STATUS_CHANGED'
+        : 'PURCHASE_REQUEST_UPDATED';
+    const details = existing.status !== targetStatus || startApproval ? `از ${existing.status} به ${targetStatus}` : undefined;
     await this.audit.log({ userId, ipAddress, action, entityType: AUDIT_ENTITY.PURCHASE_REQUEST, entityId: id, details });
     await this.recomputeStatus(id, userId, ipAddress);
     // Same shape as get() (purchasedQuantity/remainingQuantity attached) and
     // re-read after recomputeStatus() so the returned status is current —
     // the detail page applies this response directly instead of re-fetching.
     return this.get(id);
+  }
+
+  // ─── Workflow approval ───────────────────────────────────────────────────
+
+  // GET /purchase-requests/:id — the request plus its approval history and
+  // whether this user may decide it now (guarded by purchases.view).
+  async getDetail(id: number, userId: number | null) {
+    const request = await this.get(id);
+    const waiting = request.status === 'SUBMITTED';
+    const [requests, canDecide, pending] = await Promise.all([
+      this.workflow.getTimeline('PURCHASE_REQUEST', id),
+      waiting && userId !== null ? this.workflow.canDecide('PURCHASE_REQUEST', id, userId) : Promise.resolve(false),
+      waiting ? this.workflow.pendingRequest('PURCHASE_REQUEST', id) : Promise.resolve(null),
+    ]);
+    return { ...request, approval: { requests, canDecide, requestedByUserId: pending?.requestedByUserId ?? null, waitingOnWorkflow: pending !== null } };
+  }
+
+  // POST …/approve — final approval → APPROVED. The engine checks the user may
+  // decide the open level (against the DB, not the session).
+  async approve(id: number, dto: PurchaseRequestApprovalDecisionDto, userId: number, ipAddress?: string) {
+    return this.decide(id, dto.updatedAt, 'APPROVE', dto.comment ?? null, userId, ipAddress);
+  }
+
+  // POST …/reject — comment required; the request returns to DRAFT so it can
+  // be corrected and sent again (a new approval request).
+  async reject(id: number, dto: PurchaseRequestApprovalRejectDto, userId: number, ipAddress?: string) {
+    return this.decide(id, dto.updatedAt, 'REJECT', dto.comment, userId, ipAddress);
+  }
+
+  // POST …/withdraw — the requester (or a purchases.manage holder) takes a
+  // waiting request back to DRAFT.
+  async withdraw(id: number, dto: PurchaseRequestApprovalDecisionDto, userId: number, canManage: boolean, ipAddress?: string) {
+    const existing = await this.get(id);
+    if (!isSameVersion(existing.updatedAt, dto.updatedAt)) throw recordModifiedConflict();
+    const pending = existing.status === 'SUBMITTED' ? await this.workflow.pendingRequest('PURCHASE_REQUEST', id) : null;
+    if (!pending) throw new ConflictException('این درخواست در انتظار تأیید گردش کار نیست');
+    if (!canManage && pending.requestedByUserId !== userId) {
+      throw new ForbiddenException('فقط ارسال‌کنندهٔ درخواست تأیید یا مدیر خرید می‌تواند آن را پس بگیرد');
+    }
+    await this.prisma.$transaction(async (tx) => {
+      const claimed = await tx.purchaseRequest.updateMany({ where: { id, updatedAt: existing.updatedAt }, data: { updatedAt: new Date() } });
+      if (claimed.count !== 1) throw recordModifiedConflict();
+      await this.workflow.cancel(tx, { documentType: 'PURCHASE_REQUEST', documentId: id, actor: this.actor(userId, ipAddress), kind: 'WITHDRAWN', reason: dto.comment ?? null });
+      await tx.purchaseRequest.update({ where: { id }, data: { status: 'DRAFT' } });
+    });
+    await this.audit.log({ userId, ipAddress, action: 'PURCHASE_REQUEST_APPROVAL_WITHDRAWN', entityType: AUDIT_ENTITY.PURCHASE_REQUEST, entityId: id, details: 'بازگشت به پیش‌نویس' });
+    return this.get(id);
+  }
+
+  private async decide(id: number, updatedAt: Date, decision: 'APPROVE' | 'REJECT', comment: string | null, userId: number, ipAddress?: string) {
+    const existing = await this.get(id);
+    if (!isSameVersion(existing.updatedAt, updatedAt)) throw recordModifiedConflict();
+    if (existing.status !== 'SUBMITTED') throw new ConflictException('این درخواست در انتظار تأیید نیست');
+    const result = await this.prisma.$transaction(async (tx) => {
+      const claimed = await tx.purchaseRequest.updateMany({ where: { id, updatedAt: existing.updatedAt }, data: { updatedAt: new Date() } });
+      if (claimed.count !== 1) throw recordModifiedConflict();
+      const outcome = await this.workflow.decide(tx, { documentType: 'PURCHASE_REQUEST', documentId: id, actor: this.actor(userId, ipAddress), decision, comment });
+      const status: PurchaseRequestStatus | null = outcome.outcome === 'APPROVED' ? 'APPROVED' : outcome.outcome === 'REJECTED' ? 'DRAFT' : null;
+      if (status) await tx.purchaseRequest.update({ where: { id }, data: { status } });
+      return outcome;
+    });
+    const action = result.outcome === 'APPROVED' ? 'PURCHASE_REQUEST_APPROVED' : result.outcome === 'REJECTED' ? 'PURCHASE_REQUEST_REJECTED' : 'PURCHASE_REQUEST_APPROVAL_LEVEL_APPROVED';
+    await this.audit.log({ userId, ipAddress, action, entityType: AUDIT_ENTITY.PURCHASE_REQUEST, entityId: id, details: comment ? `مرحلهٔ ${result.level}: ${comment}` : `مرحلهٔ ${result.level}` });
+    return this.get(id);
+  }
+
+  private actor(userId: number | null, ipAddress?: string) {
+    // Every caller sits behind SessionAuthGuard; null only in direct service use.
+    return { userId: userId ?? 0, ipAddress };
   }
 
   // Works out the nested item writes for update(). Throws (409, Persian) if

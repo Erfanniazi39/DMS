@@ -309,11 +309,11 @@ describe('DashboardService.getOpenItems', () => {
       { where: { ...open, requestDate: { lte: new Date('2026-08-30T00:00:00Z') } } },
       { where: open },
     ]);
-    // Open purchases = anything not CLOSED/CANCELLED (DRAFT included), oldest first.
-    expect(prisma.purchase.count).toHaveBeenCalledWith({ where: { status: { in: ['DRAFT', 'CONFIRMED', 'RECEIVED'] } } });
+    // Open purchases = anything not CLOSED/CANCELLED (DRAFT and PENDING_APPROVAL included), oldest first.
+    expect(prisma.purchase.count).toHaveBeenCalledWith({ where: { status: { in: ['DRAFT', 'PENDING_APPROVAL', 'CONFIRMED', 'RECEIVED'] } } });
     expect(prisma.purchase.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { status: { in: ['DRAFT', 'CONFIRMED', 'RECEIVED'] } },
+        where: { status: { in: ['DRAFT', 'PENDING_APPROVAL', 'CONFIRMED', 'RECEIVED'] } },
         orderBy: [{ purchaseDate: 'asc' }, { id: 'asc' }],
         take: 10,
       }),

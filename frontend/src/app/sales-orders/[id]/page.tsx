@@ -29,6 +29,7 @@ import {
 } from "../shared";
 import { FormSection } from "../_form/FormSection";
 import { StatusActions } from "./_sections/StatusActions";
+import { ApprovalPanel } from "@/components/workflow/ApprovalPanel";
 import { ItemsSection } from "./_sections/ItemsSection";
 import { HistorySection } from "./_sections/HistorySection";
 import { DeliveriesSection } from "./_sections/DeliveriesSection";
@@ -119,6 +120,8 @@ export default function SalesOrderDetailPage() {
     setOrder(updated);
     setBackorders(nextBackorders ?? []);
     setHistoryKey((current) => current + 1);
+    // The action responses carry no approval history; re-read it when the order is now waiting.
+    if (updated.status === "PENDING_APPROVAL") void reloadOrder();
   }
 
   if (!canView) return <NoAccess message="اجازه مشاهده سفارش‌های فروش را ندارید." />;
@@ -191,7 +194,9 @@ export default function SalesOrderDetailPage() {
           </p>
         ) : order.status === "PENDING_APPROVAL" ? (
           <p className="rounded-lg border border-warning/40 bg-warning/10 px-4 py-2.5 text-sm">
-            این سفارش در انتظار تأیید کاربر دارای مجوز «تأیید فروش» است{canApprove ? "؛ می‌توانید آن را تأیید یا رد کنید." : "."}
+            {order.approval?.requests.some((request) => request.status === "PENDING")
+              ? "این سفارش در انتظار تأیید طبق قانون تأیید است؛ جزئیات مراحل در بخش «تأیید سفارش» پایین‌تر آمده است."
+              : `این سفارش در انتظار تأیید کاربر دارای مجوز «تأیید فروش» است${canApprove ? "؛ می‌توانید آن را تأیید یا رد کنید." : "."}`}
           </p>
         ) : order.status === "CANCELLED" ? (
           <p className="rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-2.5 text-sm">
@@ -226,6 +231,22 @@ export default function SalesOrderDetailPage() {
             </div>
           </div>
         ) : null}
+
+        <ApprovalPanel
+          title="تأیید سفارش"
+          documentPath={`/sales-orders/${order.id}`}
+          updatedAt={order.updatedAt}
+          approval={order.approval}
+          waiting={order.status === "PENDING_APPROVAL" && (order.approval?.requests.some((request) => request.status === "PENDING") ?? false)}
+          waitingNote="تا پایان تأیید، شماره سفارش تخصیص نمی‌یابد و موجودی رزرو نمی‌شود."
+          canManage={canApprove}
+          fields={{ approve: "note", reject: "reason", withdraw: "reason" }}
+          onChanged={async () => {
+            await reloadOrder();
+          }}
+          setStaleRecord={setStaleRecord}
+          toasts={{ pushError, pushErrors, pushSuccess }}
+        />
 
         <FormSection title="اطلاعات سفارش">
           <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm md:grid-cols-4">

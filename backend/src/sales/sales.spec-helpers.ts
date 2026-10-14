@@ -123,8 +123,22 @@ export function createSalesDb() {
 
 export type SalesDb = ReturnType<typeof createSalesDb>;
 
-export function buildSalesOrdersService(db: SalesDb) {
-  return new SalesOrdersService(db as never, new InventoryService(db as never, new AuditService(db as never)), new AuditService(db as never));
+// The workflow engine double: no approval rule matches by default, so every
+// existing sales-order test sees the built-in behaviour. Approval tests override it.
+export function createWorkflowMock() {
+  return {
+    evaluate: jest.fn().mockResolvedValue({ required: false }),
+    start: jest.fn().mockResolvedValue({ requestId: 1, currentLevel: 1, levels: [] }),
+    decide: jest.fn(),
+    cancel: jest.fn().mockResolvedValue(true),
+    getTimeline: jest.fn().mockResolvedValue([]),
+    canDecide: jest.fn().mockResolvedValue(false),
+    pendingRequest: jest.fn().mockResolvedValue(null),
+  };
+}
+
+export function buildSalesOrdersService(db: SalesDb, workflow = createWorkflowMock()) {
+  return new SalesOrdersService(db as never, new InventoryService(db as never, new AuditService(db as never)), new AuditService(db as never), workflow as never);
 }
 
 export function buildDeliveriesService(db: SalesDb) {
