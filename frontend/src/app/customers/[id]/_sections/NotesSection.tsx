@@ -39,8 +39,8 @@ export function NotesSection({
   onChanged: () => Promise<void>;
   toasts: SectionToasts;
 }) {
-  // Delete is admin-only: users.create is held by the ADMIN role alone (the backend route checks the same).
-  const canDelete = useAdminUser()?.permissions.includes("users.create") ?? false;
+  // Delete is its own permission (customers.delete); the backend route checks the same.
+  const canDelete = useAdminUser()?.permissions.includes("customers.delete") ?? false;
   const { pushError, pushErrors, pushSuccess } = toasts;
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);

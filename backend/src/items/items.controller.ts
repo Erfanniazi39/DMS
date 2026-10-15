@@ -66,7 +66,7 @@ export class ItemsController {
   }
 
   @Delete(':id')
-  @RequirePermissions('items.manage')
+  @RequirePermissions('items.delete')
   remove(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
     return this.itemsService.remove(id, req.session.userId ?? null, req.ip);
   }

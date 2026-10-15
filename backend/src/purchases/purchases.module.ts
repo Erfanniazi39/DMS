@@ -10,6 +10,7 @@ import { PurchaseReturnsService } from './purchase-returns.service';
 import { PurchaseQuantitiesModule } from './purchase-quantities.module';
 import { PurchaseRequestsModule } from '../purchase-requests/purchase-requests.module';
 import { WorkflowModule } from '../workflow/workflow.module';
+import { PurchaseReturnsRestorer, PurchasesRestorer } from './purchases.restorers';
 
 // Imports PurchaseRequestsModule so PurchasesService can call
 // PurchaseRequestsService.recomputeStatus() after a linked Purchase is
@@ -30,6 +31,6 @@ import { WorkflowModule } from '../workflow/workflow.module';
 @Module({
   imports: [PurchaseRequestsModule, PurchaseQuantitiesModule, WorkflowModule],
   controllers: [PurchasesController, PurchaseFilesController, HistoricalPurchasesController],
-  providers: [PurchasesService, PurchasePaymentsService, PurchaseDocumentsService, PurchaseReturnsService, HistoricalPurchasesService],
+  providers: [PurchasesService, PurchasePaymentsService, PurchaseDocumentsService, PurchaseReturnsService, HistoricalPurchasesService, PurchasesRestorer, PurchaseReturnsRestorer],
 })
 export class PurchasesModule {}

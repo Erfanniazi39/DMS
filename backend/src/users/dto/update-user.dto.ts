@@ -28,9 +28,7 @@ export const updateUserSchema = z
     password: z.string().min(8, 'رمز عبور باید حداقل ۸ کاراکتر باشد').optional(),
     email: optionalEmail,
     phone: optionalPhone,
-    roleName: z
-      .enum(['ADMIN', 'DATA_OPERATOR', 'PURCHASE_MANAGER', 'SALES_MANAGER', 'VIEWER', 'SALESPERSON', 'WAREHOUSE', 'ACCOUNTANT', 'INVENTORY_MANAGER'])
-      .optional(),
+    roleName: z.string().trim().min(1).max(80).optional(),
     status: z.enum(['ACTIVE', 'DISABLED', 'LOCKED']).optional(),
   })
   .refine((data) => Object.keys(data).length > 0, {

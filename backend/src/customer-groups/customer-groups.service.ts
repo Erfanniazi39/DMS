@@ -1,7 +1,7 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { suggestNextCode } from '../common/next-code';
 import { PrismaService } from '../prisma/prisma.service';
-import { AUDIT_ENTITY, AuditService } from '../audit/audit.service';
+import { AUDIT_ENTITY, AuditService, diffChanges, masterDataUpdateAction } from '../audit/audit.service';
 import type { CreateCustomerGroupDto, UpdateCustomerGroupDto } from './dto/customer-group.dto';
 
 // Mirrors ItemCategoriesService. list() is the active-only list used by the
@@ -60,7 +60,11 @@ export class CustomerGroupsService {
       where: { id },
       data: { code: dto.code, nameEn: dto.nameEn, nameFa: dto.nameFa, isActive: dto.isActive, sortOrder: dto.sortOrder },
     });
-    await this.audit.log({ userId, ipAddress, action: 'CUSTOMER_GROUP_UPDATED', entityType: AUDIT_ENTITY.CUSTOMER_GROUP, entityId: id, details: updated.code });
+    const changes = diffChanges(existing, updated, ['code', 'nameEn', 'nameFa', 'isActive', 'sortOrder']);
+    if (changes.length > 0) {
+      const action = masterDataUpdateAction('CUSTOMER_GROUP', changes, 'isActive', updated.isActive);
+      await this.audit.log({ userId, ipAddress, action, entityType: AUDIT_ENTITY.CUSTOMER_GROUP, entityId: id, details: updated.code, changes });
+    }
     return updated;
   }
 

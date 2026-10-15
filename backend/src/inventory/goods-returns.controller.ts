@@ -83,7 +83,7 @@ export class GoodsReturnsController {
 
   // DRAFT only — a posted return can never be deleted.
   @Delete(':id')
-  @RequirePermissions('inventory.receive')
+  @RequirePermissions('inventory.delete')
   remove(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
     return this.returnsService.remove(id, req.session.userId ?? null, req.ip);
   }

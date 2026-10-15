@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, ParseIntPipe, Patch, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, Param, ParseIntPipe, Patch, Post, Req, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
 import { z } from 'zod';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
@@ -27,6 +27,13 @@ export class AccessController {
   @Patch('roles/:id')
   updateRole(@Param('id', ParseIntPipe) id: number, @Body(new ZodValidationPipe(permissionSchema)) body: z.infer<typeof permissionSchema>, @Req() req: Request) {
     return this.accessService.updateRole(id, body.permissionCodes, req.session.userId ?? null, req.ip);
+  }
+
+  // Admin only — gated on users.create like the rest of this controller.
+  @Delete('roles/:id')
+  @HttpCode(204)
+  async deleteRole(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
+    await this.accessService.deleteRole(id, req.session.userId ?? null, req.ip);
   }
 
   @Get('permissions')

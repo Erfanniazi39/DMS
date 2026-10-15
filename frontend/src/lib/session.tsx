@@ -34,6 +34,12 @@ export function useFeature(flag: FeatureFlag) {
 
 export const SessionUserContext = createContext<SessionUser | null>(null);
 
+// True when the logged-in user holds the permission (UI convenience only —
+// the backend re-checks). Used for show/hide of delete buttons etc.
+export function useHasPermission(code: string) {
+  return useContext(SessionUserContext)?.permissions.includes(code) ?? false;
+}
+
 export function useSessionUser() {
   return useContext(SessionUserContext);
 }

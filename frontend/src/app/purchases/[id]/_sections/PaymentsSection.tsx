@@ -41,6 +41,7 @@ import { DetailSection, type SectionToasts } from "./DetailSection";
 import { SortHeader, useClientTable } from "@/components/ui/sortable";
 import { ListPagination } from "@/components/ui/list-pagination";
 import type { SortValue } from "@/lib/table-sort";
+import { HasPermission } from "@/components/has-permission";
 
 export type PaymentFormState = TransactionInfo & {
   paymentDate: string;
@@ -113,6 +114,7 @@ export function PaymentsSection({
   toasts: SectionToasts;
 }) {
   const { pushError, pushErrors, pushSuccess } = toasts;
+  const [pendingOverpayment, setPendingOverpayment] = useState<{ totalAmount: number; paidAfter: number; excess: number } | null>(null);
   // Sort + page the (small, already loaded) rows in memory; click a header to sort.
   const table = useClientTable(purchase.payments, PURCHASES_ID__SECTIONS_PAYMENTSSECTION_TSX_SORT_GETTERS, { pageSize: 20 });
 
@@ -177,6 +179,12 @@ export function PaymentsSection({
       pushErrors(infoProblems);
       return;
     }
+    await sendPayment(false);
+  }
+
+  // Paying more than the purchase total is allowed, but only after the user confirms it
+  // (the backend answers PAYMENT_EXCEEDS_TOTAL until confirmOverpayment is sent).
+  async function sendPayment(confirmOverpayment: boolean) {
     setSaving(true);
     try {
       await apiFetch(editingPaymentId === null ? `/purchases/${purchaseId}/payments` : `/purchases/${purchaseId}/payments/${editingPaymentId}`, {
@@ -188,15 +196,20 @@ export function PaymentsSection({
           referenceNumber: form.referenceNumber.trim(),
           status: form.status,
           note: form.note.trim(),
+          confirmOverpayment,
           ...transactionInfoPayload(form),
         }),
       });
       pushSuccess(editingPaymentId === null ? "پرداخت با موفقیت ثبت شد." : "پرداخت با موفقیت ویرایش شد.");
+      setPendingOverpayment(null);
       setDialogOpen(false);
       await onChanged();
     } catch (reason) {
       const apiError = reason as ApiError;
-      if (apiError.messages?.length) pushErrors(apiError.messages);
+      if (apiError.code === "PAYMENT_EXCEEDS_TOTAL") {
+        const details = (apiError.details ?? {}) as { totalAmount?: number; paidAfter?: number; excess?: number };
+        setPendingOverpayment({ totalAmount: details.totalAmount ?? 0, paidAfter: details.paidAfter ?? 0, excess: details.excess ?? 0 });
+      } else if (apiError.messages?.length) pushErrors(apiError.messages);
       else pushError(apiError.message ?? "ثبت پرداخت ناموفق بود.");
     } finally {
       setSaving(false);
@@ -311,6 +324,7 @@ export function PaymentsSection({
                                 ویرایش
                               </Button>
                             ) : null}
+                            <HasPermission code="purchases.delete">
                             <Button
                               size="sm"
                               variant="ghost"
@@ -320,6 +334,7 @@ export function PaymentsSection({
                               <Trash2 className="size-4" aria-hidden="true" />
                               حذف
                             </Button>
+                            </HasPermission>
                           </div>
                         ) : null}
                       </td>
@@ -334,6 +349,29 @@ export function PaymentsSection({
       </DetailSection>
 
       {/* Portal-based: renders outside the page flow regardless of where it sits in the tree. */}
+      <Dialog open={pendingOverpayment !== null} onOpenChange={(open) => (open ? undefined : setPendingOverpayment(null))}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>پرداخت بیش از مبلغ خرید</DialogTitle>
+            <DialogCloseButton />
+          </DialogHeader>
+          <DialogBody>
+            <p className="text-sm">با این پرداخت، مجموع پرداخت‌های تکمیل‌شده از مبلغ کل خرید بیشتر می‌شود. آیا ادامه می‌دهید؟</p>
+            <p className="mt-3 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm tabular-nums">
+              مبلغ خرید: {formatMoney(pendingOverpayment?.totalAmount ?? 0)} — مجموع پرداخت‌ها: {formatMoney(pendingOverpayment?.paidAfter ?? 0)} — مازاد: {formatMoney(pendingOverpayment?.excess ?? 0)} ریال
+            </p>
+          </DialogBody>
+          <DialogFooter>
+            <Button type="button" disabled={saving} onClick={() => void sendPayment(true)}>
+              بله، پرداخت مازاد را ثبت کن
+            </Button>
+            <Button type="button" variant="outline" onClick={() => setPendingOverpayment(null)}>
+              انصراف
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={dialogOpen} onOpenChange={(open) => setDialogOpen(open)}>
         <DialogContent>
           <DialogHeader>

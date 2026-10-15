@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { RequiredMark, textareaClass } from "@/components/ui/form-field";
 import { formatMoney } from "@/lib/format";
 import { apiFetch, type ApiError } from "@/lib/api";
+import { HasPermission } from "@/components/has-permission";
 import {
   CREDIT_LIMIT_EXCEEDED,
   SALES_ORDER_APPROVAL_REQUIRED,
@@ -242,7 +243,7 @@ export function StatusActions({
           <>
             <Button variant="success" disabled={disabled} onClick={() => open("confirm")}>تأیید سفارش</Button>
             <Button variant="outline" disabled={disabled} onClick={() => router.push(`/sales-orders/${order.id}/edit`)}>ویرایش</Button>
-            <Button variant="destructive" disabled={disabled} onClick={() => void remove()}>{deleting ? "در حال حذف..." : "حذف"}</Button>
+            <HasPermission code="sales.delete"><Button variant="destructive" disabled={disabled} onClick={() => void remove()}>{deleting ? "در حال حذف..." : "حذف"}</Button></HasPermission>
           </>
         ) : null}
         {showApproval ? (

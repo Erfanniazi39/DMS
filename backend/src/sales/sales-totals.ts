@@ -125,6 +125,13 @@ export function invoiceLineDiscount(orderLine: {
   };
 }
 
+// True when any line is priced below the item's list price (the reason it
+// carries is free text). Like a discount, it needs a sales.approve holder to
+// confirm the order — a salesperson cannot quietly sell at 1 Rial.
+export function hasPriceOverride(lines: { listUnitPrice?: Prisma.Decimal | number | string | null; unitPrice: Prisma.Decimal | number | string }[]) {
+  return lines.some((line) => line.listUnitPrice != null && new Prisma.Decimal(line.unitPrice).lessThan(line.listUnitPrice));
+}
+
 // True when any line carries a discount — such an order needs a sales.approve
 // holder to confirm it (build plan §5 row 1).
 export function hasAnyDiscount(lines: { discountAmount: Prisma.Decimal | number | string; discountPercent?: Prisma.Decimal | number | string | null }[]) {

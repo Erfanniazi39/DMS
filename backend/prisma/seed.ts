@@ -66,6 +66,9 @@ const OTHER_SUPPLIER = { code: 'OTHER', name: 'سایر' } as const;
 const PERMISSIONS = [
   'users.create',
   'users.disable',
+  // Delete permissions, restore, and sensitive-data viewing (2026-10-15). Keep in sync with PERMISSION_CATALOG.
+  'purchases.delete', 'sales.delete', 'customers.delete', 'suppliers.delete', 'items.delete', 'itemCategories.delete', 'units.delete', 'inventory.delete', 'employees.delete', 'records.restore',
+  'customers.viewSensitive', 'suppliers.viewSensitive',
   'suppliers.view',
   'suppliers.manage',
   'customers.view',
@@ -155,25 +158,25 @@ async function main() {
     ADMIN: PERMISSIONS,
     // Sales narrowed to sales.view only (business decision 2026-10-06,
     // separation of duties) — sales.manage/sales.edit are revoked below.
-    DATA_OPERATOR: ['suppliers.view', 'suppliers.manage', 'customers.view', 'customers.manage', 'employees.view', 'employees.manage', 'purchases.view', 'purchases.manage', 'purchases.edit', 'items.view', 'items.manage', 'sales.view', 'documents.upload', 'reports.view', 'letters.use', 'workflow.inbox'],
+    DATA_OPERATOR: ['suppliers.view', 'suppliers.manage', 'customers.view', 'customers.manage', 'employees.view', 'employees.manage', 'purchases.view', 'purchases.manage', 'purchases.edit', 'items.view', 'items.manage', 'sales.view', 'documents.upload', 'reports.view', 'letters.use', 'workflow.inbox', 'purchases.delete', 'suppliers.delete', 'items.delete', 'customers.viewSensitive', 'suppliers.viewSensitive'],
     // employees.view (without employees.manage) is deliberate: the Purchase and
     // Purchase Request forms load GET /employees for buyer/requester dropdowns.
-    PURCHASE_MANAGER: ['suppliers.view', 'suppliers.manage', 'employees.view', 'purchases.view', 'purchases.manage', 'purchases.edit', 'documents.upload', 'reports.view', 'letters.use', 'workflow.inbox'],
+    PURCHASE_MANAGER: ['suppliers.view', 'suppliers.manage', 'employees.view', 'purchases.view', 'purchases.manage', 'purchases.edit', 'documents.upload', 'reports.view', 'letters.use', 'workflow.inbox', 'purchases.delete', 'suppliers.delete', 'suppliers.viewSensitive'],
     // items.* granted ahead of Sales: SalesItem will reference Item.
     // customers.* granted ahead of Sales too: Customer is sales-side master data.
     // Sales batch 1: + sales.view/approve/invoice, receivables.view,
     // inventory.view. NOT receivables.manage — a manager sees money owed but
     // doesn't record/allocate payments (separation of duties).
-    SALES_MANAGER: ['customers.view', 'customers.manage', 'items.view', 'items.manage', 'sales.view', 'sales.manage', 'sales.edit', 'sales.approve', 'sales.invoice', 'receivables.view', 'inventory.view', 'documents.upload', 'reports.view', 'letters.use', 'workflow.inbox'],
+    SALES_MANAGER: ['customers.view', 'customers.manage', 'items.view', 'items.manage', 'sales.view', 'sales.manage', 'sales.edit', 'sales.approve', 'sales.invoice', 'receivables.view', 'inventory.view', 'documents.upload', 'reports.view', 'letters.use', 'workflow.inbox', 'sales.delete', 'items.delete', 'customers.viewSensitive'],
     VIEWER: ['reports.view', 'letters.use', 'workflow.inbox'],
     // New roles, Sales batch 1 (2026-10-06).
-    SALESPERSON: ['sales.view', 'sales.manage', 'customers.view', 'items.view', 'inventory.view', 'letters.use', 'workflow.inbox'],
+    SALESPERSON: ['sales.view', 'sales.manage', 'customers.view', 'items.view', 'inventory.view', 'letters.use', 'workflow.inbox', 'sales.delete'],
     // I6 (2026-10-11, B13 — flagged for confirmation): + inventory.count.
     // Mirrors the existing inventory.adjust/inventory.approve split exactly
     // — WAREHOUSE does the physical counting (create/start/enter/submit),
     // INVENTORY_MANAGER approves the variances. Never inventory.approve.
     WAREHOUSE: ['sales.view', 'sales.deliver', 'inventory.view', 'inventory.adjust', 'inventory.count', 'letters.use', 'workflow.inbox'],
-    ACCOUNTANT: ['sales.view', 'sales.invoice', 'receivables.view', 'receivables.manage', 'customers.finance', 'letters.use', 'workflow.inbox'],
+    ACCOUNTANT: ['sales.view', 'sales.invoice', 'receivables.view', 'receivables.manage', 'customers.finance', 'letters.use', 'workflow.inbox', 'customers.viewSensitive'],
     // I2 (2026-10-10, B20): a manager-level superset of WAREHOUSE that can
     // also approve/reject — the only role with inventory.approve.
     // I3 (2026-10-10): + inventory.manage — editing stock levels (and the
@@ -186,7 +189,7 @@ async function main() {
     // so it both runs counts and approves their variances — fine today with
     // one inventory role, but no-self-approval (B10's rule, reused for
     // counts) still refuses approving a count the same user submitted.
-    INVENTORY_MANAGER: ['inventory.view', 'inventory.adjust', 'inventory.approve', 'inventory.manage', 'inventory.receive', 'inventory.count', 'letters.use', 'workflow.inbox'],
+    INVENTORY_MANAGER: ['inventory.view', 'inventory.adjust', 'inventory.approve', 'inventory.manage', 'inventory.receive', 'inventory.count', 'letters.use', 'workflow.inbox', 'inventory.delete'],
   } as const;
 
   // The grants above are upserted (additive) — that alone can never take a

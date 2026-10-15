@@ -73,7 +73,7 @@ export default function PurchasesPage() {
   const canView = user?.permissions.includes("purchases.view") ?? false;
   const canCreate = user?.permissions.includes("purchases.manage") ?? false;
   const canEdit = user?.permissions.includes("purchases.edit") ?? false;
-  const canDelete = canCreate;
+  const canDelete = user?.permissions.includes("purchases.delete") ?? false;
   // The supplier filter needs GET /suppliers (suppliers.view) — without it
   // the filter just offers "همه" instead of failing the whole options load.
   const canViewSuppliers = user?.permissions.includes("suppliers.view") ?? false;

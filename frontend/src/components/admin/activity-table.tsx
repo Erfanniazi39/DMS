@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { actionDetails, actionLabel, entityLabel, formatDateTime } from "@/lib/audit-labels";
+import { actionDetails, actionLabel, describeChanges, entityLabel, formatDateTime, type ActivityChange } from "@/lib/audit-labels";
 
 export type ActivityRow = {
   id: number;
@@ -9,6 +9,7 @@ export type ActivityRow = {
   entityType: string | null;
   entityId: string | null;
   details: string | null;
+  changes?: ActivityChange[] | null;
   createdAt: string;
   user: { id: number; username: string } | null;
 };
@@ -37,7 +38,10 @@ export function ActivityTable({ rows, showUser }: { rows: ActivityRow[]; showUse
                 {row.entityType ? `${entityLabel(row.entityType)}${row.entityId ? ` #${row.entityId}` : ""}` : "—"}
                 {row.action.endsWith("_DELETED") && row.entityType && row.entityId ? <Link className="ms-2 text-xs text-primary hover:underline" href={`/admin/deleted-records?entityType=${row.entityType}&entityId=${row.entityId}`}>نسخهٔ ذخیره‌شده</Link> : null}
               </td>
-              <td className="px-3 py-2 text-muted-foreground">{actionDetails(row.action, row.details) || "—"}</td>
+              <td className="px-3 py-2 text-muted-foreground">
+                {actionDetails(row.action, row.details) || (row.changes?.length ? "" : "—")}
+                {describeChanges(row.changes).map((line) => <span key={line} className="block text-xs text-foreground">{line}</span>)}
+              </td>
             </tr>
           ))}
         </tbody>

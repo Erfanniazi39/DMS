@@ -8,6 +8,7 @@ import { Button, buttonVariants } from "@/components/ui/button";
 import { Dialog, DialogBody, DialogCloseButton, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { apiFetch, type ApiError } from "@/lib/api";
 import { CUSTOMER_CREDIT_HOLD, NEGATIVE_STOCK, STOCK_RESERVED_FOR_OTHERS, deliveryTitle, type DeliveryDetail } from "../../shared";
+import { HasPermission } from "@/components/has-permission";
 
 export type SectionToasts = {
   pushError: (message: string) => void;
@@ -118,7 +119,7 @@ export function StatusActions({
               ثبت حواله
             </Button>
             <Button variant="outline" disabled={disabled} onClick={() => router.push(`/deliveries/${delivery.id}/edit`)}>ویرایش</Button>
-            <Button variant="destructive" disabled={disabled} onClick={() => void remove()}>{deleting ? "در حال حذف..." : "حذف"}</Button>
+            <HasPermission code="sales.delete"><Button variant="destructive" disabled={disabled} onClick={() => void remove()}>{deleting ? "در حال حذف..." : "حذف"}</Button></HasPermission>
           </>
         ) : null}
         <Link href={`/deliveries/${delivery.id}/print`} className={buttonVariants({ variant: "outline" })}>

@@ -9,6 +9,7 @@ import { CustomerNotesService } from './customer-notes.service';
 import { CustomerDocumentsService } from './customer-documents.service';
 import { CustomerComplaintsService } from './customer-complaints.service';
 import { CustomerFinancialService } from './customer-financial.service';
+import { CustomersRestorer } from './customers.restorer';
 
 // Imports no other feature module. Reference-data checks (customer group,
 // territory, payment term "exists and is active") use those modules' plain
@@ -19,6 +20,7 @@ import { CustomerFinancialService } from './customer-financial.service';
 @Module({
   controllers: [CustomersController, CustomerFilesController],
   providers: [
+    CustomersRestorer,
     CustomersService,
     CustomerContactsService,
     CustomerAddressesService,

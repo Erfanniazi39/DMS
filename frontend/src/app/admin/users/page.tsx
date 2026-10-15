@@ -10,7 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { USERNAME_HINT, isValidUsername, sanitizeUsername } from "@/lib/username";
 import { apiFetch, type ApiError } from "@/lib/api";
-import { ROLE_LABELS, roleLabel, type RoleName } from "@/lib/roles";
+import { roleLabel, type RoleName } from "@/lib/roles";
 import { SortHeader, useTableSort } from "@/components/ui/sortable";
 import { sortRows, type SortValue } from "@/lib/table-sort";
 
@@ -45,7 +45,6 @@ const USER_SORT_GETTERS: Record<string, (row: UserRecord) => SortValue> = {
   status: (row) => statusLabels[row.status],
 };
 
-const roleOptions = Object.keys(ROLE_LABELS) as UserRole[];
 const statusOptions: UserStatus[] = ["ACTIVE", "DISABLED", "LOCKED"];
 
 function formatDate(value: string | null) {
@@ -72,6 +71,8 @@ export default function UsersPage() {
   const [error, setError] = useState<string | null>(null);
   const pageSize = 8;
 
+  // Every existing role, including custom ones created on the roles screen.
+  const [roleOptions, setRoleOptions] = useState<string[]>([]);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editForm, setEditForm] = useState<EditForm>({ username: "", fullName: "", password: "", roleName: "VIEWER", status: "ACTIVE" });
   const [editSaving, setEditSaving] = useState(false);
@@ -86,6 +87,10 @@ export default function UsersPage() {
       })
       .finally(() => setLoading(false));
   }, [router]);
+
+  useEffect(() => {
+    apiFetch<{ name: string }[]>("/access/roles").then((rows) => setRoleOptions(rows.map((row) => row.name))).catch(() => undefined);
+  }, []);
 
   const roles = useMemo(() => Array.from(new Set(users.map((user) => user.role))), [users]);
   const filteredUsers = useMemo(() => {
@@ -228,20 +233,16 @@ export default function UsersPage() {
                           <td className="px-4 py-3 text-muted-foreground">{formatDate(user.lastLoginAt)}</td>
                           <td className="px-4 py-3"><span className="font-medium">{statusLabels[user.status]}</span></td>
                           <td className="px-4 py-3">
-                            {user.role === "ADMIN" ? (
-                              <span className="text-xs text-muted-foreground">قابل ویرایش نیست</span>
-                            ) : (
-                              <Button
-                                variant="link"
-                                size="sm"
-                                onClick={() => (editingId === user.id ? cancelEdit() : startEdit(user))}
-                              >
-                                {editingId === user.id ? "بستن" : "ویرایش"}
-                              </Button>
-                            )}
+                            <Button
+                              variant="link"
+                              size="sm"
+                              onClick={() => (editingId === user.id ? cancelEdit() : startEdit(user))}
+                            >
+                              {editingId === user.id ? "بستن" : "ویرایش"}
+                            </Button>
                           </td>
                         </tr>
-                        {editingId === user.id && user.role !== "ADMIN" ? (
+                        {editingId === user.id ? (
                           <tr className="bg-muted/20">
                             <td colSpan={8} className="px-4 py-4">
                               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -288,7 +289,7 @@ export default function UsersPage() {
                                     value={editForm.roleName}
                                     onChange={(event) => setEditForm((current) => ({ ...current, roleName: event.target.value as UserRole }))}
                                   >
-                                    {roleOptions.map((value) => <option key={value} value={value}>{ROLE_LABELS[value]}</option>)}
+                                    {roleOptions.map((value) => <option key={value} value={value}>{roleLabel(value)}</option>)}
                                   </select>
                                 </div>
                                 <div className="flex flex-col gap-2">

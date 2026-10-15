@@ -26,6 +26,18 @@ export function sumItemTotals(items: { totalPrice: number }[]): number {
   return total;
 }
 
+// Lines where the entered total differs from quantity × unit price by more
+// than rounding (1 Rial). The total is still entered directly — lump sums,
+// discounts and rounding are legitimate — but a mismatch must be confirmed,
+// because the total is what approval rules and payments follow.
+export function findLineTotalMismatches(items: { name: string; quantity: number; unitPrice?: number | null; totalPrice: number }[]) {
+  return items.flatMap((item, index) => {
+    if (item.unitPrice === undefined || item.unitPrice === null) return [];
+    const expected = Math.round(item.quantity * item.unitPrice);
+    return Math.abs(item.totalPrice - expected) > 1 ? [{ line: index + 1, name: item.name, expected, entered: item.totalPrice }] : [];
+  });
+}
+
 // UNPAID / PARTIAL / PAID is always derived from totalAmount vs. paidAmount
 // — never set directly by the client. See PurchasesService.update() and
 // recomputePaymentTotals() below for where this gets (re)applied.

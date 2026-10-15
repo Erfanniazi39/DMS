@@ -23,6 +23,7 @@ import {
   type CustomerStatus,
 } from "../../shared";
 import type { SectionToasts } from "./DetailSection";
+import { HasPermission } from "@/components/has-permission";
 
 // The detail page header: number, name, status badge, group, primary
 // contact, pinned WARNING notes and credit hold, plus the status buttons —
@@ -166,13 +167,16 @@ export function StatusActions({
             </Button>
           ))}
           {canManage ? (
-            <Button size="sm" variant="outline" disabled={staleRecord} onClick={() => router.push(`/customers/${customer.id}/edit`)}>
-              ویرایش
-            </Button>
+            <HasPermission code="customers.viewSensitive">
+              <Button size="sm" variant="outline" disabled={staleRecord} onClick={() => router.push(`/customers/${customer.id}/edit`)}>
+                ویرایش
+              </Button>
+            </HasPermission>
           ) : null}
           {/* Delete only exists for a customer with no history at all
               (backend CustomersService.remove()); otherwise archive. */}
           {canManage && !hasChildren ? (
+            <HasPermission code="customers.delete">
             <Button
               size="sm"
               variant="ghost"
@@ -182,6 +186,7 @@ export function StatusActions({
             >
               حذف
             </Button>
+            </HasPermission>
           ) : null}
         </div>
       </div>

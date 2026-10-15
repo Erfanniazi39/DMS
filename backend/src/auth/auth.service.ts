@@ -20,8 +20,9 @@ export class AuthService {
   constructor(private readonly prisma: PrismaService) {}
 
   private findUserWithAccess(username: string) {
-    return this.prisma.user.findUnique({
-      where: { username },
+    // Usernames are not case-sensitive: «Ali» and «ali» are the same account.
+    return this.prisma.user.findFirst({
+      where: { username: { equals: username, mode: 'insensitive' } },
       include: {
         role: { include: { permissions: { include: { permission: true } } } },
         permissions: { include: { permission: true } },

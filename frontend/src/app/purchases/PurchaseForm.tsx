@@ -64,6 +64,9 @@ const PURCHASE_REQUEST_PICKER_SORT_ORDER: Record<PurchaseRequestStatus, number> 
   CANCELLED: 6,
 };
 
+// One line of the backend's PURCHASE_LINE_TOTAL_MISMATCH error details.
+type TotalMismatch = { line: number; name: string; expected: number; entered: number };
+
 // One line of the backend's PURCHASE_QUANTITY_EXCEEDS_REQUEST error details.
 type RequestOverage = {
   purchaseRequestItemId: number;
@@ -205,6 +208,8 @@ export function PurchaseForm(props: Props) {
   // PURCHASE_QUANTITY_EXCEEDS_REQUEST details plus the payload to resubmit
   // with confirmOverage once the user explicitly confirms.
   const [pendingOverage, setPendingOverage] = useState<{ overages: RequestOverage[]; payload: Record<string, unknown> } | null>(null);
+  // PURCHASE_LINE_TOTAL_MISMATCH details plus the payload to resubmit with confirmTotalMismatch.
+  const [pendingMismatch, setPendingMismatch] = useState<{ mismatches: TotalMismatch[]; payload: Record<string, unknown> } | null>(null);
   const [paymentSummary, setPaymentSummary] = useState<PaymentSummary | null>(null);
 
   const [purchaseTypes, setPurchaseTypes] = useState<PurchaseTypeOption[]>([]);
@@ -820,6 +825,9 @@ export function PurchaseForm(props: Props) {
       if (apiError.code === "RECORD_MODIFIED") {
         setStaleRecord(true);
         pushError(apiError.message);
+      } else if (apiError.code === "PURCHASE_LINE_TOTAL_MISMATCH") {
+        const mismatches = (apiError.details as { mismatches?: TotalMismatch[] } | undefined)?.mismatches ?? [];
+        setPendingMismatch({ mismatches, payload });
       } else if (apiError.code === "PURCHASE_QUANTITY_EXCEEDS_REQUEST") {
         const overages = (apiError.details as { overages?: RequestOverage[] } | undefined)?.overages ?? [];
         setPendingOverage({ overages, payload });
@@ -831,6 +839,12 @@ export function PurchaseForm(props: Props) {
     } finally {
       setSaving(false);
     }
+  }
+
+  function confirmTotalMismatch() {
+    const pending = pendingMismatch;
+    setPendingMismatch(null);
+    if (pending) void savePurchase({ ...pending.payload, confirmTotalMismatch: true });
   }
 
   function confirmOverage() {
@@ -1088,6 +1102,38 @@ export function PurchaseForm(props: Props) {
           </span>
         </div>
       </div>
+
+      {/* The total of a line is entered directly (lump sums and discounts are fine), but when it
+          differs from quantity × unit price the user must say so on purpose. */}
+      <Dialog open={pendingMismatch !== null} onOpenChange={(open) => (open ? undefined : setPendingMismatch(null))}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>مغایرت قیمت کل با مقدار × قیمت واحد</DialogTitle>
+            <DialogCloseButton />
+          </DialogHeader>
+          <DialogBody>
+            <p className="text-sm">قیمت کل ردیف‌های زیر با حاصل‌ضرب مقدار در قیمت واحد برابر نیست. مبلغ واردشده در جمع خرید و پرداخت‌ها ملاک است. آیا ادامه می‌دهید؟</p>
+            <ul className="mt-3 space-y-1.5 text-sm">
+              {pendingMismatch?.mismatches.map((mismatch) => (
+                <li key={mismatch.line} className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2">
+                  <span className="font-medium">ردیف {mismatch.line.toLocaleString("fa-IR")} — {mismatch.name}</span>
+                  <span className="block text-xs text-muted-foreground tabular-nums">
+                    مقدار × قیمت واحد: {formatMoney(mismatch.expected)} — قیمت کل واردشده: {formatMoney(mismatch.entered)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </DialogBody>
+          <DialogFooter>
+            <Button type="button" onClick={confirmTotalMismatch}>
+              بله، با همین مبلغ ثبت کن
+            </Button>
+            <Button type="button" variant="outline" onClick={() => setPendingMismatch(null)}>
+              انصراف
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Self-confirmation for buying more than the request still needs
           (business decision 2026-10-05 — a lightweight confirm, not a

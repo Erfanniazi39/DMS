@@ -10,6 +10,7 @@ import { formatMoney } from "@/lib/format";
 import { formatJalali } from "@/lib/jalali";
 import { apiFetch, type ApiError } from "@/lib/api";
 import { salesInvoiceTitle, type SalesInvoiceDetail } from "../../shared";
+import { HasPermission } from "@/components/has-permission";
 
 export type SectionToasts = {
   pushError: (message: string) => void;
@@ -105,7 +106,7 @@ export function StatusActions({
             <Button variant="success" disabled={disabled} onClick={() => setOpen(true)}>
               ثبت فاکتور
             </Button>
-            <Button variant="destructive" disabled={disabled} onClick={() => void remove()}>{deleting ? "در حال حذف..." : "حذف"}</Button>
+            <HasPermission code="sales.delete"><Button variant="destructive" disabled={disabled} onClick={() => void remove()}>{deleting ? "در حال حذف..." : "حذف"}</Button></HasPermission>
           </>
         ) : null}
         <Link href={`/sales-invoices/${invoice.id}/print`} className={buttonVariants({ variant: "outline" })}>

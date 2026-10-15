@@ -39,8 +39,8 @@ const UNITS_SORT_GETTERS: Record<string, (row: Unit) => SortValue> = {
 export default function UnitsPage() {
   const user = useAdminUser();
   const canManage = user?.permissions.includes("purchases.manage") ?? false;
-  // Delete is admin-only: users.create is held by the ADMIN role alone (the backend route checks the same).
-  const canDelete = user?.permissions.includes("users.create") ?? false;
+  // Delete is its own permission (units.delete); the backend route checks the same.
+  const canDelete = user?.permissions.includes("units.delete") ?? false;
 
   const [units, setUnits] = useState<Unit[]>([]);
   const [loading, setLoading] = useState(true);
@@ -384,7 +384,7 @@ export default function UnitsPage() {
           </DialogHeader>
           <DialogBody>
             <p className="text-sm">
-              واحد «{deleteTarget?.nameFa}» برای همیشه حذف شود؟ اگر در کالا یا سندی استفاده شده باشد، حذف انجام نمی‌شود و باید آن را غیرفعال کنید. یک نسخهٔ فقط‌خواندنی از آن در «سوابق حذف» نگهداری می‌شود.
+              واحد «{deleteTarget?.nameFa}» برای همیشه حذف شود؟ اگر در کالا یا سندی استفاده شده باشد، حذف انجام نمی‌شود و باید آن را غیرفعال کنید.
             </p>
           </DialogBody>
           <DialogFooter>

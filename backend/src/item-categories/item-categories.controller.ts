@@ -42,8 +42,8 @@ export class ItemCategoriesController {
 
   @Post()
   @RequirePermissions('items.manage')
-  create(@Body(new ZodValidationPipe(createItemCategorySchema)) dto: CreateItemCategoryDto) {
-    return this.itemCategoriesService.create(dto);
+  create(@Body(new ZodValidationPipe(createItemCategorySchema)) dto: CreateItemCategoryDto, @Req() req: Request) {
+    return this.itemCategoriesService.create(dto, req.session.userId ?? null, req.ip);
   }
 
   @Patch(':id')
@@ -51,15 +51,16 @@ export class ItemCategoriesController {
   update(
     @Param('id', ParseIntPipe) id: number,
     @Body(new ZodValidationPipe(updateItemCategorySchema)) dto: UpdateItemCategoryDto,
+    @Req() req: Request,
   ) {
-    return this.itemCategoriesService.update(id, dto);
+    return this.itemCategoriesService.update(id, dto, req.session.userId ?? null, req.ip);
   }
 
   // Admin only — gated on users.create, the permission only the ADMIN role
   // holds (no dedicated permission row, so no seed/role change is needed).
   @Delete(':id')
   @HttpCode(204)
-  @RequirePermissions('users.create')
+  @RequirePermissions('itemCategories.delete')
   async remove(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
     await this.itemCategoriesService.remove(id, req.session.userId ?? null, req.ip);
   }

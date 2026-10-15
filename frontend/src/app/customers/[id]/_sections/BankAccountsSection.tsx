@@ -15,6 +15,7 @@ import { SortHeader, useClientTable } from "@/components/ui/sortable";
 import { ListPagination } from "@/components/ui/list-pagination";
 import type { SortValue } from "@/lib/table-sort";
 import { useAdminUser } from "@/app/admin/layout";
+import { HasPermission } from "@/components/has-permission";
 
 type BankForm = {
   bankName: string;
@@ -39,8 +40,8 @@ const CUSTOMERS_ID__SECTIONS_BANKACCOUNTSSECTION_TSX_SORT_GETTERS: Record<string
 
 // «حساب‌های بانکی» — POST/PATCH/DELETE /customers/:id/bank-accounts[/:accountId]
 // (customers.manage). One default per customer (server-side). Numbers arrive
-// masked (last 4 digits) for callers without customers.manage/finance — an
-// edit dialog is only offered to managers, who always get the full values.
+// masked (last 4 digits) for callers without customers.viewSensitive — the edit
+// dialog (and the PATCH route) also need it, so a masked number is never saved back.
 export function BankAccountsSection({
   customer,
   canManage,
@@ -52,8 +53,8 @@ export function BankAccountsSection({
   onChanged: () => Promise<void>;
   toasts: SectionToasts;
 }) {
-  // Delete is admin-only: users.create is held by the ADMIN role alone (the backend route checks the same).
-  const canDelete = useAdminUser()?.permissions.includes("users.create") ?? false;
+  // Delete is its own permission (customers.delete); the backend route checks the same.
+  const canDelete = useAdminUser()?.permissions.includes("customers.delete") ?? false;
   const { pushError, pushErrors, pushSuccess } = toasts;
   // Sort + page the (small, already loaded) rows in memory; click a header to sort.
   const table = useClientTable(customer.bankAccounts, CUSTOMERS_ID__SECTIONS_BANKACCOUNTSSECTION_TSX_SORT_GETTERS, { pageSize: 20 });
@@ -180,10 +181,12 @@ export function BankAccountsSection({
                     {canManage ? (
                       <td className="px-3 py-2">
                         <div className="flex gap-1">
-                          <Button size="sm" variant="ghost" onClick={() => openEdit(account)}>
-                            <Pencil className="size-4" aria-hidden="true" />
-                            ویرایش
-                          </Button>
+                          <HasPermission code="customers.viewSensitive">
+                            <Button size="sm" variant="ghost" onClick={() => openEdit(account)}>
+                              <Pencil className="size-4" aria-hidden="true" />
+                              ویرایش
+                            </Button>
+                          </HasPermission>
                           {canDelete ? (
                             <Button size="sm" variant="ghost" className="text-destructive hover:bg-destructive/10 hover:text-destructive" onClick={() => void remove(account)}>
                               <Trash2 className="size-4" aria-hidden="true" />

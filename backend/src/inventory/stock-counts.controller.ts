@@ -133,7 +133,7 @@ export class StockCountsController {
   // DRAFT only — a count that has ever been started keeps its history
   // (cancel() instead).
   @Delete(':id')
-  @RequirePermissions('inventory.count')
+  @RequirePermissions('inventory.delete')
   remove(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
     return this.countsService.remove(id, req.session.userId ?? null, req.ip);
   }

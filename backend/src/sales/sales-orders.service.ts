@@ -60,6 +60,7 @@ import {
 import {
   computeLineAmounts,
   hasAnyDiscount,
+  hasPriceOverride,
   sumOrderTotals,
   type SalesLineAmounts,
 } from './sales-totals';
@@ -530,6 +531,7 @@ export class SalesOrdersService {
 
       const reasons: SalesOrderApprovalReason[] = [];
       if (hasAnyDiscount(order.items)) reasons.push('DISCOUNT');
+      if (hasPriceOverride(order.items)) reasons.push('PRICE_OVERRIDE');
       if (credit.exceeded) reasons.push('CREDIT_LIMIT');
 
       if (actor.canApprove) {

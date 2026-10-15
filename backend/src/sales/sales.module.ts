@@ -11,6 +11,8 @@ import { SalesReturnsController } from './sales-returns.controller';
 import { SalesReturnsService } from './sales-returns.service';
 import { SalesReportsController } from './sales-reports.controller';
 import { SalesReportsService } from './sales-reports.service';
+import { SalesOrdersRestorer } from './sales-orders.restorer';
+import { DeliveriesRestorer, SalesInvoicesRestorer } from './sales-documents.restorers';
 
 // Dependency direction (build plan §3): receivables → sales → inventory.
 // Imports InventoryModule for InventoryService (default warehouse,
@@ -24,7 +26,9 @@ import { SalesReportsService } from './sales-reports.service';
 @Module({
   imports: [InventoryModule, WorkflowModule],
   controllers: [SalesOrdersController, DeliveriesController, SalesInvoicesController, SalesReturnsController, SalesReportsController],
-  providers: [SalesOrdersService, DeliveriesService, SalesInvoicesService, SalesReturnsService, SalesReportsService],
+  providers: [
+    DeliveriesRestorer, SalesInvoicesRestorer,
+    SalesOrdersRestorer,SalesOrdersService, DeliveriesService, SalesInvoicesService, SalesReturnsService, SalesReportsService],
   exports: [SalesOrdersService, DeliveriesService, SalesInvoicesService, SalesReturnsService],
 })
 export class SalesModule {}

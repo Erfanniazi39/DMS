@@ -13,6 +13,7 @@ import { fillSuggestedCode } from "@/lib/suggested-code";
 import { SortHeader, useClientTable } from "@/components/ui/sortable";
 import { ListPagination } from "@/components/ui/list-pagination";
 import type { SortValue } from "@/lib/table-sort";
+import { HasPermission } from "@/components/has-permission";
 
 type DepartmentStatus = "active" | "inactive";
 type Department = { id: number; code: string; name: string; status: DepartmentStatus; note: string | null };
@@ -268,6 +269,7 @@ export default function DepartmentsPage() {
                               <Button variant="link" size="sm" onClick={(event) => openEditForm(event, department)}>
                                 ویرایش
                               </Button>
+                              <HasPermission code="employees.delete">
                               <Button
                                 variant="destructive"
                                 size="sm"
@@ -277,6 +279,7 @@ export default function DepartmentsPage() {
                               >
                                 حذف
                               </Button>
+                              </HasPermission>
                             </div>
                           </td>
                         </tr>

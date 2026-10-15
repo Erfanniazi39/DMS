@@ -58,6 +58,11 @@ import {
   type UpdateCustomerDto,
 } from './dto/customer.dto';
 
+// customers.viewSensitive: national/economic identifiers and bank numbers.
+function canViewSensitive(req: Request) {
+  return hasPermission(req, 'customers.viewSensitive');
+}
+
 function hasPermission(req: Request, permission: string) {
   return (req.session?.permissions ?? []).includes(permission);
 }
@@ -83,7 +88,7 @@ export class CustomersController {
 
   @Get()
   @RequirePermissions('customers.view')
-  list(@Query(new ZodValidationPipe(customerListQuerySchema)) query: CustomerListQuery) {
+  list(@Query(new ZodValidationPipe(customerListQuerySchema)) query: CustomerListQuery, @Req() req: Request) {
     return this.customersService.list(
       {
         q: query.q,
@@ -94,6 +99,7 @@ export class CustomersController {
         sort: parseSort(query.sortBy, query.sortDir),
       },
       parsePagination(query.page, query.pageSize),
+      { canViewSensitive: canViewSensitive(req) },
     );
   }
 
@@ -107,7 +113,7 @@ export class CustomersController {
   @Get(':id')
   @RequirePermissions('customers.view')
   get(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
-    return this.customersService.get(id, { canViewSensitive: hasPermission(req, 'customers.manage') || hasPermission(req, 'customers.finance') });
+    return this.customersService.get(id, { canViewSensitive: canViewSensitive(req) });
   }
 
   @Get(':id/history')
@@ -119,13 +125,15 @@ export class CustomersController {
   @Post()
   @RequirePermissions('customers.manage')
   create(@Body(new ZodValidationPipe(createCustomerSchema)) dto: CreateCustomerDto, @Req() req: Request) {
-    return this.customersService.create(dto, req.session.userId ?? null, req.ip);
+    return this.customersService.create(dto, req.session.userId ?? null, req.ip, { canViewSensitive: canViewSensitive(req) });
   }
 
+  // Editing the header (identity fields) needs customers.viewSensitive too, so a
+  // masked value can never be submitted back over the real one.
   @Patch(':id')
-  @RequirePermissions('customers.manage')
+  @RequirePermissions('customers.manage', 'customers.viewSensitive')
   update(@Param('id', ParseIntPipe) id: number, @Body(new ZodValidationPipe(updateCustomerSchema)) dto: UpdateCustomerDto, @Req() req: Request) {
-    return this.customersService.update(id, dto, req.session.userId ?? null, req.ip);
+    return this.customersService.update(id, dto, req.session.userId ?? null, req.ip, { canViewSensitive: canViewSensitive(req) });
   }
 
   @Patch(':id/status')
@@ -135,12 +143,12 @@ export class CustomersController {
     @Body(new ZodValidationPipe(changeCustomerStatusSchema)) dto: ChangeCustomerStatusDto,
     @Req() req: Request,
   ) {
-    return this.customersService.changeStatus(id, dto, { canArchive: hasPermission(req, 'customers.archive') }, req.session.userId ?? null, req.ip);
+    return this.customersService.changeStatus(id, dto, { canArchive: hasPermission(req, 'customers.archive'), canViewSensitive: canViewSensitive(req) }, req.session.userId ?? null, req.ip);
   }
 
   // Narrow on purpose — see CustomersService.remove().
   @Delete(':id')
-  @RequirePermissions('users.create')
+  @RequirePermissions('customers.delete')
   remove(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
     return this.customersService.remove(id, req.session.userId ?? null, req.ip);
   }
@@ -165,7 +173,7 @@ export class CustomersController {
   }
 
   @Delete(':id/contacts/:contactId')
-  @RequirePermissions('users.create')
+  @RequirePermissions('customers.delete')
   removeContact(@Param('id', ParseIntPipe) id: number, @Param('contactId', ParseIntPipe) contactId: number, @Req() req: Request) {
     return this.contactsService.remove(id, contactId, req.session.userId ?? null, req.ip);
   }
@@ -190,7 +198,7 @@ export class CustomersController {
   }
 
   @Delete(':id/addresses/:addressId')
-  @RequirePermissions('users.create')
+  @RequirePermissions('customers.delete')
   removeAddress(@Param('id', ParseIntPipe) id: number, @Param('addressId', ParseIntPipe) addressId: number, @Req() req: Request) {
     return this.addressesService.remove(id, addressId, req.session.userId ?? null, req.ip);
   }
@@ -204,8 +212,9 @@ export class CustomersController {
     return this.bankAccountsService.create(id, dto, req.session.userId ?? null, req.ip);
   }
 
+  // Editing an account needs customers.viewSensitive: callers without it only see masked numbers.
   @Patch(':id/bank-accounts/:accountId')
-  @RequirePermissions('customers.manage')
+  @RequirePermissions('customers.manage', 'customers.viewSensitive')
   updateBankAccount(
     @Param('id', ParseIntPipe) id: number,
     @Param('accountId', ParseIntPipe) accountId: number,
@@ -216,7 +225,7 @@ export class CustomersController {
   }
 
   @Delete(':id/bank-accounts/:accountId')
-  @RequirePermissions('users.create')
+  @RequirePermissions('customers.delete')
   removeBankAccount(@Param('id', ParseIntPipe) id: number, @Param('accountId', ParseIntPipe) accountId: number, @Req() req: Request) {
     return this.bankAccountsService.remove(id, accountId, req.session.userId ?? null, req.ip);
   }
@@ -241,7 +250,7 @@ export class CustomersController {
   }
 
   @Delete(':id/notes/:noteId')
-  @RequirePermissions('users.create')
+  @RequirePermissions('customers.delete')
   removeNote(@Param('id', ParseIntPipe) id: number, @Param('noteId', ParseIntPipe) noteId: number, @Req() req: Request) {
     return this.notesService.remove(id, noteId, req.session.userId ?? null, req.ip);
   }
@@ -270,7 +279,7 @@ export class CustomersController {
   }
 
   @Delete(':id/complaints/:complaintId')
-  @RequirePermissions('users.create')
+  @RequirePermissions('customers.delete')
   removeComplaint(@Param('id', ParseIntPipe) id: number, @Param('complaintId', ParseIntPipe) complaintId: number, @Req() req: Request) {
     return this.complaintsService.remove(id, complaintId, req.session.userId ?? null, req.ip);
   }
@@ -302,7 +311,7 @@ export class CustomersController {
   }
 
   @Delete(':id/documents/:documentId')
-  @RequirePermissions('users.create')
+  @RequirePermissions('customers.delete')
   removeDocument(@Param('id', ParseIntPipe) id: number, @Param('documentId', ParseIntPipe) documentId: number, @Req() req: Request) {
     return this.documentsService.removeDocument(id, documentId, req.session.userId ?? null, req.ip);
   }

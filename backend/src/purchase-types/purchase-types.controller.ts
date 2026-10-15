@@ -1,4 +1,5 @@
-import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Post, Req, UseGuards } from '@nestjs/common';
+import type { Request } from 'express';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { SessionAuthGuard } from '../auth/guards/session-auth.guard';
@@ -28,7 +29,7 @@ export class PurchaseTypesController {
   // isn't a standalone admin module (see purchase-type.dto.ts).
   @Post()
   @RequirePermissions('purchases.manage')
-  create(@Body(new ZodValidationPipe(createPurchaseTypeSchema)) dto: CreatePurchaseTypeDto) {
-    return this.purchaseTypesService.create(dto);
+  create(@Body(new ZodValidationPipe(createPurchaseTypeSchema)) dto: CreatePurchaseTypeDto, @Req() req: Request) {
+    return this.purchaseTypesService.create(dto, req.session.userId ?? null, req.ip);
   }
 }

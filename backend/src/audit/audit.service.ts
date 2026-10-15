@@ -18,6 +18,9 @@ export const AUDIT_ENTITY = {
   ITEM: 'Item',
   ITEM_CATEGORY: 'ItemCategory',
   UNIT: 'Unit',
+  // Reference data that used to be edited without leaving an audit trail.
+  DEPARTMENT: 'Department',
+  PURCHASE_TYPE: 'PurchaseType',
   // Customer-module reference data (customer groups, territories, payment
   // terms). Customer child records (contacts, addresses, notes, documents,
   // complaints, financial profile) are logged under CUSTOMER with the
@@ -109,6 +112,14 @@ export function diffChanges(
     }
   }
   return changes;
+}
+
+// Action name for a master-data update: a change of the active flag alone is
+// recorded as <PREFIX>_ACTIVATED / <PREFIX>_DEACTIVATED so the activity feed
+// can say «غیرفعال کردن …»; any other change is <PREFIX>_UPDATED.
+export function masterDataUpdateAction(prefix: string, changes: readonly AuditChange[], activeField: string, nowActive: boolean): string {
+  const onlyStatus = changes.length === 1 && changes[0].field === activeField;
+  return onlyStatus ? `${prefix}_${nowActive ? 'ACTIVATED' : 'DEACTIVATED'}` : `${prefix}_UPDATED`;
 }
 
 export type AuditEntry = {
@@ -229,6 +240,7 @@ export class AuditService {
           entityType: true,
           entityId: true,
           details: true,
+          changes: true,
           createdAt: true,
           user: { select: { id: true, username: true } },
         },

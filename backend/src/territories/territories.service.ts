@@ -1,7 +1,7 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { suggestNextCode } from '../common/next-code';
 import { PrismaService } from '../prisma/prisma.service';
-import { AUDIT_ENTITY, AuditService } from '../audit/audit.service';
+import { AUDIT_ENTITY, AuditService, diffChanges, masterDataUpdateAction } from '../audit/audit.service';
 import type { CreateTerritoryDto, UpdateTerritoryDto } from './dto/territory.dto';
 
 // Mirrors ItemCategoriesService. list() is the active-only list used by the
@@ -60,7 +60,11 @@ export class TerritoriesService {
       where: { id },
       data: { code: dto.code, nameEn: dto.nameEn, nameFa: dto.nameFa, isActive: dto.isActive, sortOrder: dto.sortOrder },
     });
-    await this.audit.log({ userId, ipAddress, action: 'TERRITORY_UPDATED', entityType: AUDIT_ENTITY.TERRITORY, entityId: id, details: updated.code });
+    const changes = diffChanges(existing, updated, ['code', 'nameEn', 'nameFa', 'isActive', 'sortOrder']);
+    if (changes.length > 0) {
+      const action = masterDataUpdateAction('TERRITORY', changes, 'isActive', updated.isActive);
+      await this.audit.log({ userId, ipAddress, action, entityType: AUDIT_ENTITY.TERRITORY, entityId: id, details: updated.code, changes });
+    }
     return updated;
   }
 

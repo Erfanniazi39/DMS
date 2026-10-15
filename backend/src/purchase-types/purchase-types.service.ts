@@ -1,6 +1,7 @@
 import { ConflictException, Injectable } from '@nestjs/common';
 import { suggestNextCode } from '../common/next-code';
 import { PrismaService } from '../prisma/prisma.service';
+import { AUDIT_ENTITY, AuditService } from '../audit/audit.service';
 import type { CreatePurchaseTypeDto } from './dto/purchase-type.dto';
 
 // Read-mostly — PurchaseType rows are seeded (see prisma/seed.ts) with the
@@ -9,7 +10,10 @@ import type { CreatePurchaseTypeDto } from './dto/purchase-type.dto';
 // full admin module — see purchase-type.dto.ts.
 @Injectable()
 export class PurchaseTypesService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly audit: AuditService,
+  ) {}
 
   list() {
     return this.prisma.purchaseType.findMany({
@@ -23,7 +27,7 @@ export class PurchaseTypesService {
     return suggestNextCode('PTY', (startsWith) => this.prisma.purchaseType.findMany({ where: { code: { startsWith } }, select: { code: true } }));
   }
 
-  async create(dto: CreatePurchaseTypeDto) {
+  async create(dto: CreatePurchaseTypeDto, userId: number | null = null, ipAddress?: string) {
     const existing = await this.prisma.purchaseType.findFirst({
       where: { OR: [{ code: dto.code }, { nameFa: dto.nameFa }] },
     });
@@ -31,7 +35,7 @@ export class PurchaseTypesService {
     if (existing?.nameFa === dto.nameFa) throw new ConflictException('نوع خریدی با این نام فارسی از قبل وجود دارد');
 
     const { _max } = await this.prisma.purchaseType.aggregate({ _max: { sortOrder: true } });
-    return this.prisma.purchaseType.create({
+    const created = await this.prisma.purchaseType.create({
       data: {
         code: dto.code,
         nameFa: dto.nameFa,
@@ -39,5 +43,7 @@ export class PurchaseTypesService {
         sortOrder: (_max.sortOrder ?? -1) + 1,
       },
     });
+    await this.audit.log({ userId, ipAddress, action: 'PURCHASE_TYPE_CREATED', entityType: AUDIT_ENTITY.PURCHASE_TYPE, entityId: created.id, details: `${created.code} — ${created.nameFa}` });
+    return created;
   }
 }

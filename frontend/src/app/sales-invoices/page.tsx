@@ -33,6 +33,7 @@ import {
 } from "./shared";
 import { SortHeader, useTableSort } from "@/components/ui/sortable";
 import { sortQuery } from "@/lib/table-sort";
+import { HasPermission } from "@/components/has-permission";
 
 // Same dense toolbar sizing as the Deliveries / Sales Orders lists.
 const toolbarFieldLabel = "text-[11px] font-medium uppercase tracking-wide text-muted-foreground";
@@ -413,9 +414,11 @@ function ListTab({ canInvoice, pushError, pushSuccess }: { canInvoice: boolean; 
                     <td className="px-3 py-2.5">
                       {canInvoice && invoice.status === "DRAFT" ? (
                         <div className="flex justify-end">
+                          <HasPermission code="sales.delete">
                           <Button variant="ghost" size="sm" className="text-destructive hover:bg-destructive/10 hover:text-destructive" onClick={(event) => void deleteDraft(event, invoice)}>
                             حذف
                           </Button>
+                          </HasPermission>
                         </div>
                       ) : null}
                     </td>

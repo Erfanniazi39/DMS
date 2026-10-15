@@ -195,6 +195,7 @@ describe('PurchasesService', () => {
     const existing = {
       id: 8,
       status: 'CONFIRMED',
+      sourceType: 'OPERATIONAL',
       paidAmount: 0,
       updatedAt: VERSION,
       purchaseType: {},
@@ -351,7 +352,7 @@ describe('PurchasesService', () => {
   it('refuses to edit a Purchase that has returns (its items would be recreated out from under them)', async () => {
     const prisma = createPrismaMock();
     const service = buildPurchasesService(prisma);
-    prisma.purchase.findUnique.mockResolvedValue({ id: 8, status: 'CONFIRMED', paidAmount: 0, updatedAt: VERSION, purchaseRequest: null });
+    prisma.purchase.findUnique.mockResolvedValue({ id: 8, status: 'CONFIRMED', paidAmount: 0, updatedAt: VERSION, sourceType: 'OPERATIONAL', purchaseRequest: null });
     prisma.purchaseReturn.count.mockResolvedValue(1);
 
     const dto: UpdatePurchaseDto = {
@@ -511,6 +512,25 @@ describe('PurchasesService', () => {
     expect(data).not.toHaveProperty('paidAmount');
   });
 
+  it('create(): a line whose total differs from quantity × unit price is refused with PURCHASE_LINE_TOTAL_MISMATCH until confirmed; rounding (1 Rial) and lump-sum lines pass', async () => {
+    const prisma = createPrismaMock();
+    const service = buildPurchasesService(prisma);
+    mockActiveMasterData(prisma);
+    prisma.purchase.create.mockResolvedValue({ id: 5 });
+    prisma.purchase.update.mockResolvedValue({ id: 5 });
+    const dto = (items: unknown[], extra: Record<string, unknown> = {}) =>
+      ({ purchaseDate: new Date('2026-01-01') as never, purchaseTypeId: 1, sourceType: 'OPERATIONAL', requesterDepartmentId: 2, buyerEmployeeId: 3, supplierId: 4, items, ...extra }) as never;
+
+    const error = await service.create(dto([{ name: 'x', quantity: 2, unitId: 1, unitPrice: 1000, totalPrice: 999_999 }]), 9, undefined).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ConflictException);
+    expect((error as ConflictException).getResponse()).toMatchObject({ code: 'PURCHASE_LINE_TOTAL_MISMATCH', details: { mismatches: [{ line: 1, expected: 2000, entered: 999_999 }] } });
+    expect(prisma.purchase.create).not.toHaveBeenCalled();
+
+    await service.create(dto([{ name: 'x', quantity: 3, unitId: 1, unitPrice: 333.33, totalPrice: 1000 }, { name: 'y', quantity: 1, unitId: 1, totalPrice: 5 }]), 9, undefined);
+    await service.create(dto([{ name: 'x', quantity: 2, unitId: 1, unitPrice: 1000, totalPrice: 999_999 }], { confirmTotalMismatch: true }), 9, undefined);
+    expect(prisma.purchase.create).toHaveBeenCalledTimes(2);
+  });
+
   it('create(): totalAmount is the sum of line totalPrice values — never quantity × unitPrice', async () => {
     const prisma = createPrismaMock();
     const service = buildPurchasesService(prisma);
@@ -526,6 +546,8 @@ describe('PurchasesService', () => {
         requesterDepartmentId: 2,
         buyerEmployeeId: 3,
         supplierId: 4,
+        // The mismatch is deliberate and confirmed (see the next test for the unconfirmed case).
+        confirmTotalMismatch: true,
         items: [
           // 10 × 1000 would be 10000, but a lump-sum discount was billed.
           { name: 'بطری پلاستیکی', quantity: 10 as never, unitId: 1, unitPrice: 1000 as never, totalPrice: 7500 as never },
@@ -1030,5 +1052,14 @@ describe('PurchasesService', () => {
     expect(prisma.purchase.update.mock.calls[0][0].data.status).toBe('RECEIVED');
     expect(prisma.auditLog.create).toHaveBeenCalledTimes(1);
     expect(prisma.auditLog.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ action: 'PURCHASE_UPDATED' }) }));
+  });
+  it('update(): the source type (operational/historical) cannot be changed — it decides whether approval rules apply', async () => {
+    const prisma = createPrismaMock();
+    prisma.purchase.findUnique.mockResolvedValue({ ...statusFixture('CONFIRMED'), sourceType: 'OPERATIONAL', purchaseTypeId: 1, supplierId: 4 });
+    mockActiveMasterData(prisma);
+
+    const dto = { ...updateDto('CONFIRMED', 10000), sourceType: 'HISTORICAL_IMPORT' as never };
+    await expect(svc(prisma).update(8, dto, 9, undefined)).rejects.toBeInstanceOf(ConflictException);
+    expect(prisma.purchase.update).not.toHaveBeenCalled();
   });
 });

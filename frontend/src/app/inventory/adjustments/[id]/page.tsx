@@ -29,6 +29,7 @@ import {
   type StockAdjustmentDetail,
 } from "../../shared";
 import { FormSection } from "../_form/FormSection";
+import { HasPermission } from "@/components/has-permission";
 
 // Stock adjustment detail. A DRAFT can be edited, deleted, or posted
 // ("ثبت نهایی") by inventory.adjust users; posting assigns the
@@ -339,9 +340,11 @@ export default function StockAdjustmentDetailPage() {
               <Button variant="outline" disabled={busy !== null} onClick={() => router.push(`/inventory/adjustments/${adjustment.id}/edit`)}>
                 ویرایش
               </Button>
+              <HasPermission code="inventory.delete">
               <Button variant="destructive" disabled={busy !== null} onClick={() => void remove()}>
                 {busy === "delete" ? "در حال حذف..." : "حذف"}
               </Button>
+              </HasPermission>
             </div>
           ) : null}
           {isPendingApproval && canApprove ? (

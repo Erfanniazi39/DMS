@@ -64,7 +64,7 @@ export class CreditNotesController {
   }
 
   @Delete(':id')
-  @RequirePermissions('sales.invoice')
+  @RequirePermissions('sales.delete')
   remove(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
     return this.creditNotes.remove(id, actorOf(req));
   }

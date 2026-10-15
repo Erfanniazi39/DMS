@@ -2,7 +2,7 @@ import { ConflictException, Injectable, NotFoundException } from '@nestjs/common
 import { Prisma } from '@prisma/client';
 import { suggestNextCode } from '../common/next-code';
 import { PrismaService } from '../prisma/prisma.service';
-import { AUDIT_ENTITY, AuditService } from '../audit/audit.service';
+import { AUDIT_ENTITY, AuditService, diffChanges, masterDataUpdateAction } from '../audit/audit.service';
 import { archiveDeletedRecord } from '../audit/deleted-records';
 import type { CreateItemCategoryDto, UpdateItemCategoryDto } from './dto/item-category.dto';
 
@@ -39,7 +39,7 @@ export class ItemCategoriesService {
     return suggestNextCode('ICT', (startsWith) => this.prisma.itemCategory.findMany({ where: { code: { startsWith } }, select: { code: true } }));
   }
 
-  async create(dto: CreateItemCategoryDto) {
+  async create(dto: CreateItemCategoryDto, userId: number | null = null, ipAddress?: string) {
     await this.ensureUnique(dto.code, dto.nameFa);
 
     let sortOrder = dto.sortOrder;
@@ -48,7 +48,7 @@ export class ItemCategoriesService {
       sortOrder = (_max.sortOrder ?? 0) + 1;
     }
 
-    return this.prisma.itemCategory.create({
+    const created = await this.prisma.itemCategory.create({
       data: {
         code: dto.code,
         nameEn: dto.nameEn,
@@ -57,15 +57,17 @@ export class ItemCategoriesService {
         sortOrder,
       },
     });
+    await this.audit.log({ userId, ipAddress, action: 'ITEM_CATEGORY_CREATED', entityType: AUDIT_ENTITY.ITEM_CATEGORY, entityId: created.id, details: `${created.code} — ${created.nameFa}` });
+    return created;
   }
 
-  async update(id: number, dto: UpdateItemCategoryDto) {
+  async update(id: number, dto: UpdateItemCategoryDto, userId: number | null = null, ipAddress?: string) {
     const existing = await this.prisma.itemCategory.findUnique({ where: { id } });
     if (!existing) throw new NotFoundException('دسته‌بندی کالا پیدا نشد');
 
     await this.ensureUnique(dto.code, dto.nameFa, id);
 
-    return this.prisma.itemCategory.update({
+    const updated = await this.prisma.itemCategory.update({
       where: { id },
       data: {
         code: dto.code,
@@ -75,6 +77,12 @@ export class ItemCategoriesService {
         sortOrder: dto.sortOrder,
       },
     });
+    const changes = diffChanges(existing, updated, ['code', 'nameEn', 'nameFa', 'isActive', 'sortOrder']);
+    if (changes.length > 0) {
+      const action = masterDataUpdateAction('ITEM_CATEGORY', changes, 'isActive', updated.isActive);
+      await this.audit.log({ userId, ipAddress, action, entityType: AUDIT_ENTITY.ITEM_CATEGORY, entityId: id, details: `${updated.code} — ${updated.nameFa}`, changes });
+    }
+    return updated;
   }
 
   // Same rule as UnitsService / PurchaseTypesService: reject a duplicate

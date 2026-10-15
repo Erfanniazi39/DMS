@@ -98,7 +98,7 @@ export class EmployeesController {
   }
 
   @Delete(':id/photo')
-  @RequirePermissions('users.create')
+  @RequirePermissions('employees.delete')
   removePhoto(@Param('id', ParseIntPipe) id: number) {
     return this.employeesService.updatePhoto(id, null);
   }
@@ -132,7 +132,7 @@ export class EmployeesController {
   }
 
   @Delete(':id/contracts/:contractId')
-  @RequirePermissions('users.create')
+  @RequirePermissions('employees.delete')
   removeContract(@Param('id', ParseIntPipe) id: number, @Param('contractId', ParseIntPipe) contractId: number) {
     return this.employeesService.removeContract(id, contractId);
   }
@@ -167,7 +167,7 @@ export class EmployeesController {
   }
 
   @Delete(':id/contracts/:contractId/document')
-  @RequirePermissions('users.create')
+  @RequirePermissions('employees.delete')
   removeContractDocument(@Param('id', ParseIntPipe) id: number, @Param('contractId', ParseIntPipe) contractId: number) {
     return this.employeesService.setContractDocument(id, contractId, null);
   }

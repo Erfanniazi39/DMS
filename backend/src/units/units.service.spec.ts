@@ -24,7 +24,7 @@ describe('UnitsService', () => {
   describe('list (active only, for item-form dropdowns)', () => {
     it('lists only active units, ordered by sortOrder', async () => {
       const prisma = createPrismaMock();
-      const service = new UnitsService(prisma as never);
+      const service = new UnitsService(prisma as never, { log: jest.fn() } as never);
       const rows = [
         { id: 1, code: 'KG', nameFa: 'کیلوگرم', sortOrder: 0, isActive: true },
         { id: 2, code: 'PCS', nameFa: 'عدد', sortOrder: 1, isActive: true },
@@ -40,7 +40,7 @@ describe('UnitsService', () => {
 
     it('returns an empty list rather than throwing when no active unit exists', async () => {
       const prisma = createPrismaMock();
-      const service = new UnitsService(prisma as never);
+      const service = new UnitsService(prisma as never, { log: jest.fn() } as never);
       (prisma as any).unit.findMany.mockResolvedValue([]);
 
       await expect(service.list()).resolves.toEqual([]);
@@ -50,7 +50,7 @@ describe('UnitsService', () => {
   describe('listAll (admin page)', () => {
     it('lists every unit including inactive ones, with no isActive filter', async () => {
       const prisma = createPrismaMock();
-      const service = new UnitsService(prisma as never);
+      const service = new UnitsService(prisma as never, { log: jest.fn() } as never);
       const rows = [
         { id: 1, code: 'kg', nameFa: 'کیلوگرم', sortOrder: 0, isActive: true },
         { id: 2, code: 'old', nameFa: 'قدیمی', sortOrder: 1, isActive: false },
@@ -67,9 +67,9 @@ describe('UnitsService', () => {
   describe('create', () => {
     it('creates a unit with the given sortOrder and isActive', async () => {
       const prisma = createPrismaMock();
-      const service = new UnitsService(prisma as never);
+      const service = new UnitsService(prisma as never, { log: jest.fn() } as never);
       (prisma as any).unit.findFirst.mockResolvedValue(null);
-      (prisma as any).unit.create.mockResolvedValue({ id: 5 });
+      (prisma as any).unit.create.mockResolvedValue({ id: 5, code: 'x', nameFa: 'y' });
 
       await service.create({ code: 'crate', nameEn: 'Crate', nameFa: 'سبد', isActive: false, sortOrder: 7 });
 
@@ -81,7 +81,7 @@ describe('UnitsService', () => {
 
     it('appends after the current highest sortOrder when none is given', async () => {
       const prisma = createPrismaMock();
-      const service = new UnitsService(prisma as never);
+      const service = new UnitsService(prisma as never, { log: jest.fn() } as never);
       (prisma as any).unit.findFirst.mockResolvedValue(null);
       (prisma as any).unit.aggregate.mockResolvedValue({ _max: { sortOrder: 17 } });
       (prisma as any).unit.create.mockResolvedValue({ id: 19 });
@@ -95,7 +95,7 @@ describe('UnitsService', () => {
 
     it('starts sortOrder at 1 when no unit exists yet', async () => {
       const prisma = createPrismaMock();
-      const service = new UnitsService(prisma as never);
+      const service = new UnitsService(prisma as never, { log: jest.fn() } as never);
       (prisma as any).unit.findFirst.mockResolvedValue(null);
       (prisma as any).unit.aggregate.mockResolvedValue({ _max: { sortOrder: null } });
       (prisma as any).unit.create.mockResolvedValue({ id: 1 });
@@ -109,7 +109,7 @@ describe('UnitsService', () => {
 
     it('rejects a duplicate code', async () => {
       const prisma = createPrismaMock();
-      const service = new UnitsService(prisma as never);
+      const service = new UnitsService(prisma as never, { log: jest.fn() } as never);
       (prisma as any).unit.findFirst.mockResolvedValue({ code: 'kg', nameFa: 'چیز دیگر' });
 
       await expect(
@@ -120,7 +120,7 @@ describe('UnitsService', () => {
 
     it('rejects a duplicate Persian name, even with a different code', async () => {
       const prisma = createPrismaMock();
-      const service = new UnitsService(prisma as never);
+      const service = new UnitsService(prisma as never, { log: jest.fn() } as never);
       (prisma as any).unit.findFirst.mockResolvedValue({ code: 'kg', nameFa: 'کیلوگرم' });
 
       await expect(
@@ -132,7 +132,7 @@ describe('UnitsService', () => {
 
     it('checks uniqueness against both code and nameFa, with no id exclusion', async () => {
       const prisma = createPrismaMock();
-      const service = new UnitsService(prisma as never);
+      const service = new UnitsService(prisma as never, { log: jest.fn() } as never);
       (prisma as any).unit.findFirst.mockResolvedValue(null);
       (prisma as any).unit.create.mockResolvedValue({ id: 1 });
 
@@ -149,7 +149,7 @@ describe('UnitsService', () => {
 
     it('updates every editable field, including deactivating the unit', async () => {
       const prisma = createPrismaMock();
-      const service = new UnitsService(prisma as never);
+      const service = new UnitsService(prisma as never, { log: jest.fn() } as never);
       (prisma as any).unit.findUnique.mockResolvedValue({ id: 4, code: 'kg' });
       (prisma as any).unit.findFirst.mockResolvedValue(null);
       (prisma as any).unit.update.mockResolvedValue({ id: 4, ...dto });
@@ -158,9 +158,43 @@ describe('UnitsService', () => {
       expect((prisma as any).unit.update).toHaveBeenCalledWith({ where: { id: 4 }, data: dto });
     });
 
+    it('writes an audit entry when the unit is deactivated or reactivated', async () => {
+      const prisma = createPrismaMock();
+      const audit = { log: jest.fn() };
+      const service = new UnitsService(prisma as never, audit as never);
+      const row = { id: 4, code: 'kg', nameEn: 'Kilogram', nameFa: 'کیلوگرم', isActive: true, sortOrder: 3 };
+      (prisma as any).unit.findUnique.mockResolvedValue(row);
+      (prisma as any).unit.findFirst.mockResolvedValue(null);
+      (prisma as any).unit.update.mockResolvedValue({ ...row, isActive: false });
+
+      await service.update(4, { ...dto, isActive: false }, 7, '1.2.3.4');
+
+      expect(audit.log).toHaveBeenCalledWith(
+        expect.objectContaining({ userId: 7, action: 'UNIT_DEACTIVATED', entityId: 4, changes: [{ field: 'isActive', from: true, to: false }] }),
+      );
+
+      (prisma as any).unit.findUnique.mockResolvedValue({ ...row, isActive: false });
+      (prisma as any).unit.update.mockResolvedValue(row);
+      await service.update(4, { ...dto, isActive: true }, 7);
+      expect(audit.log).toHaveBeenLastCalledWith(expect.objectContaining({ action: 'UNIT_ACTIVATED' }));
+    });
+
+    it('writes no audit entry when nothing changed', async () => {
+      const prisma = createPrismaMock();
+      const audit = { log: jest.fn() };
+      const service = new UnitsService(prisma as never, audit as never);
+      const row = { id: 4, code: 'kg', nameEn: 'Kilogram', nameFa: 'کیلوگرم', isActive: true, sortOrder: 3 };
+      (prisma as any).unit.findUnique.mockResolvedValue(row);
+      (prisma as any).unit.findFirst.mockResolvedValue(null);
+      (prisma as any).unit.update.mockResolvedValue(row);
+
+      await service.update(4, { ...dto, isActive: true }, 7);
+      expect(audit.log).not.toHaveBeenCalled();
+    });
+
     it('excludes the unit itself from the uniqueness check, so saving unchanged code/name works', async () => {
       const prisma = createPrismaMock();
-      const service = new UnitsService(prisma as never);
+      const service = new UnitsService(prisma as never, { log: jest.fn() } as never);
       (prisma as any).unit.findUnique.mockResolvedValue({ id: 4 });
       (prisma as any).unit.findFirst.mockResolvedValue(null);
       (prisma as any).unit.update.mockResolvedValue({ id: 4 });
@@ -173,7 +207,7 @@ describe('UnitsService', () => {
 
     it('rejects changing the code to one used by another unit', async () => {
       const prisma = createPrismaMock();
-      const service = new UnitsService(prisma as never);
+      const service = new UnitsService(prisma as never, { log: jest.fn() } as never);
       (prisma as any).unit.findUnique.mockResolvedValue({ id: 4 });
       (prisma as any).unit.findFirst.mockResolvedValue({ code: 'kg', nameFa: 'دیگر' });
 
@@ -183,7 +217,7 @@ describe('UnitsService', () => {
 
     it('rejects changing the Persian name to one used by another unit', async () => {
       const prisma = createPrismaMock();
-      const service = new UnitsService(prisma as never);
+      const service = new UnitsService(prisma as never, { log: jest.fn() } as never);
       (prisma as any).unit.findUnique.mockResolvedValue({ id: 4 });
       (prisma as any).unit.findFirst.mockResolvedValue({ code: 'other', nameFa: 'کیلوگرم' });
 
@@ -193,7 +227,7 @@ describe('UnitsService', () => {
 
     it('throws NotFound for an unknown unit id', async () => {
       const prisma = createPrismaMock();
-      const service = new UnitsService(prisma as never);
+      const service = new UnitsService(prisma as never, { log: jest.fn() } as never);
       (prisma as any).unit.findUnique.mockResolvedValue(null);
 
       await expect(service.update(999, dto)).rejects.toBeInstanceOf(NotFoundException);

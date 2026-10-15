@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -8,9 +8,9 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { USERNAME_HINT, sanitizeUsername } from "@/lib/username";
 import { apiFetch, type ApiError } from "@/lib/api";
-import { ROLE_LABELS, type RoleName } from "@/lib/roles";
+import { roleLabel } from "@/lib/roles";
 
-type Role = RoleName;
+type Role = string;
 type AccountStatus = "ACTIVE" | "DISABLED" | "LOCKED";
 
 const statusLabels: Record<AccountStatus, string> = {
@@ -34,6 +34,11 @@ const emptyForm = {
 export default function AddUsersPage() {
   const router = useRouter();
   const [form, setForm] = useState(emptyForm);
+  // Every existing role, including custom ones created on the roles screen.
+  const [roleOptions, setRoleOptions] = useState<string[]>(["VIEWER"]);
+  useEffect(() => {
+    apiFetch<{ name: string }[]>("/access/roles").then((rows) => setRoleOptions(rows.map((row) => row.name))).catch(() => undefined);
+  }, []);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -166,9 +171,9 @@ export default function AddUsersPage() {
                   value={form.roleName}
                   onChange={(event) => update("roleName", event.target.value as Role)}
                 >
-                  {Object.entries(ROLE_LABELS).map(([value, label]) => (
+                  {roleOptions.map((value) => (
                     <option key={value} value={value}>
-                      {label}
+                      {roleLabel(value)}
                     </option>
                   ))}
                 </select>

@@ -36,7 +36,7 @@ export type CustomerListFilters = {
 // Fields whose old -> new values are written to AuditLog.changes on update
 // (business decision 2026-10-06). nationalId is masked: only "it changed".
 const AUDITED_CUSTOMER_FIELDS = ['customerKind', 'legalName', 'nationalId', 'economicCode', 'registrationNumber', 'title', 'taxOfficeProvince', 'taxOfficeCity', 'customerGroupId'] as const;
-const MASKED_CUSTOMER_FIELDS = ['nationalId'] as const;
+const MASKED_CUSTOMER_FIELDS = ['nationalId', 'economicCode'] as const;
 
 const userDisplay = { select: { id: true, username: true } } as const;
 
@@ -84,10 +84,15 @@ function withoutLegacyColumns<T extends { legacyCustomerType?: unknown; legacyAd
   return rest;
 }
 
+// Needs customers.viewSensitive: national/economic identifiers and bank numbers are hidden without it.
+type SensitiveOptions = { canViewSensitive: boolean };
+const SEES_ALL: SensitiveOptions = { canViewSensitive: true };
+
 // nationalId (sensitive) is dropped from list rows — the table never shows
 // it; it's only on the detail response.
-function toListItem(row: CustomerListRow) {
-  const { addresses, notes, financialProfile, nationalId: _nationalId, ...customer } = withoutLegacyColumns(row);
+function toListItem(row: CustomerListRow, options: SensitiveOptions) {
+  const { addresses, notes, financialProfile, nationalId: _nationalId, ...rest } = withoutLegacyColumns(row);
+  const customer = { ...rest, economicCode: options.canViewSensitive ? rest.economicCode : rest.economicCode ? MASKED_AUDIT_VALUE : null };
   const defaultAddress = addresses.find((address) => address.addressType === 'DELIVERY') ?? addresses[0];
   return {
     ...customer,
@@ -110,6 +115,7 @@ function toDetail(row: CustomerDetailRow, options: { canViewSensitive: boolean }
   return {
     ...customer,
     nationalId: options.canViewSensitive ? customer.nationalId : customer.nationalId ? MASKED_AUDIT_VALUE : null,
+    economicCode: options.canViewSensitive ? customer.economicCode : customer.economicCode ? MASKED_AUDIT_VALUE : null,
     // Bank numbers are sensitive too: view-only callers see the last 4 digits.
     bankAccounts: customer.bankAccounts.map((account) => ({
       ...account,
@@ -154,10 +160,10 @@ export class CustomersService {
   // Same opt-in pagination contract as before: without `pagination` → plain
   // array (for a future Sales customer picker); with it → { items, total,
   // page, pageSize }.
-  async list(filters: CustomerListFilters = {}, pagination?: PaginationParams) {
+  async list(filters: CustomerListFilters = {}, pagination?: PaginationParams, options: SensitiveOptions = SEES_ALL) {
     const and: Prisma.CustomerWhereInput[] = [];
     if (filters.q) {
-      const ids = await this.searchIds(filters.q);
+      const ids = await this.searchIds(filters.q, options.canViewSensitive);
       if (ids !== null) and.push({ id: { in: ids } });
     }
     if (filters.status === 'ALL') {
@@ -175,17 +181,17 @@ export class CustomersService {
 
     if (!pagination) {
       const rows = await this.prisma.customer.findMany({ where, include: customerListInclude, orderBy });
-      return rows.map(toListItem);
+      return rows.map((row) => toListItem(row, options));
     }
 
     const [rows, total] = await Promise.all([
       this.prisma.customer.findMany({ where, include: customerListInclude, orderBy, ...toSkipTake(pagination) }),
       this.prisma.customer.count({ where }),
     ]);
-    return { items: rows.map(toListItem), total, page: pagination.page, pageSize: pagination.pageSize };
+    return { items: rows.map((row) => toListItem(row, options)), total, page: pagination.page, pageSize: pagination.pageSize };
   }
 
-  async get(id: number, options: { canViewSensitive: boolean } = { canViewSensitive: true }) {
+  async get(id: number, options: SensitiveOptions = SEES_ALL) {
     const customer = await this.prisma.customer.findUnique({ where: { id }, include: customerDetailInclude });
     if (!customer) throw new NotFoundException('مشتری پیدا نشد');
     return toDetail(customer, options);
@@ -208,7 +214,7 @@ export class CustomersService {
   // CustomerFinancialProfile (no payment term, no credit limit, no hold —
   // decision 6: cash-only until someone sets a policy) and the optional
   // first address/contact are created in the same transaction.
-  async create(dto: CreateCustomerDto, userId: number | null = null, ipAddress?: string) {
+  async create(dto: CreateCustomerDto, userId: number | null = null, ipAddress?: string, options: SensitiveOptions = SEES_ALL) {
     await ensureActiveCustomerGroup(this.prisma, dto.customerGroupId);
     if (dto.territoryId) await ensureActiveTerritory(this.prisma, dto.territoryId);
     if (dto.nationalId) await this.ensureNationalIdFree(dto.nationalId);
@@ -261,7 +267,7 @@ export class CustomersService {
         return row;
       }),
     );
-    return this.get(created.id);
+    return this.get(created.id, options);
   }
 
   // Full replace of identity/classification/communication fields (an
@@ -271,7 +277,7 @@ export class CustomersService {
   //
   // Optimistic locking, same as PurchasesService.update(): up-front version
   // check, then a compare-and-set on updatedAt inside the transaction.
-  async update(id: number, dto: UpdateCustomerDto, userId: number | null = null, ipAddress?: string) {
+  async update(id: number, dto: UpdateCustomerDto, userId: number | null = null, ipAddress?: string, options: SensitiveOptions = SEES_ALL) {
     const existing = await this.findRaw(id);
     if (!isSameVersion(existing.updatedAt, dto.updatedAt)) throw recordModifiedConflict();
     // A reference is only re-checked for "still active" when it's being
@@ -279,14 +285,16 @@ export class CustomersService {
     // that was retired since.
     if (dto.customerGroupId !== existing.customerGroupId) await ensureActiveCustomerGroup(this.prisma, dto.customerGroupId);
     if (dto.territoryId && dto.territoryId !== existing.territoryId) await ensureActiveTerritory(this.prisma, dto.territoryId);
-    if (dto.nationalId && dto.nationalId !== existing.nationalId) await this.ensureNationalIdFree(dto.nationalId, id);
+    if (options.canViewSensitive && dto.nationalId && dto.nationalId !== existing.nationalId) await this.ensureNationalIdFree(dto.nationalId, id);
 
     const data = {
       customerKind: dto.customerKind,
       name: dto.name,
       legalName: dto.legalName ?? null,
-      nationalId: dto.nationalId ?? null,
-      economicCode: dto.economicCode ?? null,
+      // Without customers.viewSensitive the identifiers are not shown to the editor,
+      // so they are kept as stored instead of being replaced or cleared by the form.
+      nationalId: options.canViewSensitive ? (dto.nationalId ?? null) : existing.nationalId,
+      economicCode: options.canViewSensitive ? (dto.economicCode ?? null) : existing.economicCode,
       title: dto.title ?? null,
       registrationNumber: dto.registrationNumber ?? null,
       phone: dto.phone,
@@ -314,7 +322,7 @@ export class CustomersService {
         );
       }),
     );
-    return this.get(id);
+    return this.get(id, options);
   }
 
   // PATCH /customers/:id/status — the only way a customer's status changes.
@@ -326,7 +334,7 @@ export class CustomersService {
   async changeStatus(
     id: number,
     dto: ChangeCustomerStatusDto,
-    options: { canArchive: boolean },
+    options: { canArchive: boolean; canViewSensitive?: boolean },
     userId: number | null = null,
     ipAddress?: string,
   ) {
@@ -360,7 +368,7 @@ export class CustomersService {
         tx,
       );
     });
-    return this.get(id);
+    return this.get(id, { canViewSensitive: options.canViewSensitive ?? true });
   }
 
   // Deletion is deliberately narrow (same idea as PurchasesService.remove()):
@@ -426,7 +434,9 @@ export class CustomersService {
   // name, legacy code, phone, national id and contact names — compared on
   // the normalized search key (customer-normalize.ts) on both sides.
   // null = the query normalizes to nothing, i.e. no search filter.
-  private async searchIds(q: string): Promise<number[] | null> {
+  // The national id is only searchable by callers who may see it (otherwise repeated
+  // searches could recover a masked value digit by digit).
+  private async searchIds(q: string, includeNationalId: boolean): Promise<number[] | null> {
     const key = searchKey(q);
     if (!key) return null;
     const pattern = `%${escapeLike(key)}%`;
@@ -437,7 +447,7 @@ export class CustomersService {
          OR ${searchKeySql('c.legal_name')} LIKE ${pattern}
          OR ${searchKeySql('c.legacy_code')} LIKE ${pattern}
          OR ${searchKeySql('c.phone')} LIKE ${pattern}
-         OR ${searchKeySql('c.national_id')} LIKE ${pattern}
+         ${includeNationalId ? Prisma.sql`OR ${searchKeySql('c.national_id')} LIKE ${pattern}` : Prisma.empty}
          OR EXISTS (
            SELECT 1 FROM customer_contacts cc
            WHERE cc.customer_id = c.id AND ${searchKeySql('cc.name')} LIKE ${pattern}

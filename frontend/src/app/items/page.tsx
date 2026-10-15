@@ -19,6 +19,7 @@ import { normalizeDigits } from "@/lib/number-input";
 import { useAdminUser } from "@/app/admin/layout";
 import { SortHeader, useTableSort } from "@/components/ui/sortable";
 import { sortQuery } from "@/lib/table-sort";
+import { HasPermission } from "@/components/has-permission";
 
 // Item = things the company produces/sells. It is NOT a purchasing catalog
 // — purchase item names stay free text and never reference this list.
@@ -420,9 +421,11 @@ function ItemsPageContent() {
                               <Button variant="link" size="sm" onClick={(event) => openEditForm(event, item)}>
                                 ویرایش
                               </Button>
+                              <HasPermission code="items.delete">
                               <Button variant="destructive" size="sm" onClick={(event) => void deleteItem(event, item)}>
                                 حذف
                               </Button>
+                              </HasPermission>
                             </div>
                           </td>
                         ) : null}

@@ -96,7 +96,7 @@ export class GoodsReceiptsController {
 
   // DRAFT only — a posted receipt can never be deleted.
   @Delete(':id')
-  @RequirePermissions('inventory.receive')
+  @RequirePermissions('inventory.delete')
   remove(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
     return this.receiptsService.remove(id, req.session.userId ?? null, req.ip);
   }

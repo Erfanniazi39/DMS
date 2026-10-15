@@ -82,6 +82,8 @@ const purchaseBaseSchema = z.object({
   // user has confirmed it — no second approver). Without it, an overage is
   // refused with code PURCHASE_QUANTITY_EXCEEDS_REQUEST; see PurchasesService.
   confirmOverage: z.boolean({ error: 'مقدار تأیید خرید مازاد نامعتبر است' }).optional().default(false),
+  // A line whose total differs from quantity × unit price is allowed only after an explicit confirm.
+  confirmTotalMismatch: z.boolean({ error: 'مقدار تأیید مغایرت مبلغ نامعتبر است' }).optional().default(false),
 }, { error: 'اطلاعات خرید نامعتبر است' });
 
 // Never weakens normal operational validation — only a HISTORICAL_IMPORT
@@ -145,6 +147,8 @@ export const createPurchasePaymentSchema = z.object({
   // Transfer-receipt info (2026-10-13): informational only — never feeds
   // paidAmount/paymentStatus (CLAUDE.md rule 6).
   ...paymentReceiptInfoFields,
+  // Paying more than the purchase total is allowed only after an explicit confirm.
+  confirmOverpayment: z.boolean({ error: 'مقدار تأیید پرداخت مازاد نامعتبر است' }).optional().default(false),
 }, { error: 'اطلاعات پرداخت نامعتبر است' });
 
 // PATCH /purchases/:id/payments/:paymentId — a full replacement of the

@@ -90,7 +90,7 @@ export class DeliveriesController {
 
   // DRAFT only.
   @Delete(':id')
-  @RequirePermissions('sales.deliver')
+  @RequirePermissions('sales.delete')
   remove(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
     return this.deliveries.remove(id, actorOf(req));
   }

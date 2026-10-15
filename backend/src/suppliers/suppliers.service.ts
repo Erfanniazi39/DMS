@@ -3,7 +3,8 @@ import { SupplierStatus, type Prisma } from '@prisma/client';
 import { buildOrderBy, toSkipTake, type PaginationParams, type SortParams } from '../common/pagination';
 import { suggestNextCode } from '../common/next-code';
 import { PrismaService } from '../prisma/prisma.service';
-import { AUDIT_ENTITY, AuditService, diffChanges } from '../audit/audit.service';
+import { AUDIT_ENTITY, AuditService, MASKED_AUDIT_VALUE, diffChanges } from '../audit/audit.service';
+import { archiveDeletedRecord } from '../audit/deleted-records';
 import type { CreateSupplierDto, UpdateSupplierDto } from './dto/supplier.dto';
 
 export type SupplierListFilters = { q?: string; status?: string; sort?: SortParams };
@@ -26,6 +27,20 @@ const MASKED_SUPPLIER_FIELDS = ['nationalId'] as const;
 function withoutLegacyBank<T extends { bankName?: unknown; bankAccountNumber?: unknown; bankShebaNumber?: unknown }>(row: T) {
   const { bankName: _name, bankAccountNumber: _number, bankShebaNumber: _sheba, ...rest } = row;
   return rest;
+}
+
+// suppliers.viewSensitive: national/economic identifiers and bank numbers are
+// hidden (masked) from callers without it.
+export type SupplierSensitiveOptions = { canViewSensitive: boolean };
+const SEES_ALL: SupplierSensitiveOptions = { canViewSensitive: true };
+
+function maskTail(value: string | null) {
+  return value ? `${'*'.repeat(Math.max(value.length - 4, 0))}${value.slice(-4)}` : null;
+}
+
+function maskIdentifiers<T extends { nationalId?: string | null; economicCode?: string | null }>(row: T, options: SupplierSensitiveOptions): T {
+  if (options.canViewSensitive) return row;
+  return { ...row, nationalId: row.nationalId ? MASKED_AUDIT_VALUE : null, economicCode: row.economicCode ? MASKED_AUDIT_VALUE : null };
 }
 
 // Everything create/update store, from a validated DTO (omitted = null).
@@ -81,7 +96,7 @@ export class SuppliersService {
   // depend on it). With it, returns one page plus the total matching count:
   // { items, total, page, pageSize }. `q`/`status` filter server-side so
   // search and paging work together on the list page.
-  async list(filters: SupplierListFilters = {}, pagination?: PaginationParams) {
+  async list(filters: SupplierListFilters = {}, pagination?: PaginationParams, options: SupplierSensitiveOptions = SEES_ALL) {
     const where: Prisma.SupplierWhereInput = {};
     if (filters.q) {
       where.OR = [
@@ -101,24 +116,27 @@ export class SuppliersService {
     }
 
     const orderBy = buildOrderBy(filters.sort, SUPPLIER_SORT_COLUMNS, [{ name: 'asc' }, { id: 'asc' }], [{ id: 'asc' }]);
-    if (!pagination) return (await this.prisma.supplier.findMany({ where, orderBy, include: LIST_INCLUDE })).map((row) => flattenTypes(withoutLegacyBank(row)));
+    if (!pagination) return (await this.prisma.supplier.findMany({ where, orderBy, include: LIST_INCLUDE })).map((row) => flattenTypes(maskIdentifiers(withoutLegacyBank(row), options)));
 
     const [items, total] = await Promise.all([
       // id as a tiebreaker keeps page boundaries stable.
       this.prisma.supplier.findMany({ where, orderBy, include: LIST_INCLUDE, ...toSkipTake(pagination) }),
       this.prisma.supplier.count({ where }),
     ]);
-    return { items: items.map((row) => flattenTypes(withoutLegacyBank(row))), total, page: pagination.page, pageSize: pagination.pageSize };
+    return { items: items.map((row) => flattenTypes(maskIdentifiers(withoutLegacyBank(row), options))), total, page: pagination.page, pageSize: pagination.pageSize };
   }
 
-  async get(id: number) {
+  async get(id: number, options: SupplierSensitiveOptions = SEES_ALL) {
     const supplier = await this.findRaw(id);
     const [bankAccounts, types, goods] = await Promise.all([
       this.prisma.supplierBankAccount.findMany({ where: { supplierId: id }, orderBy: [{ isDefault: 'desc' }, { id: 'asc' }] }),
       this.prisma.supplierPurchaseType.findMany({ where: { supplierId: id }, select: { purchaseType: { select: { id: true, code: true, nameFa: true, isActive: true } } } }),
       this.prisma.supplierGood.findMany({ where: { supplierId: id }, orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }], select: { id: true, name: true, note: true } }),
     ]);
-    return { ...withoutLegacyBank(supplier), bankAccounts, purchaseTypes: types.map((link) => link.purchaseType), goods };
+    const visibleAccounts = options.canViewSensitive
+      ? bankAccounts
+      : bankAccounts.map((account) => ({ ...account, accountNumber: maskTail(account.accountNumber), shebaNumber: maskTail(account.shebaNumber) }));
+    return { ...maskIdentifiers(withoutLegacyBank(supplier), options), bankAccounts: visibleAccounts, purchaseTypes: types.map((link) => link.purchaseType), goods };
   }
 
   private async findRaw(id: number) {
@@ -132,7 +150,7 @@ export class SuppliersService {
     return suggestNextCode('SUP', (startsWith) => this.prisma.supplier.findMany({ where: { code: { startsWith } }, select: { code: true } }));
   }
 
-  async create(dto: CreateSupplierDto, userId: number | null = null, ipAddress?: string) {
+  async create(dto: CreateSupplierDto, userId: number | null = null, ipAddress?: string, options: SupplierSensitiveOptions = SEES_ALL) {
     await this.ensureUnique(dto.code, dto.name);
     if (dto.nationalId) await this.ensureUniqueNationalId(dto.nationalId);
     await this.ensurePurchaseTypesUsable(dto.purchaseTypeIds);
@@ -148,18 +166,24 @@ export class SuppliersService {
       await this.audit.log({ userId, ipAddress, action: 'SUPPLIER_CREATED', entityType: AUDIT_ENTITY.SUPPLIER, entityId: row.id, details: row.code }, tx);
       return row;
     });
-    return this.get(created.id);
+    return this.get(created.id, options);
   }
 
   // Full replace (an omitted optional field is cleared). Status rides on the
   // same call; the identity rule only applies while the status is `active`
   // (supplier.dto.ts), so an old incomplete record can still be deactivated.
-  async update(id: number, dto: UpdateSupplierDto, userId: number | null = null, ipAddress?: string) {
+  async update(id: number, dto: UpdateSupplierDto, userId: number | null = null, ipAddress?: string, options: SupplierSensitiveOptions = SEES_ALL) {
     const existing = await this.findRaw(id);
     await this.ensureUnique(dto.code, dto.name, id);
-    if (dto.nationalId) await this.ensureUniqueNationalId(dto.nationalId, id);
+    if (options.canViewSensitive && dto.nationalId) await this.ensureUniqueNationalId(dto.nationalId, id);
     await this.ensurePurchaseTypesUsable(dto.purchaseTypeIds, id);
-    const data = { ...partyData(dto), status: dto.status };
+    // Without suppliers.viewSensitive the identifiers are not shown to the editor,
+    // so they stay as stored instead of being replaced or cleared by the form.
+    const data = {
+      ...partyData(dto),
+      ...(options.canViewSensitive ? {} : { nationalId: existing.nationalId, economicCode: existing.economicCode }),
+      status: dto.status,
+    };
     const changes = diffChanges(existing, data, AUDITED_SUPPLIER_FIELDS, { masked: MASKED_SUPPLIER_FIELDS });
     await this.prisma.$transaction(async (tx) => {
       await tx.supplier.update({ where: { id }, data });
@@ -169,19 +193,23 @@ export class SuppliersService {
       await tx.supplierGood.createMany({ data: dto.goods.map((good, index) => ({ supplierId: id, name: good.name, note: good.note ?? null, sortOrder: index + 1 })) });
       await this.audit.log({ userId, ipAddress, action: 'SUPPLIER_UPDATED', entityType: AUDIT_ENTITY.SUPPLIER, entityId: id, details: existing.code, changes }, tx);
     });
-    return this.get(id);
+    return this.get(id, options);
   }
 
-  async remove(id: number) {
-    await this.findRaw(id);
+  async remove(id: number, userId: number | null = null, ipAddress?: string) {
+    const supplier = await this.prisma.supplier.findUnique({ where: { id }, include: { bankAccounts: true, purchaseTypes: true, goods: true } });
+    if (!supplier) throw new NotFoundException('تأمین‌کننده پیدا نشد');
     const purchaseCount = await this.prisma.purchase.count({ where: { supplierId: id } });
     if (purchaseCount > 0) {
       throw new ConflictException('این تأمین‌کننده دارای سابقه خرید است و قابل حذف نیست.');
     }
     // Bank accounts are child data of the supplier, not history: they go with it.
     await this.prisma.$transaction(async (tx) => {
+      // Complete copy (header, bank accounts, purchase types, goods) so it can be restored whole.
+      await archiveDeletedRecord(tx, { entityType: AUDIT_ENTITY.SUPPLIER, entityId: id, label: supplier.code, record: supplier, userId });
       await tx.supplierBankAccount.deleteMany({ where: { supplierId: id } });
       await tx.supplier.delete({ where: { id } });
+      await this.audit.log({ userId, ipAddress, action: 'SUPPLIER_DELETED', entityType: AUDIT_ENTITY.SUPPLIER, entityId: id, details: supplier.code }, tx);
     });
     return { success: true };
   }

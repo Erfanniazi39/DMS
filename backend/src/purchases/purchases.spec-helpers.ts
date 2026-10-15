@@ -36,7 +36,7 @@ export function createPrismaMock() {
     purchaseRequest: { findUnique: jest.fn() },
     purchaseRequestItem: { count: jest.fn(), findMany: jest.fn().mockResolvedValue([]) },
     unit: { count: jest.fn() },
-    purchasePayment: { create: jest.fn(), findFirst: jest.fn(), findMany: jest.fn(), delete: jest.fn(), update: jest.fn() },
+    purchasePayment: { create: jest.fn(), findFirst: jest.fn(), findMany: jest.fn(), delete: jest.fn(), update: jest.fn(), aggregate: jest.fn().mockResolvedValue({ _sum: { amount: null } }) },
     purchaseDocument: { create: jest.fn(), findFirst: jest.fn(), delete: jest.fn(), update: jest.fn() },
     purchaseReturn: {
       create: jest.fn(),
@@ -121,11 +121,12 @@ export const PAYABLE = { status: 'CONFIRMED', purchaseDate: new Date('2026-01-01
 export const PAY_DATE = new Date('2026-02-01');
 
 export const baseItems: CreatePurchaseDto['items'] = [
-  { name: 'روغن موتور', quantity: 10 as never, unitId: 1, unitPrice: 1000 as never, totalPrice: 10000 as never },
+  // No unitPrice: tests reshape quantity/total freely, and a unit price would make them trip the line-total check.
+  { name: 'روغن موتور', quantity: 10 as never, unitId: 1, totalPrice: 10000 as never },
 ];
 
 // A complete get() row (purchaseDetailInclude shape) with no relations.
-export const fullGet = { updatedAt: VERSION, purchaseType: {}, requesterDepartment: null, buyerEmployee: null, purchaseRequest: null, supplier: {}, items: [], payments: [], documents: [] };
+export const fullGet = { updatedAt: VERSION, sourceType: 'OPERATIONAL', purchaseType: {}, requesterDepartment: null, buyerEmployee: null, purchaseRequest: null, supplier: {}, items: [], payments: [], documents: [] };
 
 export function mockActiveMasterData(prisma: PrismaMock) {
   prisma.purchaseType.findUnique.mockResolvedValue({ id: 1, isActive: true });

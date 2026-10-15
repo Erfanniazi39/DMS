@@ -26,19 +26,8 @@ export const createUserSchema = z.object({
   password: z.string().min(8, 'رمز عبور باید حداقل ۸ کاراکتر باشد'),
   email: optionalEmail,
   phone: optionalPhone,
-  roleName: z.enum([
-    'ADMIN',
-    'DATA_OPERATOR',
-    'PURCHASE_MANAGER',
-    'SALES_MANAGER',
-    'VIEWER',
-    // Sales batch 1 (2026-10-06) — seeded in prisma/seed.ts.
-    'SALESPERSON',
-    'WAREHOUSE',
-    'ACCOUNTANT',
-    // Inventory batch I2 (2026-10-10, B20) — seeded in prisma/seed.ts.
-    'INVENTORY_MANAGER',
-  ]),
+  // Any existing role (built-in or created on the roles screen); UsersService checks it exists.
+  roleName: z.string().trim().min(1, 'نقش را انتخاب کنید').max(80),
   status: z.enum(['ACTIVE', 'DISABLED', 'LOCKED']).default('ACTIVE'),
 });
 

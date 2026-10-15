@@ -52,6 +52,6 @@ export class UsersController {
     @Body(new ZodValidationPipe(updateUserSchema)) dto: UpdateUserDto,
     @Req() req: Request,
   ) {
-    return this.usersService.update(id, dto, req.session.userId ?? null, req.ip);
+    return this.usersService.update(id, dto, req.session.userId ?? null, req.ip, req.sessionID);
   }
 }

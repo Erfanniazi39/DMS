@@ -1,4 +1,5 @@
-import { BadRequestException, Controller, Get, Param, ParseIntPipe, Query, UseGuards } from '@nestjs/common';
+import { BadRequestException, Controller, Get, Param, ParseIntPipe, Post, Query, Req, UseGuards } from '@nestjs/common';
+import type { Request } from 'express';
 import { parsePagination } from '../common/pagination';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
@@ -31,18 +32,32 @@ export class AuditController {
     @Query('entityType') entityType?: string,
     @Query('entityId') entityId?: string,
     @Query('q') q?: string,
+    @Query('restored') restored?: string,
     @Query('page') page?: string,
     @Query('pageSize') pageSize?: string,
   ) {
     const parsedEntityId = entityId ? Number(entityId) : undefined;
     if (parsedEntityId !== undefined && !Number.isInteger(parsedEntityId)) throw new BadRequestException('شناسه نامعتبر است');
     const paging = parsePagination(page ?? '1', pageSize ?? '20')!;
-    return this.deletedRecords.list({ entityType: entityType?.trim() || undefined, entityId: parsedEntityId, q: q?.trim() || undefined, ...paging });
+    return this.deletedRecords.list({ entityType: entityType?.trim() || undefined, entityId: parsedEntityId, q: q?.trim() || undefined, restored: restored === 'true' ? true : restored === 'false' ? false : undefined, ...paging });
   }
 
   @Get('deleted-records/:id')
   getDeleted(@Param('id', ParseIntPipe) id: number) {
     return this.deletedRecords.get(id);
+  }
+
+  // Dry run of a restore — can this snapshot be put back right now, and if not, why.
+  @Get('deleted-records/:id/restore-check')
+  @RequirePermissions('users.create', 'records.restore')
+  checkRestore(@Param('id', ParseIntPipe) id: number) {
+    return this.deletedRecords.checkRestore(id);
+  }
+
+  @Post('deleted-records/:id/restore')
+  @RequirePermissions('users.create', 'records.restore')
+  restore(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
+    return this.deletedRecords.restore(id, req.session.userId ?? null, req.ip);
   }
 
   @Get('activity')

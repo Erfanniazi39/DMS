@@ -38,21 +38,21 @@ export class UnitsController {
 
   @Post()
   @RequirePermissions('purchases.manage')
-  create(@Body(new ZodValidationPipe(createUnitSchema)) dto: CreateUnitDto) {
-    return this.unitsService.create(dto);
+  create(@Body(new ZodValidationPipe(createUnitSchema)) dto: CreateUnitDto, @Req() req: Request) {
+    return this.unitsService.create(dto, req.session.userId ?? null, req.ip);
   }
 
   @Patch(':id')
   @RequirePermissions('purchases.manage')
-  update(@Param('id', ParseIntPipe) id: number, @Body(new ZodValidationPipe(updateUnitSchema)) dto: UpdateUnitDto) {
-    return this.unitsService.update(id, dto);
+  update(@Param('id', ParseIntPipe) id: number, @Body(new ZodValidationPipe(updateUnitSchema)) dto: UpdateUnitDto, @Req() req: Request) {
+    return this.unitsService.update(id, dto, req.session.userId ?? null, req.ip);
   }
 
   // Admin only — gated on users.create, the permission only the ADMIN role
   // holds (same as item-category delete; no new permission row needed).
   @Delete(':id')
   @HttpCode(204)
-  @RequirePermissions('users.create')
+  @RequirePermissions('units.delete')
   async remove(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
     await this.unitsService.remove(id, req.session.userId ?? null, req.ip);
   }

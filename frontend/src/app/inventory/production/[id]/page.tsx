@@ -14,6 +14,7 @@ import { NoAccess, employeeLabel, productionOutputTitle, stockDocumentStatusLabe
 import { FormSection } from "../../adjustments/_form/FormSection";
 import { InboundLinesTable } from "../../_inbound/InboundLinesTable";
 import { useBatchExpiry } from "../../_inbound/useBatchExpiry";
+import { HasPermission } from "@/components/has-permission";
 
 // Production output detail (Inventory batch I5) — same shape as
 // receipts/[id]/page.tsx minus QC (finished goods post straight to ON_HAND).
@@ -157,9 +158,11 @@ export default function ProductionOutputDetailPage() {
                 <Button variant="outline" disabled={busy !== null} onClick={() => router.push(`/inventory/production/${output.id}/edit`)}>
                   ویرایش
                 </Button>
+                <HasPermission code="inventory.delete">
                 <Button variant="destructive" disabled={busy !== null} onClick={() => void remove()}>
                   {busy === "delete" ? "در حال حذف..." : "حذف"}
                 </Button>
+                </HasPermission>
               </>
             ) : null}
             <Link href={`/inventory/production/${output.id}/print`} className={buttonVariants({ variant: "outline" })}>

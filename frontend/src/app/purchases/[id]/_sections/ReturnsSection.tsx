@@ -21,6 +21,7 @@ import {
   type PurchaseStatus,
 } from "../../shared";
 import { DetailSection, type SectionToasts } from "./DetailSection";
+import { HasPermission } from "@/components/has-permission";
 
 // Return to Vendor dialog — one header (date/reason/note) plus one or more
 // lines, each pointing at one of this purchase's own items. creditAmount is
@@ -267,6 +268,7 @@ export function ReturnsSection({
                         </td>
                         <td className="px-3 py-2">
                           {canManageReturns ? (
+                            <HasPermission code="purchases.delete">
                             <Button
                               size="sm"
                               variant="ghost"
@@ -276,6 +278,7 @@ export function ReturnsSection({
                               <Trash2 className="size-4" aria-hidden="true" />
                               حذف
                             </Button>
+                            </HasPermission>
                           ) : null}
                         </td>
                       </tr>

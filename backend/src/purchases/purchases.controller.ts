@@ -131,6 +131,11 @@ export class PurchasesController {
   @Post()
   @RequirePermissions('purchases.manage')
   create(@Body(new ZodValidationPipe(createPurchaseSchema)) dto: CreatePurchaseDto, @Req() req: Request) {
+    // A historical purchase skips the approval rules, so it may only come in through
+    // POST /historical-purchases (which calls the service directly) — never this route.
+    if (dto.sourceType !== 'OPERATIONAL') {
+      throw new BadRequestException('ثبت خرید تاریخی فقط از صفحهٔ «ثبت خرید تاریخی» امکان‌پذیر است');
+    }
     return this.purchasesService.create(dto, req.session.userId ?? null, req.ip);
   }
 
@@ -160,7 +165,7 @@ export class PurchasesController {
   // Narrow on purpose — see PurchasesService.remove() for why (historical
   // data: a purchase with payments or documents attached can't be deleted).
   @Delete(':id')
-  @RequirePermissions('purchases.manage')
+  @RequirePermissions('purchases.delete')
   remove(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
     return this.purchasesService.remove(id, req.session.userId ?? null, req.ip);
   }
@@ -188,7 +193,7 @@ export class PurchasesController {
   }
 
   @Delete(':id/payments/:paymentId')
-  @RequirePermissions('purchases.manage')
+  @RequirePermissions('purchases.delete')
   removePayment(@Param('id', ParseIntPipe) id: number, @Param('paymentId', ParseIntPipe) paymentId: number, @Req() req: Request) {
     return this.paymentsService.removePayment(id, paymentId, req.session.userId ?? null, req.ip);
   }
@@ -219,7 +224,7 @@ export class PurchasesController {
   }
 
   @Delete(':id/returns/:returnId')
-  @RequirePermissions('purchases.manage')
+  @RequirePermissions('purchases.delete')
   removeReturn(@Param('id', ParseIntPipe) id: number, @Param('returnId', ParseIntPipe) returnId: number, @Req() req: Request) {
     return this.returnsService.removeReturn(id, returnId, req.session.userId ?? null, req.ip);
   }

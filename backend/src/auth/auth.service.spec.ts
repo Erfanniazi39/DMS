@@ -10,7 +10,7 @@ jest.mock('argon2');
 
 function createPrismaMock() {
   return {
-    user: { findUnique: jest.fn(), update: jest.fn() },
+    user: { findFirst: jest.fn(), update: jest.fn() },
     auditLog: { create: jest.fn() },
   };
 }
@@ -34,7 +34,7 @@ describe('AuthService', () => {
   it('reports "not_found" for a username that does not exist, without checking any password', async () => {
     const prisma = createPrismaMock();
     const service = new AuthService(prisma as never);
-    (prisma as any).user.findUnique.mockResolvedValue(null);
+    (prisma as any).user.findFirst.mockResolvedValue(null);
 
     const result = await service.attemptLogin('nobody', 'whatever');
 
@@ -45,7 +45,7 @@ describe('AuthService', () => {
   it('reports "locked" for a locked account, without checking the password', async () => {
     const prisma = createPrismaMock();
     const service = new AuthService(prisma as never);
-    (prisma as any).user.findUnique.mockResolvedValue({ ...baseUser, status: 'LOCKED' });
+    (prisma as any).user.findFirst.mockResolvedValue({ ...baseUser, status: 'LOCKED' });
 
     const result = await service.attemptLogin('admin', 'whatever');
 
@@ -56,7 +56,7 @@ describe('AuthService', () => {
   it('reports "disabled" for a disabled account, without checking the password', async () => {
     const prisma = createPrismaMock();
     const service = new AuthService(prisma as never);
-    (prisma as any).user.findUnique.mockResolvedValue({ ...baseUser, status: 'DISABLED' });
+    (prisma as any).user.findFirst.mockResolvedValue({ ...baseUser, status: 'DISABLED' });
 
     const result = await service.attemptLogin('admin', 'whatever');
 
@@ -67,7 +67,7 @@ describe('AuthService', () => {
   it('reports "invalid_password" for an active account with a wrong password', async () => {
     const prisma = createPrismaMock();
     const service = new AuthService(prisma as never);
-    (prisma as any).user.findUnique.mockResolvedValue(baseUser);
+    (prisma as any).user.findFirst.mockResolvedValue(baseUser);
     (argon2.verify as jest.Mock).mockResolvedValue(false);
 
     const result = await service.attemptLogin('admin', 'wrong-password');
@@ -78,7 +78,7 @@ describe('AuthService', () => {
   it('reports "ok" with the full user for a correct password on an active account', async () => {
     const prisma = createPrismaMock();
     const service = new AuthService(prisma as never);
-    (prisma as any).user.findUnique.mockResolvedValue(baseUser);
+    (prisma as any).user.findFirst.mockResolvedValue(baseUser);
     (argon2.verify as jest.Mock).mockResolvedValue(true);
 
     const result = await service.attemptLogin('admin', 'correct-password');

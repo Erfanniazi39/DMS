@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type MouseEvent } from "react";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogBody, DialogCloseButton, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { apiFetch, type ApiError } from "@/lib/api";
 import { roleLabel } from "@/lib/roles";
@@ -21,6 +22,7 @@ function RoleSection() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   async function load() {
     setLoading(true);
@@ -65,6 +67,24 @@ function RoleSection() {
       await load();
     } catch (error) {
       setMessage((error as ApiError).message ?? "ذخیره دسترسی‌ها ناموفق بود.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function deleteRole() {
+    if (selectedId === null) return;
+    setSaving(true);
+    setMessage(null);
+    try {
+      await apiFetch(`/access/roles/${selectedId}`, { method: "DELETE" });
+      setConfirmDelete(false);
+      setSelectedId(null);
+      setMessage("نقش حذف شد.");
+      await load();
+    } catch (error) {
+      setConfirmDelete(false);
+      setMessage((error as ApiError).message ?? "حذف نقش ناموفق بود.");
     } finally {
       setSaving(false);
     }
@@ -119,12 +139,32 @@ function RoleSection() {
           <CardContent>
             {selectedRole ? <div className="space-y-5">
               <PermissionPicker permissions={permissions} selected={selectedPermissions} onChange={setSelectedPermissions} />
-              <Button onClick={savePermissions} disabled={saving}>{saving ? "در حال ذخیره..." : "ذخیره دسترسی‌ها"}</Button>
+              <div className="flex flex-wrap gap-2">
+                <Button onClick={savePermissions} disabled={saving}>{saving ? "در حال ذخیره..." : "ذخیره دسترسی‌ها"}</Button>
+                {selectedRole.name !== "ADMIN" ? <Button variant="destructive" onClick={() => setConfirmDelete(true)} disabled={saving}>حذف نقش</Button> : null}
+              </div>
               {message ? <p className="text-sm text-muted-foreground" role="status">{message}</p> : null}
             </div> : <p className="text-sm text-muted-foreground">نقشی برای نمایش وجود ندارد.</p>}
           </CardContent>
         </Card>
       </div>
+      <Dialog open={confirmDelete} onOpenChange={(open) => (!open && !saving ? setConfirmDelete(false) : undefined)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>حذف نقش</DialogTitle>
+            <DialogCloseButton />
+          </DialogHeader>
+          <DialogBody>
+            <p className="text-sm">
+              نقش «{selectedRole ? roleLabel(selectedRole.name) : ""}» حذف شود؟ اگر این نقش به کاربری داده شده یا در قوانین گردش کار استفاده شده باشد، حذف انجام نمی‌شود.
+            </p>
+          </DialogBody>
+          <DialogFooter>
+            <Button variant="destructive" onClick={deleteRole} disabled={saving}>{saving ? "در حال حذف..." : "حذف"}</Button>
+            <Button variant="outline" onClick={() => setConfirmDelete(false)} disabled={saving}>انصراف</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </section>
   );
 }

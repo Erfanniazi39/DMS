@@ -2,7 +2,7 @@ import { ConflictException, Injectable, NotFoundException } from '@nestjs/common
 import { Prisma } from '@prisma/client';
 import { suggestNextCode } from '../common/next-code';
 import { PrismaService } from '../prisma/prisma.service';
-import { AUDIT_ENTITY, AuditService } from '../audit/audit.service';
+import { AUDIT_ENTITY, AuditService, diffChanges, masterDataUpdateAction } from '../audit/audit.service';
 import { archiveDeletedRecord } from '../audit/deleted-records';
 import type { CreateUnitDto, UpdateUnitDto } from './dto/unit.dto';
 
@@ -36,7 +36,7 @@ export class UnitsService {
     return suggestNextCode('UNT', (startsWith) => this.prisma.unit.findMany({ where: { code: { startsWith } }, select: { code: true } }));
   }
 
-  async create(dto: CreateUnitDto) {
+  async create(dto: CreateUnitDto, userId: number | null = null, ipAddress?: string) {
     await this.ensureUnique(dto.code, dto.nameFa);
 
     let sortOrder = dto.sortOrder;
@@ -45,7 +45,7 @@ export class UnitsService {
       sortOrder = (_max.sortOrder ?? 0) + 1;
     }
 
-    return this.prisma.unit.create({
+    const created = await this.prisma.unit.create({
       data: {
         code: dto.code,
         nameEn: dto.nameEn,
@@ -54,15 +54,17 @@ export class UnitsService {
         sortOrder,
       },
     });
+    await this.audit.log({ userId, ipAddress, action: 'UNIT_CREATED', entityType: AUDIT_ENTITY.UNIT, entityId: created.id, details: `${created.code} — ${created.nameFa}` });
+    return created;
   }
 
-  async update(id: number, dto: UpdateUnitDto) {
+  async update(id: number, dto: UpdateUnitDto, userId: number | null = null, ipAddress?: string) {
     const existing = await this.prisma.unit.findUnique({ where: { id } });
     if (!existing) throw new NotFoundException('واحد پیدا نشد');
 
     await this.ensureUnique(dto.code, dto.nameFa, id);
 
-    return this.prisma.unit.update({
+    const updated = await this.prisma.unit.update({
       where: { id },
       data: {
         code: dto.code,
@@ -72,6 +74,13 @@ export class UnitsService {
         sortOrder: dto.sortOrder,
       },
     });
+    // Activating / deactivating gets its own action so the activity feed reads «غیرفعال کردن واحد».
+    const changes = diffChanges(existing, updated, ['code', 'nameEn', 'nameFa', 'isActive', 'sortOrder']);
+    if (changes.length > 0) {
+      const action = masterDataUpdateAction('UNIT', changes, 'isActive', updated.isActive);
+      await this.audit.log({ userId, ipAddress, action, entityType: AUDIT_ENTITY.UNIT, entityId: id, details: `${updated.code} — ${updated.nameFa}`, changes });
+    }
+    return updated;
   }
 
   // Same rule as PurchaseTypesService.create(): reject a duplicate code

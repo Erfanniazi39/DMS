@@ -4,7 +4,9 @@ import { randomUUID } from 'crypto';
 import { toSkipTake, type PaginationParams, buildOrderBy, type SortParams } from '../common/pagination';
 import { isSameVersion, recordModifiedConflict } from '../common/optimistic-lock';
 import { PurchaseQuantitiesService } from './purchase-quantities.service';
-import { derivePaymentStatus, sumItemTotals } from './purchase-totals';
+import { derivePaymentStatus, findLineTotalMismatches, recomputePaymentTotals, sumItemTotals } from './purchase-totals';
+import type { RestoreContext, RestoreResult } from '../audit/restore/restore.types';
+import { rowsOf, scalarData } from '../audit/restore/snapshot-data';
 import { PrismaService } from '../prisma/prisma.service';
 import { ACTIVE_DEPARTMENT_STATUS } from '../departments/department-rules';
 import { ensureActiveUnits } from '../units/unit-rules';
@@ -33,6 +35,9 @@ const COMMITTED_STATUSES: PurchaseStatus[] = ['CONFIRMED', 'RECEIVED', 'CLOSED']
 // Distinct, frontend-detectable 409 for "this purchase buys more than the
 // linked request line still needs" — see ensureRequestOverageConfirmed().
 export const PURCHASE_QUANTITY_EXCEEDS_REQUEST = 'PURCHASE_QUANTITY_EXCEEDS_REQUEST';
+
+// 409 code: a line's total differs from quantity × unit price — resubmit with confirmTotalMismatch.
+export const PURCHASE_LINE_TOTAL_MISMATCH = 'PURCHASE_LINE_TOTAL_MISMATCH';
 
 export type PurchaseListFilters = {
   q?: string;
@@ -194,6 +199,7 @@ export class PurchasesService {
     await this.ensureUnits(dto.items.map((item) => item.unitId));
     await this.ensurePurchaseRequestItems(dto.purchaseRequestId, dto.items);
     const totalAmount = sumItemTotals(dto.items);
+    this.ensureLineTotalsConfirmed(dto.items, dto.confirmTotalMismatch);
     await this.ensureRequestOverageConfirmed(dto.purchaseRequestId, dto.items, dto.confirmOverage);
 
     const facts = purchaseWorkflowFacts(dto);
@@ -273,6 +279,10 @@ export class PurchasesService {
     if (dto.status !== existing.status) {
       throw new ConflictException('تغییر وضعیت از این مسیر مجاز نیست — از دکمه‌های وضعیت استفاده کنید.');
     }
+    // The source decides whether approval rules apply, so it is fixed at creation.
+    if (dto.sourceType !== existing.sourceType) {
+      throw new ConflictException('نوع منبع خرید (عملیاتی/تاریخی) پس از ثبت قابل تغییر نیست.');
+    }
     if (existing.status === 'PENDING_APPROVAL') {
       throw new ConflictException('خریدِ در انتظار تأیید قابل ویرایش نیست. برای ویرایش، ابتدا درخواست تأیید را پس بگیرید.');
     }
@@ -305,6 +315,7 @@ export class PurchasesService {
     await this.ensurePurchaseRequestItems(dto.purchaseRequestId, dto.items);
 
     const totalAmount = sumItemTotals(dto.items);
+    this.ensureLineTotalsConfirmed(dto.items, dto.confirmTotalMismatch);
     // A CANCELLED purchase counts toward nothing, so it can't over-buy
     // (dto.status === existing.status here — see the guard above).
     if (dto.status !== 'CANCELLED') {
@@ -469,6 +480,45 @@ export class PurchasesService {
     return { success: true };
   }
 
+  // Restore from the delete archive (called by PurchasesRestorer). A purchase
+  // could only be deleted without payments, documents or returns, so the
+  // snapshot is the header plus its items. Rules kept here, in the owning
+  // module: the paid amount / payment status are re-derived by
+  // recomputePaymentTotals (rule 6), a purchase that was waiting for approval
+  // comes back as a DRAFT (its approval request was cancelled at delete), and
+  // restoring may not push the linked purchase request past its requested
+  // quantity. The request's own status is recomputed after commit.
+  async restoreDeleted({ record, tx, userId, ipAddress }: RestoreContext): Promise<RestoreResult> {
+    const items = rowsOf(record.items);
+    const requestId = record.purchaseRequestId === null || record.purchaseRequestId === undefined ? undefined : Number(record.purchaseRequestId);
+    if (requestId) {
+      try {
+        await this.ensureRequestOverageConfirmed(
+          requestId,
+          items.map((item) => ({ quantity: Number(item.quantity), purchaseRequestItemId: item.purchaseRequestItemId == null ? undefined : Number(item.purchaseRequestItemId) })),
+          false,
+        );
+      } catch (error) {
+        if (error instanceof ConflictException) {
+          throw new ConflictException('بازیابی این خرید باعث می‌شود مقدار خریدشده از مقدار درخواست خرید مرتبط بیشتر شود؛ بازیابی انجام نشد');
+        }
+        throw error;
+      }
+    }
+    const wasPending = record.status === 'PENDING_APPROVAL';
+    const created = await tx.purchase.create({
+      data: scalarData('Purchase', record, { status: wasPending ? 'DRAFT' : record.status, paidAmount: 0, paymentStatus: 'UNPAID', totalAmount: sumItemTotals(items.map((item) => ({ totalPrice: Number(item.totalPrice) }))) }) as never,
+    });
+    await tx.purchaseItem.createMany({ data: items.map((item) => scalarData('PurchaseItem', item) as never) });
+    await recomputePaymentTotals(tx, created.id, sumItemTotals(items.map((item) => ({ totalPrice: Number(item.totalPrice) }))));
+    await this.audit.log({ userId, ipAddress, action: 'PURCHASE_RESTORED', entityType: AUDIT_ENTITY.PURCHASE, entityId: created.id, details: created.purchaseNumber }, tx);
+    return {
+      entityId: created.id,
+      warnings: wasPending ? ['این خرید در انتظار تأیید بود؛ به‌صورت پیش‌نویس بازیابی شد و برای تأیید باید دوباره ارسال شود.'] : [],
+      afterCommit: requestId ? () => this.purchaseRequestsService.recomputeStatus(requestId, userId, ipAddress) : undefined,
+    };
+  }
+
   // ─── Workflow approval ───────────────────────────────────────────────────
 
   // POST /purchases/approval-preview: would this purchase need approval if
@@ -600,6 +650,18 @@ export class PurchasesService {
   // so the frontend can show a confirm dialog and resubmit with the flag.
   // "Already purchased" = every other non-cancelled purchase (this one
   // excluded on update), via the Purchases-owned quantity rule.
+  private ensureLineTotalsConfirmed(items: { name: string; quantity: number; unitPrice?: number | null; totalPrice: number }[], confirmed: boolean | undefined) {
+    const mismatches = findLineTotalMismatches(items);
+    if (mismatches.length === 0 || confirmed) return;
+    const summary = mismatches.map((line) => `ردیف ${line.line} «${line.name}» (مبلغ واردشده ${line.entered.toLocaleString('en-US')} به‌جای ${line.expected.toLocaleString('en-US')})`).join('، ');
+    throw new ConflictException({
+      statusCode: 409,
+      code: PURCHASE_LINE_TOTAL_MISMATCH,
+      message: `قیمت کل ردیف با مقدار × قیمت واحد برابر نیست: ${summary}. برای ادامه، مغایرت را تأیید کنید.`,
+      details: { mismatches },
+    });
+  }
+
   private async ensureRequestOverageConfirmed(
     purchaseRequestId: number | undefined,
     items: { quantity: number; purchaseRequestItemId?: number }[],

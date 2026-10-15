@@ -24,6 +24,7 @@ import {
 } from "./shared";
 import { SortHeader, useTableSort } from "@/components/ui/sortable";
 import { sortQuery } from "@/lib/table-sort";
+import { HasPermission } from "@/components/has-permission";
 
 // Same dense toolbar sizing as the Sales Orders / Purchases lists.
 const toolbarFieldLabel = "text-[11px] font-medium uppercase tracking-wide text-muted-foreground";
@@ -353,9 +354,11 @@ function ListTab({ canDeliver, pushError, pushSuccess }: { canDeliver: boolean; 
                           >
                             ویرایش
                           </Button>
+                          <HasPermission code="sales.delete">
                           <Button variant="ghost" size="sm" className="text-destructive hover:bg-destructive/10 hover:text-destructive" onClick={(event) => void deleteDraft(event, delivery)}>
                             حذف
                           </Button>
+                          </HasPermission>
                         </div>
                       ) : null}
                     </td>

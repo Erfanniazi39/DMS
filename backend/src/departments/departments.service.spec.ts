@@ -18,7 +18,7 @@ function createPrismaMock() {
 describe('DepartmentsService', () => {
   it('lists departments with status and notes', async () => {
     const prisma = createPrismaMock();
-    const service = new DepartmentsService(prisma as never);
+    const service = new DepartmentsService(prisma as never, { log: jest.fn() } as never);
     const rows = [{ id: 1, code: 'MODIRIAT', name: 'مدیریت', status: 'active', note: null }];
     (prisma as any).department.findMany.mockResolvedValue(rows);
 
@@ -28,7 +28,7 @@ describe('DepartmentsService', () => {
 
   it('rejects duplicate code or name without creating a department', async () => {
     const prisma = createPrismaMock();
-    const service = new DepartmentsService(prisma as never);
+    const service = new DepartmentsService(prisma as never, { log: jest.fn() } as never);
     (prisma as any).department.findFirst.mockResolvedValue({ code: 'PURCHASE', name: 'خرید' });
 
     await expect(service.create({ code: 'PURCHASE', name: 'خرید' })).rejects.toBeInstanceOf(ConflictException);
@@ -37,7 +37,7 @@ describe('DepartmentsService', () => {
 
   it('updates a department and its status while preserving the same record', async () => {
     const prisma = createPrismaMock();
-    const service = new DepartmentsService(prisma as never);
+    const service = new DepartmentsService(prisma as never, { log: jest.fn() } as never);
     const existing = { id: 2, code: 'PURCHASE', name: 'خرید', status: 'active', note: null };
     const updated = { ...existing, status: 'inactive', note: 'غیرفعال موقت' };
     (prisma as any).department.findUnique.mockResolvedValue(existing);
@@ -50,7 +50,7 @@ describe('DepartmentsService', () => {
 
   it('reports a missing department without modifying data', async () => {
     const prisma = createPrismaMock();
-    const service = new DepartmentsService(prisma as never);
+    const service = new DepartmentsService(prisma as never, { log: jest.fn() } as never);
     (prisma as any).department.findUnique.mockResolvedValue(null);
 
     await expect(service.update(999, { code: 'UNKNOWN', name: 'ناموجود', status: 'active', note: '' })).rejects.toBeInstanceOf(NotFoundException);
@@ -59,7 +59,7 @@ describe('DepartmentsService', () => {
 
   it('rejects deleting a department used by an employee', async () => {
     const prisma = createPrismaMock();
-    const service = new DepartmentsService(prisma as never);
+    const service = new DepartmentsService(prisma as never, { log: jest.fn() } as never);
     (prisma as any).department.findUnique.mockResolvedValue({ id: 1 });
     (prisma as any).employee.count.mockResolvedValue(1);
 
@@ -69,9 +69,10 @@ describe('DepartmentsService', () => {
 
   it('deletes an unused department', async () => {
     const prisma = createPrismaMock();
-    const service = new DepartmentsService(prisma as never);
+    const service = new DepartmentsService(prisma as never, { log: jest.fn() } as never);
     (prisma as any).department.findUnique.mockResolvedValue({ id: 2 });
     (prisma as any).employee.count.mockResolvedValue(0);
+    (prisma as any).$transaction = jest.fn(async (fn: (tx: unknown) => unknown) => fn({ department: (prisma as any).department, deletedRecord: { create: jest.fn() } }));
 
     await expect(service.remove(2)).resolves.toEqual({ success: true });
     expect((prisma as any).department.delete).toHaveBeenCalledWith({ where: { id: 2 } });

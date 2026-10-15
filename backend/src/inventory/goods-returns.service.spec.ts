@@ -343,11 +343,15 @@ describe('GoodsReturnsService', () => {
 
 describe('GoodsReturnsController — permission gates (I8)', () => {
   const proto = GoodsReturnsController.prototype;
+  it('deleting a draft needs its own delete permission (inventory.delete)', () => {
+    expect(Reflect.getMetadata(PERMISSIONS_KEY, proto.remove)).toEqual(['inventory.delete']);
+  });
+
   it('reads need inventory.view', () => {
     for (const method of [proto.list, proto.get]) expect(Reflect.getMetadata(PERMISSIONS_KEY, method)).toEqual(['inventory.view']);
   });
   it('every write and the form pickers need inventory.receive — the same permission as goods receipts', () => {
-    for (const method of [proto.create, proto.update, proto.post, proto.remove, proto.formOptions, proto.goodsReceiptOptions]) {
+    for (const method of [proto.create, proto.update, proto.post, proto.formOptions, proto.goodsReceiptOptions]) {
       expect(Reflect.getMetadata(PERMISSIONS_KEY, method)).toEqual(['inventory.receive']);
     }
   });

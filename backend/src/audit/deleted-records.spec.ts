@@ -1,16 +1,21 @@
 import { Prisma } from '@prisma/client';
-import { archiveDeletedRecord, retentionDays, toSnapshot } from './deleted-records';
+import { archiveDeletedRecord, maskForDisplay, retentionDays, toSnapshot } from './deleted-records';
 import { DeletedRecordsService } from './deleted-records.service';
 
 describe('deleted-records snapshots', () => {
-  it('serialises Decimals/Dates and masks sensitive keys at any depth', () => {
-    const snapshot = toSnapshot({
+  it('stores the COMPLETE record (nothing masked) so a restore brings back everything', () => {
+    const snapshot = toSnapshot({ id: 1, nationalId: '0012345678', nested: { shebaNumber: 'IR000' } });
+    expect(snapshot).toEqual({ id: 1, nationalId: '0012345678', nested: { shebaNumber: 'IR000' } });
+  });
+
+  it('serialises Decimals/Dates and masks sensitive keys at any depth ONLY when displaying', () => {
+    const snapshot = maskForDisplay(toSnapshot({
       id: 1,
       nationalId: '0012345678',
       total: new Prisma.Decimal('12.50'),
       when: new Date('2026-10-13T00:00:00.000Z'),
       nested: { shebaNumber: 'IR000', note: null, nationalId: null },
-    });
+    }));
     expect(snapshot).toEqual({ id: 1, nationalId: '***', total: '12.5', when: '2026-10-13T00:00:00.000Z', nested: { shebaNumber: '***', note: null, nationalId: null } });
   });
 
@@ -32,7 +37,7 @@ describe('deleted-records snapshots', () => {
     const prisma = {
       deletedRecord: { deleteMany: jest.fn().mockResolvedValue({ count: 3 }), count: jest.fn().mockResolvedValue(0), findMany: jest.fn().mockResolvedValue([]), findFirst: jest.fn().mockResolvedValue(null) },
     };
-    const service = new DeletedRecordsService(prisma as never);
+    const service = new DeletedRecordsService(prisma as never, { has: () => false } as never, { log: jest.fn() } as never);
     const now = new Date('2026-10-13');
     await expect(service.purgeExpired(now)).resolves.toBe(3);
     expect(prisma.deletedRecord.deleteMany).toHaveBeenCalledWith({ where: { expiresAt: { lt: now } } });

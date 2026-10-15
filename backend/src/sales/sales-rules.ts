@@ -125,10 +125,11 @@ export const SALES_INVOICE_DRAFT_EXISTS = 'SALES_INVOICE_DRAFT_EXISTS';
 
 // Why a DRAFT needs a sales.approve holder before it can be CONFIRMED
 // (build plan §5 row 1, B3, B4).
-export type SalesOrderApprovalReason = 'DISCOUNT' | 'CREDIT_LIMIT';
+export type SalesOrderApprovalReason = 'DISCOUNT' | 'PRICE_OVERRIDE' | 'CREDIT_LIMIT';
 
 export const SALES_ORDER_APPROVAL_REASON_LABELS_FA: Record<SalesOrderApprovalReason, string> = {
   DISCOUNT: 'سفارش دارای تخفیف است',
+  PRICE_OVERRIDE: 'قیمت یک یا چند ردیف کمتر از قیمت فهرست است',
   CREDIT_LIMIT: 'سقف اعتبار مشتری کافی نیست',
 };
 

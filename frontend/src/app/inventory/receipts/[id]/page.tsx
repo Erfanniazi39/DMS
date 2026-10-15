@@ -24,6 +24,7 @@ import {
 import { FormSection } from "../../adjustments/_form/FormSection";
 import { InboundLinesTable } from "../../_inbound/InboundLinesTable";
 import { useBatchExpiry } from "../../_inbound/useBatchExpiry";
+import { HasPermission } from "@/components/has-permission";
 
 // Goods receipt detail (Inventory batch I5) — modelled on
 // adjustments/[id]/page.tsx. A DRAFT can be edited, deleted, or posted
@@ -238,9 +239,11 @@ export default function GoodsReceiptDetailPage() {
                 <Button variant="outline" disabled={busy !== null} onClick={() => router.push(`/inventory/receipts/${receipt.id}/edit`)}>
                   ویرایش
                 </Button>
+                <HasPermission code="inventory.delete">
                 <Button variant="destructive" disabled={busy !== null} onClick={() => void remove()}>
                   {busy === "delete" ? "در حال حذف..." : "حذف"}
                 </Button>
+                </HasPermission>
               </>
             ) : null}
             <Link href={`/inventory/receipts/${receipt.id}/print`} className={buttonVariants({ variant: "outline" })}>

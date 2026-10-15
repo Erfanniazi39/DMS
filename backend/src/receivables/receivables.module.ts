@@ -12,6 +12,7 @@ import { HistoricalSalesService } from './historical-sales.service';
 import { QuickSaleController } from './quick-sale.controller';
 import { QuickSaleService } from './quick-sale.service';
 import { ReceivablesController } from './receivables.controller';
+import { CreditNotesRestorer } from './credit-notes.restorer';
 
 // Dependency direction (build plan §3): receivables → sales → inventory.
 // Imports SalesModule for SalesInvoicesService (applySettlement(),
@@ -25,7 +26,8 @@ import { ReceivablesController } from './receivables.controller';
 @Module({
   imports: [SalesModule],
   controllers: [ReceivablesController, CreditNotesController, QuickSaleController, HistoricalSalesController, CustomerPaymentFilesController],
-  providers: [CustomerPaymentsService, PaymentAllocationsService, CustomerBalancesService, CreditNotesService, QuickSaleService, HistoricalSalesService, CustomerPaymentDocumentsService],
+  providers: [
+    CreditNotesRestorer,CustomerPaymentsService, PaymentAllocationsService, CustomerBalancesService, CreditNotesService, QuickSaleService, HistoricalSalesService, CustomerPaymentDocumentsService],
   exports: [CustomerPaymentsService, PaymentAllocationsService, CustomerBalancesService, CreditNotesService, QuickSaleService],
 })
 export class ReceivablesModule {}

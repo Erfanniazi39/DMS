@@ -139,7 +139,7 @@ describe('PurchasePaymentsService', () => {
     ]);
     // The real $transaction rolls back when its callback throws; here we
     // just assert the throw happens inside it, before any purchase/audit write.
-    await expect(service.addPayment(8, { amount: 999_999_999_999_999, status: 'COMPLETED', paymentDate: PAY_DATE } as never, 9, undefined)).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.addPayment(8, { amount: 999_999_999_999_999, status: 'COMPLETED', confirmOverpayment: true, paymentDate: PAY_DATE } as never, 9, undefined)).rejects.toBeInstanceOf(BadRequestException);
     expect(prisma.purchase.update).not.toHaveBeenCalled();
     expect(prisma.auditLog.create).not.toHaveBeenCalled();
   });
@@ -150,14 +150,39 @@ describe('PurchasePaymentsService', () => {
 
   // #1 Overpayment: allowed (no blocking), derived as PAID; the response
   // (get()) carries both totalAmount and paidAmount for the UI to flag it.
-  it('#1 allows a payment that pushes paidAmount above totalAmount (overpayment is surfaced by the UI, not blocked)', async () => {
+  it('#1 refuses a payment that pushes paidAmount above totalAmount with a detectable 409 until the user confirms it', async () => {
+    const prisma = createPrismaMock();
+    prisma.purchase.findUnique.mockResolvedValue({ id: 8, totalAmount: 10000, ...fullGet, ...PAYABLE });
+    prisma.purchasePayment.aggregate.mockResolvedValue({ _sum: { amount: 4000 } });
+
+    const error = await svc(prisma).addPayment(8, { amount: 7000, status: 'COMPLETED', paymentDate: PAY_DATE } as never, 9, undefined).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(ConflictException);
+    expect((error as ConflictException).getResponse()).toMatchObject({ code: 'PAYMENT_EXCEEDS_TOTAL', details: { totalAmount: 10000, paidAfter: 11000, excess: 1000 } });
+    expect(prisma.purchasePayment.create).not.toHaveBeenCalled();
+  });
+
+  it('#1 a pending payment, or one that exactly fills the total, needs no confirmation', async () => {
+    const prisma = createPrismaMock();
+    prisma.purchase.findUnique.mockResolvedValue({ id: 8, totalAmount: 10000, ...fullGet, ...PAYABLE });
+    prisma.purchasePayment.aggregate.mockResolvedValue({ _sum: { amount: 4000 } });
+    prisma.purchasePayment.create.mockResolvedValue({ id: 4, amount: 6000, status: 'COMPLETED' });
+    prisma.purchasePayment.findMany.mockResolvedValue([{ status: 'COMPLETED', amount: 10000 }]);
+
+    await svc(prisma).addPayment(8, { amount: 6000, status: 'COMPLETED', paymentDate: PAY_DATE } as never, 9, undefined);
+    await svc(prisma).addPayment(8, { amount: 99999, status: 'PENDING', paymentDate: PAY_DATE } as never, 9, undefined);
+    expect(prisma.purchasePayment.create).toHaveBeenCalledTimes(2);
+  });
+
+  it('#1 allows a payment that pushes paidAmount above totalAmount once confirmOverpayment is set (the flag is never stored)', async () => {
     const prisma = createPrismaMock();
     prisma.purchase.findUnique.mockResolvedValue({ id: 8, totalAmount: 10000, paidAmount: 12000, ...fullGet, ...PAYABLE });
     prisma.purchasePayment.create.mockResolvedValue({ id: 3, amount: 12000, status: 'COMPLETED' });
     prisma.purchasePayment.findMany.mockResolvedValue([{ status: 'COMPLETED', amount: 12000 }]);
 
-    const result = await svc(prisma).addPayment(8, { amount: 12000, status: 'COMPLETED', paymentDate: PAY_DATE } as never, 9, undefined);
+    const result = await svc(prisma).addPayment(8, { amount: 12000, status: 'COMPLETED', confirmOverpayment: true, paymentDate: PAY_DATE } as never, 9, undefined);
 
+    expect(prisma.purchasePayment.create.mock.calls[0][0].data).not.toHaveProperty('confirmOverpayment');
     expect(prisma.purchase.update).toHaveBeenCalledWith(expect.objectContaining({ data: { paidAmount: 12000, paymentStatus: 'PAID' } }));
     expect(result).toMatchObject({ totalAmount: 10000, paidAmount: 12000 });
   });

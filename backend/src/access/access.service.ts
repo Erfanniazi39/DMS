@@ -1,14 +1,25 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { AUDIT_ENTITY, AuditService } from '../audit/audit.service';
+import { archiveDeletedRecord } from '../audit/deleted-records';
+import { clearSessionAccessCache } from '../auth/session-access';
 import { PrismaService } from '../prisma/prisma.service';
 
 export const PERMISSION_CATALOG = [
   { code: 'users.create', label: 'ایجاد کاربر', module: 'کاربران' },
   { code: 'users.disable', label: 'غیرفعال کردن کاربر', module: 'کاربران' },
+  // Restoring a deleted record from the delete archive (admin panel).
+  { code: 'records.restore', label: 'بازیابی سوابق حذف‌شده', module: 'کاربران' },
   { code: 'suppliers.view', label: 'مشاهده تأمین‌کنندگان', module: 'تأمین‌کنندگان' },
   { code: 'suppliers.manage', label: 'مدیریت تأمین‌کنندگان', module: 'تأمین‌کنندگان' },
+  { code: 'suppliers.delete', label: 'حذف تأمین‌کنندگان', module: 'تأمین‌کنندگان' },
+  // Bank accounts and national/economic identifiers of suppliers; without it they are hidden.
+  { code: 'suppliers.viewSensitive', label: 'مشاهده اطلاعات حساس تأمین‌کنندگان (کد ملی، حساب بانکی)', module: 'تأمین‌کنندگان' },
   { code: 'customers.view', label: 'مشاهده مشتریان', module: 'مشتریان' },
   { code: 'customers.manage', label: 'مدیریت مشتریان', module: 'مشتریان' },
+  { code: 'customers.delete', label: 'حذف مشتریان', module: 'مشتریان' },
+  // National/economic identifiers and bank accounts of customers; without it they are hidden.
+  { code: 'customers.viewSensitive', label: 'مشاهده اطلاعات حساس مشتریان (کد ملی، حساب بانکی)', module: 'مشتریان' },
   // Editing a customer's credit/payment policy (CustomerFinancialProfile) —
   // deliberately separate from customers.manage (business decision 2026-10-06).
   { code: 'customers.finance', label: 'مدیریت اطلاعات مالی مشتریان', module: 'مشتریان' },
@@ -16,18 +27,24 @@ export const PERMISSION_CATALOG = [
   { code: 'customers.archive', label: 'بایگانی مشتریان', module: 'مشتریان' },
   { code: 'employees.view', label: 'مشاهده کارکنان', module: 'کارکنان' },
   { code: 'employees.manage', label: 'مدیریت کارکنان', module: 'کارکنان' },
+  { code: 'employees.delete', label: 'حذف کارکنان و دپارتمان‌ها', module: 'کارکنان' },
   { code: 'purchases.view', label: 'مشاهده خرید', module: 'خرید' },
   { code: 'purchases.manage', label: 'مدیریت خرید', module: 'خرید' },
   { code: 'purchases.edit', label: 'ویرایش خرید', module: 'خرید' },
+  { code: 'purchases.delete', label: 'حذف خرید', module: 'خرید' },
   // Covers both Item and Item Category (one master-data domain).
   { code: 'items.view', label: 'مشاهده کالاها', module: 'کالاها' },
   { code: 'items.manage', label: 'مدیریت کالاها', module: 'کالاها' },
+  { code: 'items.delete', label: 'حذف کالاها', module: 'کالاها' },
+  { code: 'itemCategories.delete', label: 'حذف دسته‌بندی کالا', module: 'کالاها' },
+  { code: 'units.delete', label: 'حذف واحدها', module: 'کالاها' },
   // Sales permission set (Sales batch 1, 2026-10-06) — all added at once so
   // the seed only changes once; most get their routes in later batches.
   // Separation of duties: no single role sells, delivers and collects.
   { code: 'sales.view', label: 'مشاهده فروش', module: 'فروش' },
   { code: 'sales.manage', label: 'مدیریت فروش', module: 'فروش' },
   { code: 'sales.edit', label: 'ویرایش فروش', module: 'فروش' },
+  { code: 'sales.delete', label: 'حذف اسناد فروش', module: 'فروش' },
   { code: 'sales.approve', label: 'تأیید فروش', module: 'فروش' },
   { code: 'sales.deliver', label: 'تحویل کالا', module: 'فروش' },
   { code: 'sales.invoice', label: 'صدور فاکتور', module: 'فروش' },
@@ -40,6 +57,7 @@ export const PERMISSION_CATALOG = [
   { code: 'inventory.view', label: 'مشاهده موجودی', module: 'موجودی' },
   { code: 'inventory.adjust', label: 'اصلاح موجودی', module: 'موجودی' },
   { code: 'inventory.approve', label: 'تأیید اسناد موجودی', module: 'موجودی' },
+  { code: 'inventory.delete', label: 'حذف اسناد موجودی', module: 'موجودی' },
   // I3: locations, stock levels (min/reorder/max), item inventory settings,
   // batch correction — admin-level inventory configuration, never granted to
   // WAREHOUSE or SALES_MANAGER. Also now gates GET /inventory/integrity
@@ -130,8 +148,43 @@ export class AccessService {
         include: { permissions: { include: { permission: true } } },
       });
     });
+    clearSessionAccessCache(); // every holder of the role gets the new permissions on their next request
     await this.audit.log({ userId: actorId, action: 'ROLE_PERMISSIONS_UPDATED', entityType: AUDIT_ENTITY.ROLE, entityId: id, details: `${role.name} · ${permissions.length} دسترسی`, ipAddress });
     return updated;
+  }
+
+  // Admin-only (controller). The ADMIN role itself is never deletable, and a role
+  // still assigned to users or named as an approver in a workflow rule is refused —
+  // move those first. Role-permission rows go with the role.
+  async deleteRole(id: number, actorId: number | null = null, ipAddress?: string) {
+    const role = await this.prisma.role.findUnique({ where: { id }, include: { permissions: { include: { permission: true } } } });
+    if (!role) throw new NotFoundException('نقش پیدا نشد');
+    if (role.name === 'ADMIN') throw new ConflictException('نقش مدیر سیستم قابل حذف نیست');
+    const userCount = await this.prisma.user.count({ where: { roleId: id } });
+    if (userCount > 0) throw new ConflictException(`این نقش به ${userCount} کاربر داده شده است؛ ابتدا نقش آن کاربران را تغییر دهید`);
+    const [ruleSteps, ruleApprovers, activeSteps] = await Promise.all([
+      this.prisma.workflowRuleStep.count({ where: { roleId: id } }),
+      this.prisma.workflowRuleStepApprover.count({ where: { roleId: id } }),
+      this.prisma.approvalStepApprover.count({ where: { roleId: id } }),
+    ]);
+    if (ruleSteps + ruleApprovers + activeSteps > 0) {
+      throw new ConflictException('این نقش در قوانین یا درخواست‌های گردش کار به‌عنوان تأییدکننده استفاده شده است و قابل حذف نیست');
+    }
+    const permissionCodes = role.permissions.map(({ permission }) => permission.name);
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        await archiveDeletedRecord(tx, { entityType: AUDIT_ENTITY.ROLE, entityId: id, label: role.name, record: { id: role.id, name: role.name, permissionCodes }, userId: actorId });
+        await tx.rolePermission.deleteMany({ where: { roleId: id } });
+        await tx.role.delete({ where: { id } });
+      });
+    } catch (error) {
+      // A user or workflow rule picked this role after the checks above.
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003') {
+        throw new ConflictException('این نقش هم‌اکنون در حال استفاده است و قابل حذف نیست');
+      }
+      throw error;
+    }
+    await this.audit.log({ userId: actorId, action: 'ROLE_DELETED', entityType: AUDIT_ENTITY.ROLE, entityId: id, details: `${role.name} · ${permissionCodes.length} دسترسی`, ipAddress });
   }
 
   // Users & Access is independent of Employee — a user is identified here
@@ -165,6 +218,7 @@ export class AccessService {
     const permissions = await this.findPermissions(permissionCodes);
     await this.prisma.userPermission.deleteMany({ where: { userId } });
     await this.prisma.userPermission.createMany({ data: permissions.map((permission) => ({ userId, permissionId: permission.id })) });
+    clearSessionAccessCache();
     await this.audit.log({ userId: actorId, action: 'USER_PERMISSIONS_UPDATED', entityType: AUDIT_ENTITY.USER, entityId: userId, details: `${user.username} · ${permissions.length} دسترسی اضافی`, ipAddress });
     return this.listUserPermissions();
   }

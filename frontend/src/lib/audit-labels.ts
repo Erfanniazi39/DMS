@@ -29,6 +29,12 @@ export const ENTITY_LABELS: Record<string, string> = {
   SalesReturn: "مرجوعی فروش",
   CreditNote: "اعلامیه بستانکار",
   Letter: "نامه",
+  Unit: "واحد",
+  Department: "دپارتمان",
+  PurchaseType: "نوع خرید",
+  PurchaseReturn: "برگشت خرید",
+  WorkflowRule: "قانون گردش کار",
+  ApprovalRequest: "درخواست تأیید",
 };
 
 const ACTION_LABELS: Record<string, string> = {
@@ -40,6 +46,7 @@ const ACTION_LABELS: Record<string, string> = {
   USER_PERMISSIONS_UPDATED: "تغییر دسترسی‌های اضافی کاربر",
   ROLE_CREATED: "ایجاد نقش",
   ROLE_PERMISSIONS_UPDATED: "تغییر دسترسی‌های نقش",
+  ROLE_DELETED: "حذف نقش",
   LETTER_SENT: "ارسال نامه",
   LETTER_VIEWED_BY_MANAGEMENT: "مشاهدهٔ مدیریتی نامه",
 };
@@ -64,9 +71,20 @@ const VERB_LABELS: Record<string, string> = {
   STARTED: "شروع",
   CLOSED: "بستن",
   COMPLETED: "تکمیل",
+  ACTIVATED: "فعال کردن",
+  DEACTIVATED: "غیرفعال کردن",
+  RESTORED: "بازیابی",
 };
 
 const ENTITY_PREFIX_LABELS: [string, string][] = [
+  ["ITEM_CATEGORY", "دسته‌بندی کالا"],
+  ["UNIT", "واحد"],
+  ["DEPARTMENT", "دپارتمان"],
+  ["PURCHASE_TYPE", "نوع خرید"],
+  ["TERRITORY", "منطقه فروش"],
+  ["WORKFLOW_RULE", "قانون گردش کار"],
+  ["USER", "کاربر"],
+  ["ROLE", "نقش"],
   ["PURCHASE_REQUEST", "درخواست خرید"],
   ["PURCHASE_RETURN", "برگشت خرید"],
   ["PURCHASE", "خرید"],
@@ -127,6 +145,55 @@ export function actionDetails(action: string, details: string | null): string {
     return `${username} · ${FAIL_REASONS[reason] ?? reason ?? ""}`;
   }
   return details ?? "";
+}
+
+// Persian names of the fields recorded in AuditLog.changes.
+export const FIELD_LABELS: Record<string, string> = {
+  purchaseNumber: "شمارهٔ خرید", purchaseDate: "تاریخ خرید", returnNumber: "شمارهٔ برگشت", returnDate: "تاریخ برگشت", reason: "علت",
+  totalAmount: "جمع مبلغ", paidAmount: "پرداخت‌شده", paymentStatus: "وضعیت پرداخت", sourceType: "نوع منبع",
+  quantity: "مقدار", unitPrice: "قیمت واحد", totalPrice: "قیمت کل", creditAmount: "مبلغ اعتبار", discountPercent: "درصد تخفیف",
+  customerNumber: "شمارهٔ مشتری", customerName: "نام مشتری", orderNumber: "شمارهٔ سفارش", orderDate: "تاریخ سفارش",
+  requestedDeliveryDate: "تاریخ تحویل درخواستی", deliveryAddressText: "نشانی تحویل", paymentTermName: "شرایط پرداخت", paymentDueDays: "مهلت پرداخت (روز)",
+  customerEconomicCode: "کد اقتصادی مشتری", subtotalAmount: "جمع قبل از تخفیف", discountAmount: "تخفیف", taxAmount: "مالیات",
+  deliveryStatus: "وضعیت تحویل", invoicingStatus: "وضعیت فاکتور", itemKind: "نوع کالا", barcode: "بارکد", description: "شرح",
+  registrationNumber: "شمارهٔ ثبت", title: "عنوان", mobile: "موبایل", fax: "فکس", website: "وب‌سایت", mobilePhone: "موبایل",
+  creditLimit: "سقف اعتبار", createdAt: "زمان ثبت", updatedAt: "آخرین ویرایش", statusChangedAt: "زمان تغییر وضعیت",
+  legacyCode: "کد قدیمی", supplierKind: "نوع تأمین‌کننده", country: "کشور", province: "استان", city: "شهر", address: "نشانی", postalCode: "کد پستی",
+
+  code: "کد", name: "نام", nameFa: "نام فارسی", nameEn: "نام انگلیسی", isActive: "وضعیت", status: "وضعیت",
+  sortOrder: "ترتیب نمایش", note: "توضیحات", isDefault: "پیش‌فرض", dueDays: "مهلت پرداخت (روز)",
+  username: "نام کاربری", fullName: "نام کامل", email: "ایمیل", phone: "تلفن", role: "نقش", password: "رمز عبور",
+  customerKind: "نوع شخص", legalName: "نام ثبتی", nationalId: "شناسه/کد ملی", economicCode: "کد اقتصادی",
+  creditHold: "توقف اعتباری", statusReason: "دلیل وضعیت", price: "قیمت", sellingPrice: "قیمت فروش",
+};
+
+export const VALUE_LABELS: Record<string, string> = {
+  DRAFT: "پیش‌نویس", CONFIRMED: "تأییدشده", RECEIVED: "دریافت‌شده", CLOSED: "بسته‌شده", CANCELLED: "لغوشده", PENDING_APPROVAL: "در انتظار تأیید",
+  UNPAID: "پرداخت‌نشده", PARTIAL: "پرداخت جزئی", PAID: "پرداخت‌شده", OPERATIONAL: "عملیاتی", HISTORICAL_IMPORT: "ورود سوابق",
+  INDIVIDUAL: "حقیقی", ORGANIZATION: "حقوقی", NOT_DELIVERED: "تحویل‌نشده", NOT_INVOICED: "فاکتورنشده",
+  ACTIVE: "فعال", DISABLED: "غیرفعال", LOCKED: "قفل‌شده", INACTIVE: "غیرفعال", ARCHIVED: "بایگانی",
+  active: "فعال", inactive: "غیرفعال", true: "بله", false: "خیر",
+};
+
+function changeValue(field: string, value: unknown): string {
+  if (value === null || value === undefined || value === "") return "خالی";
+  if (field === "isActive") return value === true || value === "true" ? "فعال" : "غیرفعال";
+  const text = String(value);
+  return VALUE_LABELS[text] ?? (text.length > 40 ? `${text.slice(0, 40)}…` : text);
+}
+
+export type ActivityChange = { field: string; from: unknown; to: unknown };
+
+/** Short, readable «field: old ← new» lines (at most 3, the rest summarised). */
+export function describeChanges(changes: ActivityChange[] | null | undefined): string[] {
+  if (!changes || changes.length === 0) return [];
+  const lines = changes.slice(0, 3).map((change) => {
+    const label = FIELD_LABELS[change.field] ?? change.field;
+    if (change.field === "password") return `${label}: تغییر کرد`;
+    return `${label}: ${changeValue(change.field, change.from)} ← ${changeValue(change.field, change.to)}`;
+  });
+  if (changes.length > 3) lines.push(`و ${changes.length - 3} تغییر دیگر`);
+  return lines;
 }
 
 export function entityLabel(entityType: string | null): string {

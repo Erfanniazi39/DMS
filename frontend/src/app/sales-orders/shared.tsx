@@ -10,7 +10,7 @@ export type SalesOrderStatus = "DRAFT" | "PENDING_APPROVAL" | "CONFIRMED" | "COM
 export type SalesDeliveryStatus = "NOT_DELIVERED" | "PARTIALLY_DELIVERED" | "DELIVERED";
 export type SalesInvoicingStatus = "NOT_INVOICED" | "PARTIALLY_INVOICED" | "INVOICED";
 export type SalesPaymentStatus = "UNPAID" | "PARTIALLY_PAID" | "PAID";
-export type SalesOrderApprovalReason = "DISCOUNT" | "CREDIT_LIMIT";
+export type SalesOrderApprovalReason = "DISCOUNT" | "PRICE_OVERRIDE" | "CREDIT_LIMIT";
 
 export const SALES_ORDER_STATUSES: SalesOrderStatus[] = ["DRAFT", "PENDING_APPROVAL", "CONFIRMED", "COMPLETED", "CLOSED", "CANCELLED"];
 export const SALES_DELIVERY_STATUSES: SalesDeliveryStatus[] = ["NOT_DELIVERED", "PARTIALLY_DELIVERED", "DELIVERED"];
@@ -50,6 +50,7 @@ export const salesPaymentStatusLabels: Record<SalesPaymentStatus, string> = {
 
 export const approvalReasonLabels: Record<SalesOrderApprovalReason, string> = {
   DISCOUNT: "سفارش دارای تخفیف است",
+  PRICE_OVERRIDE: "قیمت یک یا چند ردیف کمتر از قیمت فهرست است",
   CREDIT_LIMIT: "سقف اعتبار مشتری کافی نیست",
 };
 

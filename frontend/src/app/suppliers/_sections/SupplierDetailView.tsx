@@ -11,6 +11,7 @@ import { apiFetch, type ApiError } from "@/lib/api";
 import { normalizeSheba, shebaProblem } from "@/lib/iran-identifiers";
 import { normalizeDigits } from "@/lib/number-input";
 import { kindLabels, nationalIdLabel, statusLabels, type SupplierBankAccount, type SupplierDetail } from "./shared";
+import { HasPermission } from "@/components/has-permission";
 
 type BankForm = { bankName: string; accountNumber: string; shebaNumber: string; accountHolderName: string; note: string; isDefault: boolean; isActive: boolean };
 const emptyBank: BankForm = { bankName: "", accountNumber: "", shebaNumber: "", accountHolderName: "", note: "", isDefault: false, isActive: true };
@@ -127,7 +128,7 @@ export function SupplierDetailView({ supplierId, canManage }: { supplierId: numb
             {supplier ? <p className="mt-1 font-mono text-xs text-muted-foreground">{supplier.code}</p> : null}
           </div>
           <div className="flex items-center gap-2">
-            {canManage && supplier ? <Link href={`/suppliers/${supplier.id}/edit`}><Button type="button" size="sm"><Pencil className="size-4" aria-hidden="true" /> ویرایش</Button></Link> : null}
+            {canManage && supplier ? <HasPermission code="suppliers.viewSensitive"><Link href={`/suppliers/${supplier.id}/edit`}><Button type="button" size="sm"><Pencil className="size-4" aria-hidden="true" /> ویرایش</Button></Link></HasPermission> : null}
             <Link href="/suppliers"><Button type="button" size="sm" variant="outline">بازگشت به فهرست</Button></Link>
           </div>
         </div>
@@ -232,14 +233,18 @@ export function SupplierDetailView({ supplierId, canManage }: { supplierId: numb
                             {canManage ? (
                               <td className="px-3 py-2">
                                 <div className="flex gap-1">
-                                  <Button type="button" size="sm" variant="ghost" onClick={() => openBank(account)}>
-                                    <Pencil className="size-4" aria-hidden="true" />
-                                    ویرایش
-                                  </Button>
+                                  <HasPermission code="suppliers.viewSensitive">
+                                    <Button type="button" size="sm" variant="ghost" onClick={() => openBank(account)}>
+                                      <Pencil className="size-4" aria-hidden="true" />
+                                      ویرایش
+                                    </Button>
+                                  </HasPermission>
+                                  <HasPermission code="suppliers.delete">
                                   <Button type="button" size="sm" variant="ghost" className="text-destructive hover:bg-destructive/10 hover:text-destructive" onClick={() => void removeBank(account)}>
                                     <Trash2 className="size-4" aria-hidden="true" />
                                     حذف
                                   </Button>
+                                  </HasPermission>
                                 </div>
                               </td>
                             ) : null}

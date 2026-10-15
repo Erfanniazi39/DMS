@@ -26,6 +26,7 @@ import { FormSection } from "../../adjustments/_form/FormSection";
 import { CountEntryGrid } from "./_sections/CountEntryGrid";
 import { ReviewVarianceGrid } from "./_sections/ReviewVarianceGrid";
 import { CancelCountDialog } from "./_sections/CancelCountDialog";
+import { HasPermission } from "@/components/has-permission";
 
 type EntryValue = { countedQty: string; reasonCode: "" | StockAdjustmentReason; note: string };
 type EntryLine = { stockCountItemId: number; countedQty: number; reasonCode?: StockAdjustmentReason; note?: string };
@@ -416,9 +417,11 @@ export default function StockCountDetailPage() {
                 <Button variant="outline" disabled={busy !== null} onClick={() => router.push(`/inventory/counts/${count.id}/edit`)}>
                   ویرایش
                 </Button>
+                <HasPermission code="inventory.delete">
                 <Button variant="destructive" disabled={busy !== null} onClick={() => void remove()}>
                   {busy === "delete" ? "در حال حذف..." : "حذف"}
                 </Button>
+                </HasPermission>
               </>
             ) : null}
             {canCount && isCounting ? (

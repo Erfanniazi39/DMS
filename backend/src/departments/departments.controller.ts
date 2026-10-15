@@ -1,4 +1,5 @@
-import { Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post, Req, UseGuards } from '@nestjs/common';
+import type { Request } from 'express';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { SessionAuthGuard } from '../auth/guards/session-auth.guard';
@@ -34,19 +35,19 @@ export class DepartmentsController {
   // method with @UsePipes() — a method-level pipe runs against EVERY
   // parameter, including the :id route param on update(), which produces
   // "Invalid input: expected object, received string" on every edit.
-  create(@Body(new ZodValidationPipe(createDepartmentSchema)) dto: CreateDepartmentDto) {
-    return this.departmentsService.create(dto);
+  create(@Body(new ZodValidationPipe(createDepartmentSchema)) dto: CreateDepartmentDto, @Req() req: Request) {
+    return this.departmentsService.create(dto, req.session.userId ?? null, req.ip);
   }
 
   @Patch(':id')
   @RequirePermissions('employees.manage')
-  update(@Param('id', ParseIntPipe) id: number, @Body(new ZodValidationPipe(updateDepartmentSchema)) dto: UpdateDepartmentDto) {
-    return this.departmentsService.update(id, dto);
+  update(@Param('id', ParseIntPipe) id: number, @Body(new ZodValidationPipe(updateDepartmentSchema)) dto: UpdateDepartmentDto, @Req() req: Request) {
+    return this.departmentsService.update(id, dto, req.session.userId ?? null, req.ip);
   }
 
   @Delete(':id')
-  @RequirePermissions('employees.manage')
-  remove(@Param('id', ParseIntPipe) id: number) {
-    return this.departmentsService.remove(id);
+  @RequirePermissions('employees.delete')
+  remove(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
+    return this.departmentsService.remove(id, req.session.userId ?? null, req.ip);
   }
 }

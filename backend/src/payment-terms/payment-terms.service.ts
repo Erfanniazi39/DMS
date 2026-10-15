@@ -1,7 +1,7 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { suggestNextCode } from '../common/next-code';
 import { PrismaService } from '../prisma/prisma.service';
-import { AUDIT_ENTITY, AuditService } from '../audit/audit.service';
+import { AUDIT_ENTITY, AuditService, diffChanges, masterDataUpdateAction } from '../audit/audit.service';
 import type { CreatePaymentTermDto, UpdatePaymentTermDto } from './dto/payment-term.dto';
 
 // Mirrors CustomerGroupsService (itself a copy of ItemCategoriesService),
@@ -60,7 +60,11 @@ export class PaymentTermsService {
       where: { id },
       data: { code: dto.code, nameEn: dto.nameEn, nameFa: dto.nameFa, dueDays: dto.dueDays, isActive: dto.isActive, sortOrder: dto.sortOrder },
     });
-    await this.audit.log({ userId, ipAddress, action: 'PAYMENT_TERM_UPDATED', entityType: AUDIT_ENTITY.PAYMENT_TERM, entityId: id, details: updated.code });
+    const changes = diffChanges(existing, updated, ['code', 'nameEn', 'nameFa', 'dueDays', 'isActive', 'sortOrder']);
+    if (changes.length > 0) {
+      const action = masterDataUpdateAction('PAYMENT_TERM', changes, 'isActive', updated.isActive);
+      await this.audit.log({ userId, ipAddress, action, entityType: AUDIT_ENTITY.PAYMENT_TERM, entityId: id, details: updated.code, changes });
+    }
     return updated;
   }
 

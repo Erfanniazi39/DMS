@@ -14,6 +14,7 @@ import { sortQuery } from "@/lib/table-sort";
 import { apiFetch, type ApiError } from "@/lib/api";
 import { useAdminUser } from "@/app/admin/layout";
 import { statusLabels, type SupplierListRow, type SupplierStatus } from "./_sections/shared";
+import { HasPermission } from "@/components/has-permission";
 
 type StatusFilter = "all" | SupplierStatus;
 
@@ -215,12 +216,16 @@ function SuppliersPageContent() {
                         {canManage ? (
                           <td className="px-4 py-3">
                             <div className="flex flex-wrap gap-1">
-                              <Button variant="link" size="sm" onClick={(event) => openEditForm(event, supplier)}>
-                                ویرایش
-                              </Button>
+                              <HasPermission code="suppliers.viewSensitive">
+                                <Button variant="link" size="sm" onClick={(event) => openEditForm(event, supplier)}>
+                                  ویرایش
+                                </Button>
+                              </HasPermission>
+                              <HasPermission code="suppliers.delete">
                               <Button variant="destructive" size="sm" onClick={(event) => void deleteSupplier(event, supplier)}>
                                 حذف
                               </Button>
+                              </HasPermission>
                             </div>
                           </td>
                         ) : null}

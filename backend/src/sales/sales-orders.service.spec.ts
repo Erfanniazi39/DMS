@@ -429,6 +429,28 @@ describe('SalesOrdersService', () => {
       expect(current().creditOverrideByUserId).toBeUndefined();
     });
 
+    it('a price below the list price needs sales.approve like a discount: salesperson → APPROVAL_REQUIRED (PRICE_OVERRIDE); manager confirms directly', async () => {
+      const db = createSalesDb();
+      seedStock(db, 1, 20);
+      const cheap = () => draftOrder({ items: [orderLine({ unitPrice: new Prisma.Decimal(1), priceOverrideReason: 'x', lineTotal: new Prisma.Decimal(5) })], totalAmount: new Prisma.Decimal(5) });
+      mockOrder(db, cheap());
+      await expect(buildSalesOrdersService(db).confirm(11, confirmDto as never, SALESPERSON)).rejects.toMatchObject({
+        response: expect.objectContaining({ code: SALES_ORDER_APPROVAL_REQUIRED, details: { reasons: ['PRICE_OVERRIDE'] } }),
+      });
+
+      const current = mockOrder(db, cheap());
+      await buildSalesOrdersService(db).confirm(11, confirmDto as never, MANAGER);
+      expect(current()).toEqual(expect.objectContaining({ status: 'CONFIRMED', approvedByUserId: 2 }));
+    });
+
+    it('a price at or above the list price needs no approval', async () => {
+      const db = createSalesDb();
+      seedStock(db, 1, 20);
+      const current = mockOrder(db, draftOrder({ items: [orderLine({ unitPrice: new Prisma.Decimal(1200) })] }));
+      await buildSalesOrdersService(db).confirm(11, confirmDto as never, SALESPERSON);
+      expect(current()).toEqual(expect.objectContaining({ status: 'CONFIRMED' }));
+    });
+
     it('gap-free numbering: a refused confirm burns nothing; successful confirms get consecutive numbers', async () => {
       const db = createSalesDb();
       seedStock(db, 1, 100);

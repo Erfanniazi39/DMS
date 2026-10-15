@@ -27,6 +27,7 @@ import {
 } from "../shared";
 import { SortHeader, useTableSort } from "@/components/ui/sortable";
 import { sortQuery } from "@/lib/table-sort";
+import { HasPermission } from "@/components/has-permission";
 
 const toolbarFieldLabel = "text-[11px] font-medium uppercase tracking-wide text-muted-foreground";
 const toolbarSelectClass = "h-8 rounded-md border border-input bg-background px-2 text-xs outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50";
@@ -247,9 +248,11 @@ export default function StockCountsPage() {
                               >
                                 ویرایش
                               </Button>
+                              <HasPermission code="inventory.delete">
                               <Button variant="ghost" size="sm" className="text-destructive hover:bg-destructive/10 hover:text-destructive" onClick={(event) => void deleteDraft(event, row)}>
                                 حذف
                               </Button>
+                              </HasPermission>
                             </div>
                           ) : null}
                         </td>

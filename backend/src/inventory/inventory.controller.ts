@@ -215,7 +215,7 @@ export class InventoryController {
 
   // DRAFT only — a posted adjustment can never be deleted.
   @Delete('stock-adjustments/:id')
-  @RequirePermissions('inventory.adjust')
+  @RequirePermissions('inventory.delete')
   removeAdjustment(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
     return this.adjustmentsService.remove(id, req.session.userId ?? null, req.ip);
   }

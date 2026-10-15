@@ -445,11 +445,15 @@ describe('StockCountsService', () => {
 
 describe('StockCountsController — permission gates (I6)', () => {
   const proto = StockCountsController.prototype;
+  it('deleting a draft needs its own delete permission (inventory.delete)', () => {
+    expect(Reflect.getMetadata(PERMISSIONS_KEY, proto.remove)).toEqual(['inventory.delete']);
+  });
+
   it('reads need inventory.view', () => {
     for (const method of [proto.list, proto.get]) expect(Reflect.getMetadata(PERMISSIONS_KEY, method)).toEqual(['inventory.view']);
   });
   it('create/edit/delete/start/enter/submit/cancel and the form picker need inventory.count', () => {
-    for (const method of [proto.create, proto.update, proto.remove, proto.start, proto.enterCount, proto.submit, proto.cancel, proto.formOptions]) {
+    for (const method of [proto.create, proto.update, proto.start, proto.enterCount, proto.submit, proto.cancel, proto.formOptions]) {
       expect(Reflect.getMetadata(PERMISSIONS_KEY, method)).toEqual(['inventory.count']);
     }
   });

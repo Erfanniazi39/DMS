@@ -42,8 +42,8 @@ export default function ItemCategoriesPage() {
   // Write actions (create/edit) are hidden without items.manage — the
   // backend would reject them anyway, this just avoids offering them.
   const canManage = user?.permissions.includes("items.manage") ?? false;
-  // Delete is admin-only: users.create is held by the ADMIN role alone (the backend route checks the same).
-  const canDelete = user?.permissions.includes("users.create") ?? false;
+  // Delete is its own permission (itemCategories.delete); the backend route checks the same.
+  const canDelete = user?.permissions.includes("itemCategories.delete") ?? false;
 
   const [categories, setCategories] = useState<ItemCategory[]>([]);
   const [loading, setLoading] = useState(true);
@@ -393,7 +393,7 @@ export default function ItemCategoriesPage() {
           </DialogHeader>
           <DialogBody>
             <p className="text-sm">
-              دسته‌بندی «{deleteTarget?.nameFa}» برای همیشه حذف شود؟ اگر کالایی از آن استفاده کند، حذف انجام نمی‌شود و باید آن را غیرفعال کنید. یک نسخهٔ فقط‌خواندنی از آن در «سوابق حذف» نگهداری می‌شود.
+              دسته‌بندی «{deleteTarget?.nameFa}» برای همیشه حذف شود؟ اگر کالایی از آن استفاده کند، حذف انجام نمی‌شود و باید آن را غیرفعال کنید.
             </p>
           </DialogBody>
           <DialogFooter>

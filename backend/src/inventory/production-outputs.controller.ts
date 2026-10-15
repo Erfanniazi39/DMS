@@ -69,7 +69,7 @@ export class ProductionOutputsController {
 
   // DRAFT only — a posted output can never be deleted.
   @Delete(':id')
-  @RequirePermissions('inventory.receive')
+  @RequirePermissions('inventory.delete')
   remove(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
     return this.outputsService.remove(id, req.session.userId ?? null, req.ip);
   }

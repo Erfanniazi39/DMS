@@ -104,7 +104,7 @@ export class SalesOrdersController {
 
   // DRAFT only.
   @Delete(':id')
-  @RequirePermissions('sales.manage')
+  @RequirePermissions('sales.delete')
   remove(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
     return this.salesOrders.remove(id, actorOf(req));
   }

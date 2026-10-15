@@ -71,8 +71,8 @@ export function ComplaintsSection({
   onChanged: () => Promise<void>;
   toasts: SectionToasts;
 }) {
-  // Delete is admin-only: users.create is held by the ADMIN role alone (the backend route checks the same).
-  const canDelete = useAdminUser()?.permissions.includes("users.create") ?? false;
+  // Delete is its own permission (customers.delete); the backend route checks the same.
+  const canDelete = useAdminUser()?.permissions.includes("customers.delete") ?? false;
   const { pushError, pushErrors, pushSuccess } = toasts;
   // Sort + page the (small, already loaded) rows in memory; click a header to sort.
   const table = useClientTable(customer.complaints, CUSTOMERS_ID__SECTIONS_COMPLAINTSSECTION_TSX_SORT_GETTERS, { pageSize: 20 });

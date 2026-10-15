@@ -2424,7 +2424,8 @@ model User {
   createdAt                    DateTime                   @default(now()) @map("created_at")
   lastLoginAt                  DateTime?                  @map("last_login_at")
   auditLogs                    AuditLog[]
-  deletedRecords               DeletedRecord[]
+  deletedRecords               DeletedRecord[] @relation("DeletedRecordDeletedBy")
+  restoredRecords              DeletedRecord[] @relation("DeletedRecordRestoredBy")
   permissions                  UserPermission[]
   // Purchase Requests this account entered (PurchaseRequest.createdByUser) — data-entry
   // provenance, distinct from requestedByEmployee (who actually asked for it).
@@ -2577,9 +2578,14 @@ model DeletedRecord {
   label           String?
   snapshot        Json
   deletedByUserId Int?     @map("deleted_by_user_id")
-  deletedBy       User?    @relation(fields: [deletedByUserId], references: [id])
+  deletedBy       User?    @relation("DeletedRecordDeletedBy", fields: [deletedByUserId], references: [id])
   deletedAt       DateTime @default(now()) @map("deleted_at")
   expiresAt       DateTime @map("expires_at")
+  // Set when an admin restores the record from this snapshot (the row is kept
+  // as history; a restored snapshot can't be restored twice).
+  restoredAt       DateTime? @map("restored_at")
+  restoredByUserId Int?      @map("restored_by_user_id")
+  restoredBy       User?     @relation("DeletedRecordRestoredBy", fields: [restoredByUserId], references: [id])
 
   @@index([expiresAt])
   @@index([entityType, entityId])

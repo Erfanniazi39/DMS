@@ -30,6 +30,7 @@ function createPrismaMock() {
     supplierGood: { findMany: jest.fn().mockResolvedValue([]), deleteMany: jest.fn(), createMany: jest.fn() },
     purchaseType: { findMany: jest.fn().mockResolvedValue([]) },
     auditLog: { create: jest.fn() },
+    deletedRecord: { create: jest.fn() },
   };
   // Transactions just invoke the callback with the mock itself.
   (mock as any).$transaction = jest.fn((callback: (tx: unknown) => unknown) => callback(mock));
@@ -138,10 +139,18 @@ describe('SuppliersService', () => {
   it('deletes an existing supplier with no purchase history', async () => {
     const prisma = createPrismaMock();
     const service = build(prisma);
-    (prisma as any).supplier.findUnique.mockResolvedValue({ id: 2 });
+    (prisma as any).supplier.findUnique.mockResolvedValue({ id: 2, code: 'SUP-2', bankAccounts: [{ id: 9, accountNumber: '1234567890' }], purchaseTypes: [], goods: [] });
     (prisma as any).purchase.count.mockResolvedValue(0);
 
-    await expect(service.remove(2)).resolves.toEqual({ success: true });
+    await expect(service.remove(2, 5)).resolves.toEqual({ success: true });
+    // The archive holds the COMPLETE supplier — bank numbers included — so a restore loses nothing.
+    expect((prisma as any).deletedRecord.create.mock.calls[0][0].data).toMatchObject({
+      entityType: 'Supplier',
+      entityId: 2,
+      label: 'SUP-2',
+      deletedByUserId: 5,
+      snapshot: { id: 2, bankAccounts: [{ id: 9, accountNumber: '1234567890' }] },
+    });
     expect((prisma as any).purchase.count).toHaveBeenCalledWith({ where: { supplierId: 2 } });
     expect((prisma as any).supplierBankAccount.deleteMany).toHaveBeenCalledWith({ where: { supplierId: 2 } });
     expect((prisma as any).supplier.delete).toHaveBeenCalledWith({ where: { id: 2 } });

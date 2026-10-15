@@ -15,6 +15,7 @@ import { StockAdjustmentsService } from './stock-adjustments.service';
 import { StockCountsController } from './stock-counts.controller';
 import { StockCountsService } from './stock-counts.service';
 import { StockLevelsService } from './stock-levels.service';
+import { GoodsReceiptsRestorer, ProductionOutputsRestorer, StockAdjustmentsRestorer, StockCountsRestorer, GoodsReturnsRestorer } from './inventory.restorers';
 
 // Imports nothing (PrismaModule and AuditModule are global). Exports
 // InventoryService so the later Sales/Returns modules can read availability;
@@ -43,6 +44,7 @@ import { StockLevelsService } from './stock-levels.service';
     GoodsReturnsController,
   ],
   providers: [
+    GoodsReceiptsRestorer, ProductionOutputsRestorer, StockAdjustmentsRestorer, StockCountsRestorer, GoodsReturnsRestorer,
     InventoryService,
     StockAdjustmentsService,
     StockLevelsService,

@@ -35,8 +35,8 @@ function contractDuration(contract: EmployeeContract): string {
 // overlap (the backend refuses it). The tenure shown on the page is computed
 // from these periods. Needs employees.manage to change anything.
 export function ContractsSection({ employee, canManage, onChanged, toasts }: { employee: Employee; canManage: boolean; onChanged: (employee: Employee) => void; toasts: Toasts }) {
-  // Delete is admin-only: users.create is held by the ADMIN role alone (the backend route checks the same).
-  const canDelete = useAdminUser()?.permissions.includes("users.create") ?? false;
+  // Delete is its own permission (employees.delete); the backend route checks the same.
+  const canDelete = useAdminUser()?.permissions.includes("employees.delete") ?? false;
   const { pushError, pushErrors, pushSuccess } = toasts;
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<EmployeeContract | null>(null);

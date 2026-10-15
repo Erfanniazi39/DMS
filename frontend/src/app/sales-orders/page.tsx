@@ -37,6 +37,7 @@ import {
 } from "./shared";
 import { SortHeader, useTableSort } from "@/components/ui/sortable";
 import { sortQuery } from "@/lib/table-sort";
+import { HasPermission } from "@/components/has-permission";
 
 // Same dense toolbar sizing as the Purchases list.
 const toolbarFieldLabel = "text-[11px] font-medium uppercase tracking-wide text-muted-foreground";
@@ -320,6 +321,7 @@ export default function SalesOrdersPage() {
                               >
                                 ویرایش
                               </Button>
+                              <HasPermission code="sales.delete">
                               <Button
                                 variant="ghost"
                                 size="sm"
@@ -328,6 +330,7 @@ export default function SalesOrdersPage() {
                               >
                                 حذف
                               </Button>
+                              </HasPermission>
                             </div>
                           ) : null}
                         </td>
