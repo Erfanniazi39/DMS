@@ -89,6 +89,18 @@ export function JalaliDateInput({ value, onChange, idPrefix, required, minYear =
     setJd(parsed?.jd ?? null);
   }
 
+  // After a year/month change the other parts may no longer fit `minDate`
+  // (e.g. expiry 5 Mehr 1395, then year → 1394 with issue date 18 Aban 1394).
+  // A month entirely before the minimum is cleared (with the day); a day
+  // before the minimum is cleared on its own — never a date before it.
+  function fit(year: number | null, month: number | null, day: number | null): [number | null, number | null] {
+    if (year === null || month === null) return [month, day];
+    const length = jalaliMonthLength(year, month);
+    if (beforeMin(year, month, length)) return [null, null];
+    if (day !== null && beforeMin(year, month, Math.min(day, length))) return [month, null];
+    return [month, day];
+  }
+
   function commit(nextYear: number | null, nextMonth: number | null, nextDay: number | null) {
     setJy(nextYear);
     setJm(nextMonth);
@@ -221,8 +233,9 @@ export function JalaliDateInput({ value, onChange, idPrefix, required, minYear =
             disabled={year < effectiveMinYear || year > effectiveMaxYear}
             className={cn(cell, "tabular-nums", year === jy && cellSelected)}
             onClick={() => {
-              commit(year, jm, jd);
-              followOn(year, jm, jd);
+              const [month, day] = fit(year, jm, jd);
+              commit(year, month, day);
+              followOn(year, month, day);
             }}
           >
             {toPersianDigits(year)}
@@ -242,8 +255,9 @@ export function JalaliDateInput({ value, onChange, idPrefix, required, minYear =
             className={cn(cell, index + 1 === jm && cellSelected)}
             disabled={jy !== null && beforeMin(jy, index + 1, jalaliMonthLength(jy, index + 1))}
             onClick={() => {
-              commit(jy, index + 1, jd);
-              followOn(jy, index + 1, jd);
+              const [month, day] = fit(jy, index + 1, jd);
+              commit(jy, month, day);
+              followOn(jy, month, day);
             }}
           >
             {name}

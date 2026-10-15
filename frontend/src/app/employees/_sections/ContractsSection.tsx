@@ -13,6 +13,7 @@ import { apiFetch, apiUpload, type ApiError } from "@/lib/api";
 import { formatJalali, JALALI_MAX_YEAR, toPersianDigits } from "@/lib/jalali";
 import { contractTypeLabels, type ContractType, type Employee, type EmployeeContract } from "./shared";
 import { formatExpiry, formatTenure } from "./tenure";
+import { useAdminUser } from "@/app/admin/layout";
 
 type Toasts = { pushError: (message: string) => void; pushErrors: (messages: string[]) => void; pushSuccess: (message: string) => void };
 type ContractForm = { contractType: ContractType; startDate: string; endDate: string; note: string };
@@ -34,6 +35,8 @@ function contractDuration(contract: EmployeeContract): string {
 // overlap (the backend refuses it). The tenure shown on the page is computed
 // from these periods. Needs employees.manage to change anything.
 export function ContractsSection({ employee, canManage, onChanged, toasts }: { employee: Employee; canManage: boolean; onChanged: (employee: Employee) => void; toasts: Toasts }) {
+  // Delete is admin-only: users.create is held by the ADMIN role alone (the backend route checks the same).
+  const canDelete = useAdminUser()?.permissions.includes("users.create") ?? false;
   const { pushError, pushErrors, pushSuccess } = toasts;
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<EmployeeContract | null>(null);
@@ -195,9 +198,11 @@ export function ContractsSection({ employee, canManage, onChanged, toasts }: { e
                     {canManage ? (
                       <td className="px-3 py-2 whitespace-nowrap">
                         <Button type="button" size="sm" variant="link" disabled={busyId === contract.id} onClick={() => openEdit(contract)}>ویرایش</Button>
-                        <Button type="button" size="icon" variant="ghost" aria-label="حذف قرارداد" disabled={busyId === contract.id} onClick={() => void remove(contract)}>
-                          <Trash2 className="size-4 text-destructive" aria-hidden="true" />
-                        </Button>
+                        {canDelete ? (
+                          <Button type="button" size="icon" variant="ghost" aria-label="حذف قرارداد" disabled={busyId === contract.id} onClick={() => void remove(contract)}>
+                            <Trash2 className="size-4 text-destructive" aria-hidden="true" />
+                          </Button>
+                        ) : null}
                       </td>
                     ) : null}
                   </tr>

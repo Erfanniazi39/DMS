@@ -19,8 +19,8 @@ import type { SortValue } from "@/lib/table-sort";
 // forms (their dropdown reads the active-only GET /units). This page reads
 // GET /units/all (inactive included) and writes via POST/PATCH /units —
 // all gated on purchases.manage, the same permission PurchaseType uses.
-// There's no delete: a unit already used on purchase items is retired by
-// deactivating it, which just hides it from the item-form dropdowns.
+// Delete is admin-only and refused (409) while anything uses the unit; a
+// used unit is retired by deactivating it, which hides it from the dropdowns.
 type Unit = { id: number; code: string; nameEn: string; nameFa: string; isActive: boolean; sortOrder: number };
 type FormState = { code: string; nameEn: string; nameFa: string; isActive: boolean; sortOrder: string };
 type StatusFilter = "all" | "active" | "inactive";
@@ -39,6 +39,8 @@ const UNITS_SORT_GETTERS: Record<string, (row: Unit) => SortValue> = {
 export default function UnitsPage() {
   const user = useAdminUser();
   const canManage = user?.permissions.includes("purchases.manage") ?? false;
+  // Delete is admin-only: users.create is held by the ADMIN role alone (the backend route checks the same).
+  const canDelete = user?.permissions.includes("users.create") ?? false;
 
   const [units, setUnits] = useState<Unit[]>([]);
   const [loading, setLoading] = useState(true);
@@ -50,6 +52,8 @@ export default function UnitsPage() {
   const [formOpen, setFormOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<FormState>(emptyForm);
+  const [deleteTarget, setDeleteTarget] = useState<Unit | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const { toasts, pushError, pushErrors, pushSuccess, dismiss } = useToasts();
 
@@ -165,6 +169,22 @@ export default function UnitsPage() {
     }
   }
 
+  async function confirmDelete() {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      await apiFetch(`/units/${deleteTarget.id}`, { method: "DELETE" });
+      pushSuccess(`واحد «${deleteTarget.nameFa}» حذف شد.`);
+      setDeleteTarget(null);
+      await loadAll();
+    } catch (reason) {
+      pushError((reason as ApiError).message ?? "حذف واحد ناموفق بود.");
+      setDeleteTarget(null);
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   if (!canManage) {
     return (
       <div className="p-4 sm:p-6 lg:p-8">
@@ -275,6 +295,11 @@ export default function UnitsPage() {
                           <Button variant="link" size="sm" onClick={() => openEditForm(unit)}>
                             ویرایش
                           </Button>
+                          {canDelete ? (
+                            <Button variant="link" size="sm" className="text-destructive" onClick={() => setDeleteTarget(unit)}>
+                              حذف
+                            </Button>
+                          ) : null}
                         </td>
                       </tr>
                     ))}
@@ -345,6 +370,28 @@ export default function UnitsPage() {
               {saving ? "در حال ذخیره..." : editingId ? "ذخیره تغییرات" : "ایجاد واحد"}
             </Button>
             <Button type="button" variant="outline" onClick={closeForm}>
+              انصراف
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={deleteTarget !== null} onOpenChange={(open) => (!open && !deleting ? setDeleteTarget(null) : undefined)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>حذف واحد</DialogTitle>
+            <DialogCloseButton />
+          </DialogHeader>
+          <DialogBody>
+            <p className="text-sm">
+              واحد «{deleteTarget?.nameFa}» برای همیشه حذف شود؟ اگر در کالا یا سندی استفاده شده باشد، حذف انجام نمی‌شود و باید آن را غیرفعال کنید. یک نسخهٔ فقط‌خواندنی از آن در «سوابق حذف» نگهداری می‌شود.
+            </p>
+          </DialogBody>
+          <DialogFooter>
+            <Button type="button" variant="destructive" disabled={deleting} onClick={() => void confirmDelete()}>
+              {deleting ? "در حال حذف..." : "حذف"}
+            </Button>
+            <Button type="button" variant="outline" disabled={deleting} onClick={() => setDeleteTarget(null)}>
               انصراف
             </Button>
           </DialogFooter>

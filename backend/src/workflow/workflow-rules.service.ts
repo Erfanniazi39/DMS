@@ -10,7 +10,12 @@ export type WorkflowActor = { userId: number; ipAddress?: string };
 const ruleInclude = {
   steps: {
     orderBy: { level: 'asc' as const },
-    include: { role: { select: { id: true, name: true } }, user: { select: { id: true, username: true, fullName: true, status: true } } },
+    include: {
+      approvers: {
+        orderBy: { id: 'asc' as const },
+        include: { role: { select: { id: true, name: true } }, user: { select: { id: true, username: true, fullName: true, status: true } } },
+      },
+    },
   },
 } satisfies Prisma.WorkflowRuleInclude;
 
@@ -111,7 +116,7 @@ export class WorkflowRulesService {
         },
         include: ruleInclude,
       });
-      const describe = (rule: typeof existing) => ({ ...rule, steps: rule.steps.map((s) => `${s.level}:${s.approverType}:${s.roleId ?? s.userId}`).join(',') });
+      const describe = (rule: typeof existing) => ({ ...rule, steps: rule.steps.map((s) => `${s.level}:${s.approvers.map((a) => `${a.approverType}:${a.roleId ?? a.userId}`).join('|')}`).join(',') });
       await this.audit.log(
         {
           userId: actor.userId,
@@ -220,10 +225,14 @@ export class WorkflowRulesService {
   private stepData(dto: CreateWorkflowRuleDto | UpdateWorkflowRuleDto) {
     return dto.steps.map((step, index) => ({
       level: index + 1,
-      approverType: step.approverType,
-      roleId: step.approverType === 'ROLE' ? (step.roleId ?? null) : null,
-      userId: step.approverType === 'USER' ? (step.userId ?? null) : null,
       label: step.label || null,
+      approvers: {
+        create: step.approvers.map((approver) => ({
+          approverType: approver.approverType,
+          roleId: approver.approverType === 'ROLE' ? (approver.roleId ?? null) : null,
+          userId: approver.approverType === 'USER' ? (approver.userId ?? null) : null,
+        })),
+      },
     }));
   }
 
@@ -243,14 +252,20 @@ export class WorkflowRulesService {
     }
     const seenUsers = new Set<number>();
     for (const [index, step] of dto.steps.entries()) {
-      if (step.approverType === 'ROLE') {
-        const role = await this.prisma.role.findUnique({ where: { id: step.roleId as number }, select: { id: true } });
-        if (!role) throw new BadRequestException(`نقش مرحلهٔ ${index + 1} وجود ندارد`);
-      } else {
-        const user = await this.prisma.user.findUnique({ where: { id: step.userId as number }, select: { status: true } });
-        if (user?.status !== 'ACTIVE') throw new BadRequestException(`کاربر مرحلهٔ ${index + 1} وجود ندارد یا فعال نیست`);
-        if (seenUsers.has(step.userId as number)) throw new BadRequestException('یک کاربر نمی‌تواند در دو مرحلهٔ یک قانون باشد');
-        seenUsers.add(step.userId as number);
+      const seenInStep = new Set<string>();
+      for (const approver of step.approvers) {
+        const key = approver.approverType === 'ROLE' ? `R${approver.roleId}` : `U${approver.userId}`;
+        if (seenInStep.has(key)) throw new BadRequestException(`در مرحلهٔ ${index + 1} یک تأییدکننده دو بار انتخاب شده است`);
+        seenInStep.add(key);
+        if (approver.approverType === 'ROLE') {
+          const role = await this.prisma.role.findUnique({ where: { id: approver.roleId as number }, select: { id: true } });
+          if (!role) throw new BadRequestException(`نقش مرحلهٔ ${index + 1} وجود ندارد`);
+        } else {
+          const user = await this.prisma.user.findUnique({ where: { id: approver.userId as number }, select: { status: true } });
+          if (user?.status !== 'ACTIVE') throw new BadRequestException(`کاربر مرحلهٔ ${index + 1} وجود ندارد یا فعال نیست`);
+          if (seenUsers.has(approver.userId as number)) throw new BadRequestException('یک کاربر نمی‌تواند در دو مرحلهٔ یک قانون باشد');
+          seenUsers.add(approver.userId as number);
+        }
       }
     }
   }
@@ -260,16 +275,27 @@ export class WorkflowRulesService {
   private async present(rule: Prisma.WorkflowRuleGetPayload<{ include: typeof ruleInclude }>) {
     const viewPermission = DOCUMENT_VIEW_PERMISSION[rule.documentType];
     const steps = await Promise.all(
-      rule.steps.map(async (step) => ({
-        id: step.id,
-        level: step.level,
-        approverType: step.approverType,
-        roleId: step.roleId,
-        userId: step.userId,
-        label: step.label,
-        approverLabel: stepLabel(step),
-        canViewDocument: await this.canView(step, viewPermission),
-      })),
+      rule.steps.map(async (step) => {
+        const approvers = await Promise.all(
+          step.approvers.map(async (approver) => ({
+            id: approver.id,
+            approverType: approver.approverType,
+            roleId: approver.roleId,
+            userId: approver.userId,
+            name: approver.role?.name ?? approver.user?.fullName ?? approver.user?.username ?? '—',
+            canViewDocument: await this.canView(approver, viewPermission),
+          })),
+        );
+        return {
+          id: step.id,
+          level: step.level,
+          label: step.label,
+          approverLabel: stepLabel(step),
+          approvers,
+          // Every approver of the step can open the document page.
+          canViewDocument: approvers.every((approver) => approver.canViewDocument),
+        };
+      }),
     );
     const { steps: _steps, ...rest } = rule;
     void _steps;
@@ -293,10 +319,12 @@ export class WorkflowRulesService {
   }
 }
 
+// «A یا B» for a step with several approvers; an explicit label wins.
 export function stepLabel(step: {
   label?: string | null;
-  role?: { name: string } | null;
-  user?: { username: string; fullName: string | null } | null;
+  approvers: { role?: { name: string } | null; user?: { username: string; fullName: string | null } | null }[];
 }): string {
-  return step.label || step.role?.name || step.user?.fullName || step.user?.username || '—';
+  if (step.label) return step.label;
+  const names = step.approvers.map((approver) => approver.role?.name ?? approver.user?.fullName ?? approver.user?.username ?? '—');
+  return names.length ? names.join(' یا ') : '—';
 }

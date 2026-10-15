@@ -1,4 +1,5 @@
-import { Body, Controller, Get, Param, ParseIntPipe, Patch, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, Param, ParseIntPipe, Patch, Post, Req, UseGuards } from '@nestjs/common';
+import type { Request } from 'express';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { SessionAuthGuard } from '../auth/guards/session-auth.guard';
@@ -45,5 +46,14 @@ export class UnitsController {
   @RequirePermissions('purchases.manage')
   update(@Param('id', ParseIntPipe) id: number, @Body(new ZodValidationPipe(updateUnitSchema)) dto: UpdateUnitDto) {
     return this.unitsService.update(id, dto);
+  }
+
+  // Admin only — gated on users.create, the permission only the ADMIN role
+  // holds (same as item-category delete; no new permission row needed).
+  @Delete(':id')
+  @HttpCode(204)
+  @RequirePermissions('users.create')
+  async remove(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
+    await this.unitsService.remove(id, req.session.userId ?? null, req.ip);
   }
 }

@@ -17,6 +17,7 @@ export const AUDIT_ENTITY = {
   SUPPLIER: 'Supplier',
   ITEM: 'Item',
   ITEM_CATEGORY: 'ItemCategory',
+  UNIT: 'Unit',
   // Customer-module reference data (customer groups, territories, payment
   // terms). Customer child records (contacts, addresses, notes, documents,
   // complaints, financial profile) are logged under CUSTOMER with the

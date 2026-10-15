@@ -23,6 +23,7 @@ import { DetailSection, type SectionToasts } from "./DetailSection";
 import { SortHeader, useClientTable } from "@/components/ui/sortable";
 import { ListPagination } from "@/components/ui/list-pagination";
 import type { SortValue } from "@/lib/table-sort";
+import { useAdminUser } from "@/app/admin/layout";
 
 type DocumentForm = { documentType: CustomerDocumentType; documentNumber: string; date: string; expiresAt: string; note: string };
 const emptyDocumentForm: DocumentForm = { documentType: "BUSINESS_LICENSE", documentNumber: "", date: "", expiresAt: "", note: "" };
@@ -54,6 +55,8 @@ export function DocumentsSection({
   onChanged: () => Promise<void>;
   toasts: SectionToasts;
 }) {
+  // Delete is admin-only: users.create is held by the ADMIN role alone (the backend route checks the same).
+  const canDelete = useAdminUser()?.permissions.includes("users.create") ?? false;
   const { pushError, pushErrors, pushSuccess } = toasts;
   // Sort + page the (small, already loaded) rows in memory; click a header to sort.
   const table = useClientTable(customer.documents, CUSTOMERS_ID__SECTIONS_DOCUMENTSSECTION_TSX_SORT_GETTERS, { pageSize: 20 });
@@ -149,7 +152,7 @@ export function DocumentsSection({
                   <SortHeader label="انقضا" sortKey="expiresAt" sort={table.sort} onSort={table.onSort} className="px-3 py-2 font-medium" />
                   <SortHeader label="یادداشت" sortKey="note" sort={table.sort} onSort={table.onSort} className="px-3 py-2 font-medium" />
                   <th className="px-3 py-2 font-medium">فایل</th>
-                  {canManage ? <th className="px-3 py-2 font-medium">عملیات</th> : null}
+                  {canDelete ? <th className="px-3 py-2 font-medium">عملیات</th> : null}
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
@@ -181,7 +184,7 @@ export function DocumentsSection({
                           <span className="text-muted-foreground">-</span>
                         )}
                       </td>
-                      {canManage ? (
+                      {canDelete ? (
                         <td className="px-3 py-2">
                           <Button size="sm" variant="ghost" className="text-destructive hover:bg-destructive/10 hover:text-destructive" onClick={() => void remove(document)}>
                             <Trash2 className="size-4" aria-hidden="true" />

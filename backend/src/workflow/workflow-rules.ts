@@ -81,9 +81,11 @@ export function findMatchingRule<T extends MatchableRule>(rules: readonly T[], f
 export type StepApprover = { approverType: 'ROLE' | 'USER'; roleId: number | null; userId: number | null };
 export type Actor = { id: number; roleId: number; active: boolean };
 
-export function isStepApprover(step: StepApprover, actor: Actor): boolean {
+// A step lists one or more approvers (roles and/or users, mixed); ANY ONE of
+// them may decide it.
+export function isStepApprover(approvers: readonly StepApprover[], actor: Actor): boolean {
   if (!actor.active) return false;
-  return step.approverType === 'ROLE' ? step.roleId === actor.roleId : step.userId === actor.id;
+  return approvers.some((approver) => (approver.approverType === 'ROLE' ? approver.roleId === actor.roleId : approver.userId === actor.id));
 }
 
 export const WORKFLOW_DOCUMENT_TYPE_LABELS_FA: Record<string, string> = {

@@ -24,6 +24,7 @@ import { DetailSection, type SectionToasts } from "./DetailSection";
 import { SortHeader, useClientTable } from "@/components/ui/sortable";
 import { ListPagination } from "@/components/ui/list-pagination";
 import type { SortValue } from "@/lib/table-sort";
+import { useAdminUser } from "@/app/admin/layout";
 
 type AddressForm = {
   addressType: CustomerAddressType;
@@ -84,6 +85,8 @@ export function AddressesSection({
   onChanged: () => Promise<void>;
   toasts: SectionToasts;
 }) {
+  // Delete is admin-only: users.create is held by the ADMIN role alone (the backend route checks the same).
+  const canDelete = useAdminUser()?.permissions.includes("users.create") ?? false;
   const { pushError, pushErrors, pushSuccess } = toasts;
   // Sort + page the (small, already loaded) rows in memory; click a header to sort.
   const table = useClientTable(customer.addresses, CUSTOMERS_ID__SECTIONS_ADDRESSESSECTION_TSX_SORT_GETTERS, { pageSize: 20 });
@@ -234,10 +237,12 @@ export function AddressesSection({
                             <Pencil className="size-4" aria-hidden="true" />
                             ویرایش
                           </Button>
-                          <Button size="sm" variant="ghost" className="text-destructive hover:bg-destructive/10 hover:text-destructive" onClick={() => void remove(address)}>
-                            <Trash2 className="size-4" aria-hidden="true" />
-                            حذف
-                          </Button>
+                          {canDelete ? (
+                            <Button size="sm" variant="ghost" className="text-destructive hover:bg-destructive/10 hover:text-destructive" onClick={() => void remove(address)}>
+                              <Trash2 className="size-4" aria-hidden="true" />
+                              حذف
+                            </Button>
+                          ) : null}
                         </div>
                       </td>
                     ) : null}

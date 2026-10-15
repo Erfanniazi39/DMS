@@ -222,4 +222,28 @@ describe('UnitsService', () => {
       expect(updateUnitSchema.safeParse({ ...base, sortOrder: 2 }).success).toBe(true);
     });
   });
+
+  describe('remove', () => {
+    function setup() {
+      const prisma: any = createPrismaMock();
+      prisma.unit.delete = jest.fn();
+      prisma.$transaction = jest.fn(async (fn: (tx: unknown) => unknown) => fn({ unit: prisma.unit, deletedRecord: { create: jest.fn() } }));
+      const audit = { log: jest.fn() };
+      return { prisma, audit, service: new UnitsService(prisma as never, audit as never) };
+    }
+
+    it('404s for an unknown unit', async () => {
+      const { prisma, service } = setup();
+      prisma.unit.findUnique.mockResolvedValue(null);
+      await expect(service.remove(9, 1)).rejects.toBeInstanceOf(NotFoundException);
+    });
+
+    it('turns a foreign-key failure (unit in use) into a 409', async () => {
+      const { prisma, service } = setup();
+      prisma.unit.findUnique.mockResolvedValue({ id: 1, code: 'KG' });
+      const { Prisma } = jest.requireActual('@prisma/client');
+      prisma.$transaction.mockRejectedValue(new Prisma.PrismaClientKnownRequestError('fk', { code: 'P2003', clientVersion: 'x' }));
+      await expect(service.remove(1, 1)).rejects.toBeInstanceOf(ConflictException);
+    });
+  });
 });

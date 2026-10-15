@@ -4,17 +4,32 @@ const documentType = z.enum(['PURCHASE', 'SALES_ORDER', 'PURCHASE_REQUEST']);
 const amount = z.coerce.number().int('مبلغ باید عدد صحیح باشد').min(0).max(999_999_999_999_999);
 const optionalId = z.number().int().positive().nullable().optional();
 
-export const workflowStepSchema = z
+export const workflowApproverSchema = z
   .object({
     approverType: z.enum(['ROLE', 'USER']),
     roleId: z.number().int().positive().nullable().optional(),
     userId: z.number().int().positive().nullable().optional(),
-    label: z.string().trim().max(100).nullable().optional(),
   })
-  .superRefine((step, ctx) => {
-    if (step.approverType === 'ROLE' && !step.roleId) ctx.addIssue({ code: 'custom', path: ['roleId'], message: 'نقش تأییدکننده الزامی است' });
-    if (step.approverType === 'USER' && !step.userId) ctx.addIssue({ code: 'custom', path: ['userId'], message: 'کاربر تأییدکننده الزامی است' });
+  .superRefine((approver, ctx) => {
+    if (approver.approverType === 'ROLE' && !approver.roleId) ctx.addIssue({ code: 'custom', path: ['roleId'], message: 'نقش تأییدکننده الزامی است' });
+    if (approver.approverType === 'USER' && !approver.userId) ctx.addIssue({ code: 'custom', path: ['userId'], message: 'کاربر تأییدکننده الزامی است' });
   });
+
+// A step has up to 5 approvers; any one of them may decide it. The old
+// single-approver shape ({approverType, roleId, userId}) is still accepted.
+export const workflowStepSchema = z.preprocess(
+  (value) => {
+    if (value && typeof value === 'object' && !('approvers' in value) && 'approverType' in value) {
+      const { approverType, roleId, userId, ...rest } = value as Record<string, unknown>;
+      return { ...rest, approvers: [{ approverType, roleId, userId }] };
+    }
+    return value;
+  },
+  z.object({
+    approvers: z.array(workflowApproverSchema).min(1, 'هر مرحله حداقل یک تأییدکننده لازم دارد').max(5, 'هر مرحله حداکثر ۵ تأییدکننده می‌تواند داشته باشد'),
+    label: z.string().trim().max(100).nullable().optional(),
+  }),
+);
 
 const workflowRuleObject = z.object({
   name: z.string().trim().min(1, 'نام قانون الزامی است').max(150),

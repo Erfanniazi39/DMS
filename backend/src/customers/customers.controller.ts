@@ -140,7 +140,7 @@ export class CustomersController {
 
   // Narrow on purpose — see CustomersService.remove().
   @Delete(':id')
-  @RequirePermissions('customers.manage')
+  @RequirePermissions('users.create')
   remove(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
     return this.customersService.remove(id, req.session.userId ?? null, req.ip);
   }
@@ -165,7 +165,7 @@ export class CustomersController {
   }
 
   @Delete(':id/contacts/:contactId')
-  @RequirePermissions('customers.manage')
+  @RequirePermissions('users.create')
   removeContact(@Param('id', ParseIntPipe) id: number, @Param('contactId', ParseIntPipe) contactId: number, @Req() req: Request) {
     return this.contactsService.remove(id, contactId, req.session.userId ?? null, req.ip);
   }
@@ -190,7 +190,7 @@ export class CustomersController {
   }
 
   @Delete(':id/addresses/:addressId')
-  @RequirePermissions('customers.manage')
+  @RequirePermissions('users.create')
   removeAddress(@Param('id', ParseIntPipe) id: number, @Param('addressId', ParseIntPipe) addressId: number, @Req() req: Request) {
     return this.addressesService.remove(id, addressId, req.session.userId ?? null, req.ip);
   }
@@ -216,7 +216,7 @@ export class CustomersController {
   }
 
   @Delete(':id/bank-accounts/:accountId')
-  @RequirePermissions('customers.manage')
+  @RequirePermissions('users.create')
   removeBankAccount(@Param('id', ParseIntPipe) id: number, @Param('accountId', ParseIntPipe) accountId: number, @Req() req: Request) {
     return this.bankAccountsService.remove(id, accountId, req.session.userId ?? null, req.ip);
   }
@@ -241,7 +241,7 @@ export class CustomersController {
   }
 
   @Delete(':id/notes/:noteId')
-  @RequirePermissions('customers.manage')
+  @RequirePermissions('users.create')
   removeNote(@Param('id', ParseIntPipe) id: number, @Param('noteId', ParseIntPipe) noteId: number, @Req() req: Request) {
     return this.notesService.remove(id, noteId, req.session.userId ?? null, req.ip);
   }
@@ -270,7 +270,7 @@ export class CustomersController {
   }
 
   @Delete(':id/complaints/:complaintId')
-  @RequirePermissions('customers.manage')
+  @RequirePermissions('users.create')
   removeComplaint(@Param('id', ParseIntPipe) id: number, @Param('complaintId', ParseIntPipe) complaintId: number, @Req() req: Request) {
     return this.complaintsService.remove(id, complaintId, req.session.userId ?? null, req.ip);
   }
@@ -302,7 +302,7 @@ export class CustomersController {
   }
 
   @Delete(':id/documents/:documentId')
-  @RequirePermissions('customers.manage')
+  @RequirePermissions('users.create')
   removeDocument(@Param('id', ParseIntPipe) id: number, @Param('documentId', ParseIntPipe) documentId: number, @Req() req: Request) {
     return this.documentsService.removeDocument(id, documentId, req.session.userId ?? null, req.ip);
   }

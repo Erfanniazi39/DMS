@@ -17,14 +17,22 @@ export const AMOUNT_BASIS_LABELS: Record<AmountBasis, string> = {
   ANY_UNIT_PRICE: "قیمت واحد هر ردیف",
 };
 
-export type RuleStep = {
+export type RuleStepApprover = {
   id: number;
-  level: number;
   approverType: ApproverType;
   roleId: number | null;
   userId: number | null;
+  name: string;
+  canViewDocument: boolean;
+};
+
+// A step lists one or more approvers; ANY ONE of them can decide it.
+export type RuleStep = {
+  id: number;
+  level: number;
   label: string | null;
   approverLabel: string;
+  approvers: RuleStepApprover[];
   canViewDocument: boolean;
 };
 

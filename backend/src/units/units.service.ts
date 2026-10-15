@@ -1,16 +1,22 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { suggestNextCode } from '../common/next-code';
 import { PrismaService } from '../prisma/prisma.service';
+import { AUDIT_ENTITY, AuditService } from '../audit/audit.service';
+import { archiveDeletedRecord } from '../audit/deleted-records';
 import type { CreateUnitDto, UpdateUnitDto } from './dto/unit.dto';
 
 // list() is the active-only list used by the Purchase / Purchase Request
 // item forms' unit dropdown — keep its shape and filter unchanged.
 // listAll()/create()/update() back the admin/units page (purchases.manage).
-// There's deliberately no delete: units are referenced by purchase and
-// purchase-request items, so retiring one is done by setting isActive=false.
+// remove() is admin-only (controller) and refused while any record uses the
+// unit — retiring a used unit is done by setting isActive=false.
 @Injectable()
 export class UnitsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly audit: AuditService,
+  ) {}
 
   list() {
     return this.prisma.unit.findMany({
@@ -82,5 +88,25 @@ export class UnitsService {
     });
     if (duplicate?.code === code) throw new ConflictException('این کد قبلاً برای واحد دیگری استفاده شده است');
     if (duplicate?.nameFa === nameFa) throw new ConflictException('واحدی با این نام فارسی از قبل وجود دارد');
+  }
+
+  // Hard delete, only for a unit nothing references (every FK to units is
+  // RESTRICT, so a used unit fails with P2003 → 409). A view-only snapshot
+  // goes to the delete archive like every other business delete.
+  async remove(id: number, userId: number | null, ipAddress?: string) {
+    const unit = await this.prisma.unit.findUnique({ where: { id } });
+    if (!unit) throw new NotFoundException('واحد پیدا نشد');
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        await archiveDeletedRecord(tx, { entityType: AUDIT_ENTITY.UNIT, entityId: id, label: unit.code, record: unit, userId });
+        await tx.unit.delete({ where: { id } });
+      });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003') {
+        throw new ConflictException('این واحد در اسناد یا کالاها استفاده شده است و قابل حذف نیست؛ به‌جای حذف، آن را غیرفعال کنید.');
+      }
+      throw error;
+    }
+    await this.audit.log({ userId, ipAddress, action: 'UNIT_DELETED', entityType: AUDIT_ENTITY.UNIT, entityId: id, details: unit.code });
   }
 }

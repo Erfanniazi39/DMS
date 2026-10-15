@@ -92,16 +92,26 @@ describe('findMatchingRule', () => {
 });
 
 describe('isStepApprover', () => {
-  it('ROLE steps accept any active user holding the role', () => {
-    const step = { approverType: 'ROLE' as const, roleId: 5, userId: null };
-    expect(isStepApprover(step, { id: 1, roleId: 5, active: true })).toBe(true);
-    expect(isStepApprover(step, { id: 1, roleId: 6, active: true })).toBe(false);
+  const role5 = { approverType: 'ROLE' as const, roleId: 5, userId: null };
+  const user9 = { approverType: 'USER' as const, roleId: null, userId: 9 };
+
+  it('a ROLE approver accepts any active user holding the role', () => {
+    expect(isStepApprover([role5], { id: 1, roleId: 5, active: true })).toBe(true);
+    expect(isStepApprover([role5], { id: 1, roleId: 6, active: true })).toBe(false);
   });
 
-  it('USER steps accept only that user, and a disabled user never qualifies', () => {
-    const step = { approverType: 'USER' as const, roleId: null, userId: 9 };
-    expect(isStepApprover(step, { id: 9, roleId: 1, active: true })).toBe(true);
-    expect(isStepApprover(step, { id: 10, roleId: 1, active: true })).toBe(false);
-    expect(isStepApprover(step, { id: 9, roleId: 1, active: false })).toBe(false);
+  it('a USER approver accepts only that user, and a disabled user never qualifies', () => {
+    expect(isStepApprover([user9], { id: 9, roleId: 1, active: true })).toBe(true);
+    expect(isStepApprover([user9], { id: 10, roleId: 1, active: true })).toBe(false);
+    expect(isStepApprover([user9], { id: 9, roleId: 1, active: false })).toBe(false);
+  });
+
+  it('a step with several approvers accepts any one of them (roles and users mixed)', () => {
+    const approvers = [user9, { approverType: 'USER' as const, roleId: null, userId: 11 }, role5];
+    expect(isStepApprover(approvers, { id: 9, roleId: 1, active: true })).toBe(true);
+    expect(isStepApprover(approvers, { id: 11, roleId: 1, active: true })).toBe(true);
+    expect(isStepApprover(approvers, { id: 20, roleId: 5, active: true })).toBe(true);
+    expect(isStepApprover(approvers, { id: 20, roleId: 6, active: true })).toBe(false);
+    expect(isStepApprover([], { id: 9, roleId: 5, active: true })).toBe(false);
   });
 });

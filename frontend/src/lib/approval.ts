@@ -11,7 +11,6 @@ export type ApprovalPerson = { id: number; username: string; fullName: string | 
 export type ApprovalStepRow = {
   id: number;
   level: number;
-  approverType: "ROLE" | "USER";
   approverLabel: string;
   status: ApprovalStepStatus;
   decidedBy: ApprovalPerson | null;

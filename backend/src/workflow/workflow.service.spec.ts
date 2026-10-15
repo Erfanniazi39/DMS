@@ -3,7 +3,7 @@ import { WorkflowService } from './workflow.service';
 
 // In-memory stand-in for the few Prisma calls the engine makes (like the
 // other service specs — real SQL is covered by the live API smoke test).
-type Step = { id: number; requestId: number; level: number; approverType: 'ROLE' | 'USER'; roleId: number | null; userId: number | null; approverLabel: string; status: string; decidedByUserId: number | null; comment: string | null };
+type Step = { id: number; requestId: number; level: number; approvers: { approverType: 'ROLE' | 'USER'; roleId: number | null; userId: number | null }[]; approverLabel: string; status: string; decidedByUserId: number | null; comment: string | null };
 type Request = { id: number; documentType: string; documentId: number; documentNumber: string; status: string; currentLevel: number; requestedByUserId: number; steps: Step[] };
 
 const USERS: Record<number, { id: number; roleId: number; status: string }> = {
@@ -30,8 +30,8 @@ function makeRule(overrides: Record<string, unknown> = {}) {
     maxAmount: null,
     notifyByLetter: true,
     steps: [
-      { level: 1, approverType: 'ROLE', roleId: 20, userId: null, label: null, role: { name: 'مدیر مالی' }, user: null },
-      { level: 2, approverType: 'ROLE', roleId: 30, userId: null, label: null, role: { name: 'مدیرعامل' }, user: null },
+      { level: 1, label: null, approvers: [{ approverType: 'ROLE', roleId: 20, userId: null, role: { name: 'مدیر مالی' }, user: null }] },
+      { level: 2, label: null, approvers: [{ approverType: 'ROLE', roleId: 30, userId: null, role: { name: 'مدیرعامل' }, user: null }] },
     ],
     ...overrides,
   };
@@ -47,8 +47,10 @@ function build(rules = [makeRule()]) {
     workflowRule: { findMany: async () => rules },
     user: {
       findUnique: async ({ where }: { where: { id: number } }) => USERS[where.id] ?? null,
-      findMany: async ({ where }: { where: { roleId: number; status: string } }) =>
-        Object.values(USERS).filter((u) => u.roleId === where.roleId && u.status === where.status).map((u) => ({ id: u.id })),
+      findMany: async ({ where }: { where: { status: string; OR: { roleId?: number; id?: number }[] } }) =>
+        Object.values(USERS)
+          .filter((u) => u.status === where.status && where.OR.some((c) => (c.roleId !== undefined ? u.roleId === c.roleId : u.id === c.id)))
+          .map((u) => ({ id: u.id })),
     },
     approvalRequest: {
       count: async ({ where }: { where: { documentId: number; status: string } }) => requests.filter((r) => r.documentId === where.documentId && r.status === where.status).length,
@@ -62,7 +64,7 @@ function build(rules = [makeRule()]) {
           status: 'PENDING',
           currentLevel: data.currentLevel,
           requestedByUserId: data.requestedByUserId,
-          steps: data.steps.create.map((s: Record<string, any>) => ({ ...s, id: nextStepId++, requestId: id, decidedByUserId: null, comment: null })),
+          steps: data.steps.create.map((s: Record<string, any>) => ({ ...s, approvers: s.approvers.create, id: nextStepId++, requestId: id, decidedByUserId: null, comment: null })),
         };
         requests.push(request);
         return request;
@@ -197,8 +199,8 @@ describe('WorkflowService', () => {
       const { service, tx } = build([
         makeRule({
           steps: [
-            { level: 1, approverType: 'ROLE', roleId: 20, userId: null, label: null, role: { name: 'مالی' }, user: null },
-            { level: 2, approverType: 'ROLE', roleId: 20, userId: null, label: null, role: { name: 'مالی' }, user: null },
+            { level: 1, label: null, approvers: [{ approverType: 'ROLE', roleId: 20, userId: null, role: { name: 'مالی' }, user: null }] },
+            { level: 2, label: null, approvers: [{ approverType: 'ROLE', roleId: 20, userId: null, role: { name: 'مالی' }, user: null }] },
           ],
         }),
       ]);
@@ -248,11 +250,59 @@ describe('WorkflowService', () => {
       const rule = makeRule();
       const { service, tx, requests } = build([rule]);
       await start(service, tx);
-      rule.steps = [{ level: 1, approverType: 'ROLE', roleId: 30, userId: null, label: null, role: { name: 'مدیرعامل' }, user: null }];
+      rule.steps = [{ level: 1, label: null, approvers: [{ approverType: 'ROLE', roleId: 30, userId: null, role: { name: 'مدیرعامل' }, user: null }] }];
       rule.version = 4;
       expect(requests[0].steps).toHaveLength(2);
-      expect(requests[0].steps[0].roleId).toBe(20);
+      expect(requests[0].steps[0].approvers[0].roleId).toBe(20);
       expect((await decide(service, tx, 2, 'APPROVE')).outcome).toBe('ADVANCED');
+    });
+  });
+
+  describe('a step with several approvers', () => {
+    // Level 1: user 3 OR the finance role (20). Level 2: user 1 is not eligible (requester).
+    const multi = () =>
+      makeRule({
+        steps: [
+          {
+            level: 1,
+            label: null,
+            approvers: [
+              { approverType: 'USER', roleId: null, userId: 3, role: null, user: { username: 'ceo', fullName: null } },
+              { approverType: 'ROLE', roleId: 20, userId: null, role: { name: 'مدیر مالی' }, user: null },
+            ],
+          },
+        ],
+      });
+
+    it('any one listed approver (a user or a role holder) can complete it, the first to act wins', async () => {
+      const { service, tx, requests } = build([multi()]);
+      await start(service, tx);
+      await expect(decide(service, tx, 4, 'APPROVE')).resolves.toMatchObject({ outcome: 'APPROVED' }); // finance role holder
+      expect(requests[0].steps[0].decidedByUserId).toBe(4);
+    });
+
+    it('a named user in the list can decide too, but someone outside the list cannot', async () => {
+      const first = build([multi()]);
+      await start(first.service, first.tx);
+      await expect(decide(first.service, first.tx, 3, 'APPROVE')).resolves.toMatchObject({ outcome: 'APPROVED' });
+      const second = build([multi()]);
+      await start(second.service, second.tx);
+      USERS[6] = { id: 6, roleId: 99, status: 'ACTIVE' };
+      await expect(decide(second.service, second.tx, 6, 'APPROVE')).rejects.toBeInstanceOf(ForbiddenException);
+      delete USERS[6];
+    });
+
+    it('the opening letter goes to every approver of the step once, minus the requester', async () => {
+      const { service, tx, letters } = build([multi()]);
+      await start(service, tx);
+      const [, input] = letters.sendSystemLetter.mock.calls[0];
+      expect(input.recipientUserIds.sort()).toEqual([2, 3, 4]);
+    });
+
+    it('the preview label joins the approvers with «یا»', async () => {
+      const { service, tx } = build([multi()]);
+      const preview = await service.evaluate('PURCHASE', facts, tx);
+      expect(preview.required && preview.levels[0].approverLabel).toBe('ceo یا مدیر مالی');
     });
   });
 

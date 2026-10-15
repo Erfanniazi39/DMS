@@ -2374,13 +2374,15 @@ model PaymentAllocation {
 }
 
 model Role {
-  id                Int                @id @default(autoincrement())
-  name              String             @unique
-  users             User[]
-  permissions       RolePermission[]
+  id                        Int                        @id @default(autoincrement())
+  name                      String                     @unique
+  users                     User[]
+  permissions               RolePermission[]
   // Workflow engine: approval steps that name this role as the approver.
-  workflowRuleSteps WorkflowRuleStep[]
-  approvalSteps     ApprovalStep[]
+  workflowRuleSteps         WorkflowRuleStep[]
+  approvalSteps             ApprovalStep[]
+  workflowRuleStepApprovers WorkflowRuleStepApprover[] @relation("WorkflowRuleStepApproverRole")
+  approvalStepApprovers     ApprovalStepApprover[]     @relation("ApprovalStepApproverRole")
 
   @@map("roles")
 }
@@ -2408,19 +2410,19 @@ model RolePermission {
 // A person's Employee record (Master Data) and their User account (if any)
 // are separate, unrelated entities — see database_plan.txt at the project root.
 model User {
-  id                           Int                       @id @default(autoincrement())
-  username                     String                    @unique
-  passwordHash                 String                    @map("password_hash")
+  id                           Int                        @id @default(autoincrement())
+  username                     String                     @unique
+  passwordHash                 String                     @map("password_hash")
   email                        String?
   phone                        String?
   // Display name for pickers and letters (the login is only a username).
   // Plain account data — NOT an Employee link (CLAUDE.md rule 1).
-  fullName                     String?                   @map("full_name")
-  roleId                       Int                       @map("role_id")
-  role                         Role                      @relation(fields: [roleId], references: [id])
-  status                       UserStatus                @default(ACTIVE)
-  createdAt                    DateTime                  @default(now()) @map("created_at")
-  lastLoginAt                  DateTime?                 @map("last_login_at")
+  fullName                     String?                    @map("full_name")
+  roleId                       Int                        @map("role_id")
+  role                         Role                       @relation(fields: [roleId], references: [id])
+  status                       UserStatus                 @default(ACTIVE)
+  createdAt                    DateTime                   @default(now()) @map("created_at")
+  lastLoginAt                  DateTime?                  @map("last_login_at")
   auditLogs                    AuditLog[]
   deletedRecords               DeletedRecord[]
   permissions                  UserPermission[]
@@ -2434,74 +2436,76 @@ model User {
   createdCustomers             Customer[]
   customerNotes                CustomerNote[]
   uploadedCustomerDocuments    CustomerDocument[]
-  ownedCustomerComplaints      CustomerComplaint[]       @relation("CustomerComplaintOwner")
-  createdCustomerComplaints    CustomerComplaint[]       @relation("CustomerComplaintCreatedBy")
+  ownedCustomerComplaints      CustomerComplaint[]        @relation("CustomerComplaintOwner")
+  createdCustomerComplaints    CustomerComplaint[]        @relation("CustomerComplaintCreatedBy")
   // Inventory data-entry provenance — same meaning as above. Each *ByUserId
   // field has its own named relation.
-  createdStockMovements        StockMovement[]           @relation("StockMovementCreatedBy")
-  createdStockAdjustments      StockAdjustment[]         @relation("StockAdjustmentCreatedBy")
-  postedStockAdjustments       StockAdjustment[]         @relation("StockAdjustmentPostedBy")
+  createdStockMovements        StockMovement[]            @relation("StockMovementCreatedBy")
+  createdStockAdjustments      StockAdjustment[]          @relation("StockAdjustmentCreatedBy")
+  postedStockAdjustments       StockAdjustment[]          @relation("StockAdjustmentPostedBy")
   // I2: submit/reject provenance — approve() reuses postedStockAdjustments above.
-  submittedStockAdjustments    StockAdjustment[]         @relation("StockAdjustmentSubmittedBy")
-  rejectedStockAdjustments     StockAdjustment[]         @relation("StockAdjustmentRejectedBy")
+  submittedStockAdjustments    StockAdjustment[]          @relation("StockAdjustmentSubmittedBy")
+  rejectedStockAdjustments     StockAdjustment[]          @relation("StockAdjustmentRejectedBy")
   // I3: who last edited an item's min/reorder/max thresholds.
-  updatedItemStockLevels       ItemStockLevel[]          @relation("ItemStockLevelUpdatedBy")
+  updatedItemStockLevels       ItemStockLevel[]           @relation("ItemStockLevelUpdatedBy")
   // I4: batch/expiry provenance — same data-entry-provenance meaning as above.
-  updatedInventoryItemSettings InventoryItemSetting[]    @relation("InventoryItemSettingUpdatedBy")
-  createdStockBatches          StockBatch[]              @relation("StockBatchCreatedBy")
+  updatedInventoryItemSettings InventoryItemSetting[]     @relation("InventoryItemSettingUpdatedBy")
+  createdStockBatches          StockBatch[]               @relation("StockBatchCreatedBy")
   // I5: goods-receipt / production-output provenance.
-  createdGoodsReceipts         GoodsReceipt[]            @relation("GoodsReceiptCreatedBy")
-  postedGoodsReceipts          GoodsReceipt[]            @relation("GoodsReceiptPostedBy")
-  createdProductionOutputs     ProductionOutput[]        @relation("ProductionOutputCreatedBy")
-  postedProductionOutputs      ProductionOutput[]        @relation("ProductionOutputPostedBy")
+  createdGoodsReceipts         GoodsReceipt[]             @relation("GoodsReceiptCreatedBy")
+  postedGoodsReceipts          GoodsReceipt[]             @relation("GoodsReceiptPostedBy")
+  createdProductionOutputs     ProductionOutput[]         @relation("ProductionOutputCreatedBy")
+  postedProductionOutputs      ProductionOutput[]         @relation("ProductionOutputPostedBy")
   // I6: stock-count provenance — one named relation per *ByUserId field.
-  createdStockCounts           StockCount[]              @relation("StockCountCreatedBy")
-  startedStockCounts           StockCount[]              @relation("StockCountStartedBy")
-  submittedStockCounts         StockCount[]              @relation("StockCountSubmittedBy")
-  postedStockCounts            StockCount[]              @relation("StockCountPostedBy")
-  cancelledStockCounts         StockCount[]              @relation("StockCountCancelledBy")
-  countedStockCountItems       StockCountItem[]          @relation("StockCountItemCountedBy")
+  createdStockCounts           StockCount[]               @relation("StockCountCreatedBy")
+  startedStockCounts           StockCount[]               @relation("StockCountStartedBy")
+  submittedStockCounts         StockCount[]               @relation("StockCountSubmittedBy")
+  postedStockCounts            StockCount[]               @relation("StockCountPostedBy")
+  cancelledStockCounts         StockCount[]               @relation("StockCountCancelledBy")
+  countedStockCountItems       StockCountItem[]           @relation("StockCountItemCountedBy")
   // I8: goods-return provenance.
-  createdGoodsReturns          GoodsReturn[]             @relation("GoodsReturnCreatedBy")
-  postedGoodsReturns           GoodsReturn[]             @relation("GoodsReturnPostedBy")
+  createdGoodsReturns          GoodsReturn[]              @relation("GoodsReturnCreatedBy")
+  postedGoodsReturns           GoodsReturn[]              @relation("GoodsReturnPostedBy")
   // Sales-order provenance (Sales batch 2) — one named relation per field.
-  createdSalesOrders           SalesOrder[]              @relation("SalesOrderCreatedBy")
-  approvedSalesOrders          SalesOrder[]              @relation("SalesOrderApprovedBy")
-  creditOverriddenSalesOrders  SalesOrder[]              @relation("SalesOrderCreditOverrideBy")
-  confirmedSalesOrders         SalesOrder[]              @relation("SalesOrderConfirmedBy")
-  cancelledSalesOrders         SalesOrder[]              @relation("SalesOrderCancelledBy")
-  closedSalesOrders            SalesOrder[]              @relation("SalesOrderClosedBy")
+  createdSalesOrders           SalesOrder[]               @relation("SalesOrderCreatedBy")
+  approvedSalesOrders          SalesOrder[]               @relation("SalesOrderApprovedBy")
+  creditOverriddenSalesOrders  SalesOrder[]               @relation("SalesOrderCreditOverrideBy")
+  confirmedSalesOrders         SalesOrder[]               @relation("SalesOrderConfirmedBy")
+  cancelledSalesOrders         SalesOrder[]               @relation("SalesOrderCancelledBy")
+  closedSalesOrders            SalesOrder[]               @relation("SalesOrderClosedBy")
   // Delivery provenance (Sales batch 3).
-  createdDeliveries            Delivery[]                @relation("DeliveryCreatedBy")
-  postedDeliveries             Delivery[]                @relation("DeliveryPostedBy")
+  createdDeliveries            Delivery[]                 @relation("DeliveryCreatedBy")
+  postedDeliveries             Delivery[]                 @relation("DeliveryPostedBy")
   // Sales-invoice provenance (Sales batch 4).
-  createdSalesInvoices         SalesInvoice[]            @relation("SalesInvoiceCreatedBy")
-  postedSalesInvoices          SalesInvoice[]            @relation("SalesInvoicePostedBy")
+  createdSalesInvoices         SalesInvoice[]             @relation("SalesInvoiceCreatedBy")
+  postedSalesInvoices          SalesInvoice[]             @relation("SalesInvoicePostedBy")
   // Receivables provenance (Sales batch 5).
-  cancelledCustomerPayments    CustomerPayment[]         @relation("CustomerPaymentCancelledBy")
-  createdCustomerPayments      CustomerPayment[]         @relation("CustomerPaymentCreatedBy")
-  allocatedPaymentAllocations  PaymentAllocation[]       @relation("PaymentAllocationAllocatedBy")
-  reversedPaymentAllocations   PaymentAllocation[]       @relation("PaymentAllocationReversedBy")
+  cancelledCustomerPayments    CustomerPayment[]          @relation("CustomerPaymentCancelledBy")
+  createdCustomerPayments      CustomerPayment[]          @relation("CustomerPaymentCreatedBy")
+  allocatedPaymentAllocations  PaymentAllocation[]        @relation("PaymentAllocationAllocatedBy")
+  reversedPaymentAllocations   PaymentAllocation[]        @relation("PaymentAllocationReversedBy")
   // Sales-return provenance (Sales batch 6) — one named relation per field.
-  requestedSalesReturns        SalesReturn[]             @relation("SalesReturnRequestedBy")
-  customerPaymentDocuments     CustomerPaymentDocument[] @relation("CustomerPaymentDocumentUploadedBy")
-  approvedSalesReturns         SalesReturn[]             @relation("SalesReturnApprovedBy")
-  receivedSalesReturns         SalesReturn[]             @relation("SalesReturnReceivedBy")
-  inspectedSalesReturns        SalesReturn[]             @relation("SalesReturnInspectedBy")
+  requestedSalesReturns        SalesReturn[]              @relation("SalesReturnRequestedBy")
+  customerPaymentDocuments     CustomerPaymentDocument[]  @relation("CustomerPaymentDocumentUploadedBy")
+  approvedSalesReturns         SalesReturn[]              @relation("SalesReturnApprovedBy")
+  receivedSalesReturns         SalesReturn[]              @relation("SalesReturnReceivedBy")
+  inspectedSalesReturns        SalesReturn[]              @relation("SalesReturnInspectedBy")
   // Credit-note provenance (Sales batch 6).
-  createdCreditNotes           CreditNote[]              @relation("CreditNoteCreatedBy")
-  postedCreditNotes            CreditNote[]              @relation("CreditNotePostedBy")
+  createdCreditNotes           CreditNote[]               @relation("CreditNoteCreatedBy")
+  postedCreditNotes            CreditNote[]               @relation("CreditNotePostedBy")
   // Letters (نامه‌نگاری): written, received, and attached by this account.
-  sentLetters                  Letter[]                  @relation("LetterSender")
+  sentLetters                  Letter[]                   @relation("LetterSender")
   // Workflow engine (موتور گردش کار): provenance + named approvers.
-  createdWorkflowRules         WorkflowRule[]            @relation("WorkflowRuleCreatedBy")
-  updatedWorkflowRules         WorkflowRule[]            @relation("WorkflowRuleUpdatedBy")
+  createdWorkflowRules         WorkflowRule[]             @relation("WorkflowRuleCreatedBy")
+  updatedWorkflowRules         WorkflowRule[]             @relation("WorkflowRuleUpdatedBy")
   workflowRuleSteps            WorkflowRuleStep[]
-  requestedApprovals           ApprovalRequest[]         @relation("ApprovalRequestedBy")
-  approvalSteps                ApprovalStep[]            @relation("ApprovalStepApprover")
-  decidedApprovalSteps         ApprovalStep[]            @relation("ApprovalStepDecidedBy")
-  receivedLetters              LetterRecipient[]         @relation("LetterRecipientUser")
-  uploadedLetterAttachments    LetterAttachment[]        @relation("LetterAttachmentUploadedBy")
+  requestedApprovals           ApprovalRequest[]          @relation("ApprovalRequestedBy")
+  approvalSteps                ApprovalStep[]             @relation("ApprovalStepApprover")
+  decidedApprovalSteps         ApprovalStep[]             @relation("ApprovalStepDecidedBy")
+  workflowRuleStepApprovers    WorkflowRuleStepApprover[] @relation("WorkflowRuleStepApproverUser")
+  approvalStepApprovers        ApprovalStepApprover[]     @relation("ApprovalStepApproverUser")
+  receivedLetters              LetterRecipient[]          @relation("LetterRecipientUser")
+  uploadedLetterAttachments    LetterAttachment[]         @relation("LetterAttachmentUploadedBy")
 
   @@map("users")
 }
@@ -2745,19 +2749,37 @@ model WorkflowRule {
 // One approver spec per level (levels run in order). Migration adds a CHECK:
 // ROLE => role_id set / user_id null; USER => the reverse.
 model WorkflowRuleStep {
-  id           Int                  @id @default(autoincrement())
-  ruleId       Int                  @map("rule_id")
-  rule         WorkflowRule         @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  id           Int                        @id @default(autoincrement())
+  ruleId       Int                        @map("rule_id")
+  rule         WorkflowRule               @relation(fields: [ruleId], references: [id], onDelete: Cascade)
   level        Int
-  approverType WorkflowApproverType @map("approver_type")
-  roleId       Int?                 @map("role_id")
-  role         Role?                @relation(fields: [roleId], references: [id], onDelete: Restrict)
-  userId       Int?                 @map("user_id")
-  user         User?                @relation(fields: [userId], references: [id], onDelete: Restrict)
+  approverType WorkflowApproverType?      @map("approver_type")
+  roleId       Int?                       @map("role_id")
+  role         Role?                      @relation(fields: [roleId], references: [id], onDelete: Restrict)
+  userId       Int?                       @map("user_id")
+  user         User?                      @relation(fields: [userId], references: [id], onDelete: Restrict)
   label        String?
+  // Approvers of the step: ANY ONE of them may decide it (first to act wins).
+  // The three columns above are legacy (single approver) — no longer read or
+  // written; the rows were copied into `approvers` by the 2026-10-14 migration.
+  approvers    WorkflowRuleStepApprover[]
 
   @@unique([ruleId, level])
   @@map("workflow_rule_steps")
+}
+
+model WorkflowRuleStepApprover {
+  id           Int                  @id @default(autoincrement())
+  stepId       Int                  @map("step_id")
+  step         WorkflowRuleStep     @relation(fields: [stepId], references: [id], onDelete: Cascade)
+  approverType WorkflowApproverType @map("approver_type")
+  roleId       Int?                 @map("role_id")
+  role         Role?                @relation("WorkflowRuleStepApproverRole", fields: [roleId], references: [id], onDelete: Restrict)
+  userId       Int?                 @map("user_id")
+  user         User?                @relation("WorkflowRuleStepApproverUser", fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([stepId])
+  @@map("workflow_rule_step_approvers")
 }
 
 // A document's approval instance. Everything needed to explain the decision
@@ -2791,24 +2813,43 @@ model ApprovalRequest {
 }
 
 model ApprovalStep {
-  id                   Int                  @id @default(autoincrement())
-  requestId            Int                  @map("request_id")
-  request              ApprovalRequest      @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  id                   Int                    @id @default(autoincrement())
+  requestId            Int                    @map("request_id")
+  request              ApprovalRequest        @relation(fields: [requestId], references: [id], onDelete: Cascade)
   level                Int
-  approverType         WorkflowApproverType @map("approver_type")
-  roleId               Int?                 @map("role_id")
-  role                 Role?                @relation(fields: [roleId], references: [id], onDelete: Restrict)
-  userId               Int?                 @map("user_id")
-  user                 User?                @relation("ApprovalStepApprover", fields: [userId], references: [id], onDelete: Restrict)
-  approverLabel        String               @map("approver_label")
-  status               ApprovalStepStatus   @default(WAITING)
-  decidedByUserId      Int?                 @map("decided_by_user_id")
-  decidedByUser        User?                @relation("ApprovalStepDecidedBy", fields: [decidedByUserId], references: [id], onDelete: SetNull)
-  decidedAt            DateTime?            @map("decided_at")
+  approverType         WorkflowApproverType?  @map("approver_type")
+  roleId               Int?                   @map("role_id")
+  role                 Role?                  @relation(fields: [roleId], references: [id], onDelete: Restrict)
+  userId               Int?                   @map("user_id")
+  user                 User?                  @relation("ApprovalStepApprover", fields: [userId], references: [id], onDelete: Restrict)
+  approverLabel        String                 @map("approver_label")
+  // Snapshot of who may decide this step (any one of them). roleId/userId/
+  // approverType above are legacy single-approver columns, no longer used.
+  approvers            ApprovalStepApprover[]
+  status               ApprovalStepStatus     @default(WAITING)
+  decidedByUserId      Int?                   @map("decided_by_user_id")
+  decidedByUser        User?                  @relation("ApprovalStepDecidedBy", fields: [decidedByUserId], references: [id], onDelete: SetNull)
+  decidedAt            DateTime?              @map("decided_at")
   comment              String?
   // Plain id, no FK — the letters tables belong to the Letters module.
-  notificationLetterId Int?                 @map("notification_letter_id")
+  notificationLetterId Int?                   @map("notification_letter_id")
 
   @@unique([requestId, level])
   @@map("approval_steps")
+}
+
+model ApprovalStepApprover {
+  id           Int                  @id @default(autoincrement())
+  stepId       Int                  @map("step_id")
+  step         ApprovalStep         @relation(fields: [stepId], references: [id], onDelete: Cascade)
+  approverType WorkflowApproverType @map("approver_type")
+  roleId       Int?                 @map("role_id")
+  role         Role?                @relation("ApprovalStepApproverRole", fields: [roleId], references: [id], onDelete: Restrict)
+  userId       Int?                 @map("user_id")
+  user         User?                @relation("ApprovalStepApproverUser", fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([stepId])
+  @@index([roleId])
+  @@index([userId])
+  @@map("approval_step_approvers")
 }

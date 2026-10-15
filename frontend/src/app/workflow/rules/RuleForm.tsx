@@ -27,11 +27,14 @@ import {
 
 type Props = { mode: "create" } | { mode: "edit"; ruleId: number };
 
-type StepDraft = { key: number; approverType: ApproverType; roleId: string; userId: string; label: string };
+type ApproverDraft = { key: number; approverType: ApproverType; roleId: string; userId: string };
+type StepDraft = { key: number; approvers: ApproverDraft[]; label: string };
 
 const MAX_STEPS = 5;
 let stepKey = 0;
-const newStep = (): StepDraft => ({ key: ++stepKey, approverType: "ROLE", roleId: "", userId: "", label: "" });
+const newApprover = (): ApproverDraft => ({ key: ++stepKey, approverType: "ROLE", roleId: "", userId: "" });
+const newStep = (): StepDraft => ({ key: ++stepKey, approvers: [newApprover()], label: "" });
+const MAX_APPROVERS = 5;
 
 // Create / edit one approval rule. The document type is fixed once saved. A
 // rule's amount band and scope only make sense for some documents: purchase
@@ -91,9 +94,12 @@ export function RuleForm(props: Props) {
           setSteps(
             rule.steps.map((step) => ({
               key: ++stepKey,
-              approverType: step.approverType,
-              roleId: step.roleId === null ? "" : String(step.roleId),
-              userId: step.userId === null ? "" : String(step.userId),
+              approvers: step.approvers.map((approver) => ({
+                key: ++stepKey,
+                approverType: approver.approverType,
+                roleId: approver.roleId === null ? "" : String(approver.roleId),
+                userId: approver.userId === null ? "" : String(approver.userId),
+              })),
               label: step.label ?? "",
             })),
           );
@@ -118,6 +124,12 @@ export function RuleForm(props: Props) {
     setSteps((current) => current.map((step) => (step.key === key ? { ...step, ...patch } : step)));
   }
 
+  function updateApprover(stepKey: number, approverKey: number, patch: Partial<ApproverDraft>) {
+    setSteps((current) =>
+      current.map((step) => (step.key === stepKey ? { ...step, approvers: step.approvers.map((approver) => (approver.key === approverKey ? { ...approver, ...patch } : approver)) } : step)),
+    );
+  }
+
   function moveStep(index: number, direction: -1 | 1) {
     setSteps((current) => {
       const target = index + direction;
@@ -132,10 +144,16 @@ export function RuleForm(props: Props) {
     event.preventDefault();
     if (!name.trim()) return pushError("نام قانون الزامی است.");
     for (const [index, step] of steps.entries()) {
-      if (step.approverType === "ROLE" && !step.roleId) return pushError(`نقش تأییدکنندهٔ مرحلهٔ ${index + 1} را انتخاب کنید.`);
-      if (step.approverType === "USER" && !step.userId) return pushError(`کاربر تأییدکنندهٔ مرحلهٔ ${index + 1} را انتخاب کنید.`);
+      const seen = new Set<string>();
+      for (const approver of step.approvers) {
+        if (approver.approverType === "ROLE" && !approver.roleId) return pushError(`نقش تأییدکنندهٔ مرحلهٔ ${index + 1} را انتخاب کنید.`);
+        if (approver.approverType === "USER" && !approver.userId) return pushError(`کاربر تأییدکنندهٔ مرحلهٔ ${index + 1} را انتخاب کنید.`);
+        const id = approver.approverType === "ROLE" ? `R${approver.roleId}` : `U${approver.userId}`;
+        if (seen.has(id)) return pushError(`در مرحلهٔ ${index + 1} یک تأییدکننده دو بار انتخاب شده است.`);
+        seen.add(id);
+      }
     }
-    const userIds = steps.filter((step) => step.approverType === "USER").map((step) => step.userId);
+    const userIds = steps.flatMap((step) => step.approvers.filter((approver) => approver.approverType === "USER").map((approver) => approver.userId));
     if (new Set(userIds).size !== userIds.length) return pushError("یک کاربر نمی‌تواند در دو مرحلهٔ یک قانون باشد.");
     if (showsAmount && minAmount !== "" && maxAmount !== "" && Number(minAmount) >= Number(maxAmount)) {
       return pushError("حداکثر مبلغ باید بیشتر از حداقل مبلغ باشد.");
@@ -156,9 +174,11 @@ export function RuleForm(props: Props) {
       requesterDepartmentId: toId(departmentId),
       notifyByLetter,
       steps: steps.map((step) => ({
-        approverType: step.approverType,
-        roleId: step.approverType === "ROLE" ? Number(step.roleId) : null,
-        userId: step.approverType === "USER" ? Number(step.userId) : null,
+        approvers: step.approvers.map((approver) => ({
+          approverType: approver.approverType,
+          roleId: approver.approverType === "ROLE" ? Number(approver.roleId) : null,
+          userId: approver.approverType === "USER" ? Number(approver.userId) : null,
+        })),
         label: step.label.trim() || null,
       })),
     };
@@ -326,58 +346,81 @@ export function RuleForm(props: Props) {
           </CardHeader>
           <CardContent className="space-y-4">
             <p className="text-sm text-muted-foreground">
-              مراحل به ترتیب اجرا می‌شوند. «نقش» یعنی هر کاربر فعالِ آن نقش می‌تواند تأیید کند (برای جلوگیری از توقف در تعطیلات توصیه می‌شود). درخواست‌دهنده هرگز نمی‌تواند سند خود را تأیید کند و هر کاربر فقط در یک مرحلهٔ هر درخواست تصمیم می‌گیرد.
+              مراحل به ترتیب اجرا می‌شوند. در هر مرحله می‌توانید چند تأییدکننده (نقش و/یا کاربر) تعریف کنید؛ هر کدام از آن‌ها که زودتر تأیید کند، همان مرحله تأیید می‌شود و مرحلهٔ بعد باز می‌شود. «نقش» یعنی هر کاربر فعالِ آن نقش می‌تواند تأیید کند (برای جلوگیری از توقف در تعطیلات توصیه می‌شود). درخواست‌دهنده هرگز نمی‌تواند سند خود را تأیید کند و هر کاربر فقط در یک مرحلهٔ هر درخواست تصمیم می‌گیرد.
             </p>
             {steps.map((step, index) => (
-              <div key={step.key} className="grid items-end gap-3 rounded-lg border border-border p-3 md:grid-cols-[2rem_9rem_1fr_1fr_auto]">
-                <span className="pb-2 text-sm font-medium">{(index + 1).toLocaleString("fa-IR")}.</span>
-                <div className="flex flex-col gap-2">
-                  <Label htmlFor={`step-type-${step.key}`}>تأییدکننده</Label>
-                  <select
-                    id={`step-type-${step.key}`}
-                    className={selectClass}
-                    value={step.approverType}
-                    onChange={(event) => updateStep(step.key, { approverType: event.target.value as ApproverType })}
-                  >
-                    <option value="ROLE">یک نقش</option>
-                    <option value="USER">یک کاربر مشخص</option>
-                  </select>
+              <div key={step.key} className="space-y-3 rounded-lg border border-border p-3">
+                <div className="grid items-end gap-3 md:grid-cols-[2rem_1fr_auto]">
+                  <span className="pb-2 text-sm font-medium">{(index + 1).toLocaleString("fa-IR")}.</span>
+                  <div className="flex flex-col gap-2">
+                    <Label htmlFor={`step-label-${step.key}`}>عنوان نمایشی (اختیاری)</Label>
+                    <Input id={`step-label-${step.key}`} value={step.label} onChange={(event) => updateStep(step.key, { label: event.target.value })} placeholder="مثلاً: مدیر مالی" />
+                  </div>
+                  <div className="flex items-center gap-1 pb-0.5">
+                    <Button type="button" variant="ghost" size="icon" aria-label="انتقال به بالا" disabled={index === 0} onClick={() => moveStep(index, -1)}>
+                      <ArrowUp className="size-4" aria-hidden="true" />
+                    </Button>
+                    <Button type="button" variant="ghost" size="icon" aria-label="انتقال به پایین" disabled={index === steps.length - 1} onClick={() => moveStep(index, 1)}>
+                      <ArrowDown className="size-4" aria-hidden="true" />
+                    </Button>
+                    <Button type="button" variant="ghost" size="icon" aria-label="حذف مرحله" disabled={steps.length === 1} onClick={() => setSteps((current) => current.filter((item) => item.key !== step.key))}>
+                      <Trash2 className="size-4 text-destructive" aria-hidden="true" />
+                    </Button>
+                  </div>
                 </div>
-                <div className="flex flex-col gap-2">
-                  <Label htmlFor={`step-who-${step.key}`}>{step.approverType === "ROLE" ? "نقش" : "کاربر"}</Label>
-                  {step.approverType === "ROLE" ? (
-                    <select id={`step-who-${step.key}`} className={selectClass} value={step.roleId} onChange={(event) => updateStep(step.key, { roleId: event.target.value })}>
-                      <option value="">انتخاب نقش</option>
-                      {options.roles.map((role) => (
-                        <option key={role.id} value={role.id}>
-                          {roleName(role.name)}
-                        </option>
-                      ))}
-                    </select>
-                  ) : (
-                    <select id={`step-who-${step.key}`} className={selectClass} value={step.userId} onChange={(event) => updateStep(step.key, { userId: event.target.value })}>
-                      <option value="">انتخاب کاربر</option>
-                      {options.users.map((person) => (
-                        <option key={person.id} value={person.id}>
-                          {userName(person)} ({person.username})
-                        </option>
-                      ))}
-                    </select>
-                  )}
-                </div>
-                <div className="flex flex-col gap-2">
-                  <Label htmlFor={`step-label-${step.key}`}>عنوان نمایشی (اختیاری)</Label>
-                  <Input id={`step-label-${step.key}`} value={step.label} onChange={(event) => updateStep(step.key, { label: event.target.value })} placeholder="مثلاً: مدیر مالی" />
-                </div>
-                <div className="flex items-center gap-1 pb-0.5">
-                  <Button type="button" variant="ghost" size="icon" aria-label="انتقال به بالا" disabled={index === 0} onClick={() => moveStep(index, -1)}>
-                    <ArrowUp className="size-4" aria-hidden="true" />
-                  </Button>
-                  <Button type="button" variant="ghost" size="icon" aria-label="انتقال به پایین" disabled={index === steps.length - 1} onClick={() => moveStep(index, 1)}>
-                    <ArrowDown className="size-4" aria-hidden="true" />
-                  </Button>
-                  <Button type="button" variant="ghost" size="icon" aria-label="حذف مرحله" disabled={steps.length === 1} onClick={() => setSteps((current) => current.filter((item) => item.key !== step.key))}>
-                    <Trash2 className="size-4 text-destructive" aria-hidden="true" />
+                <div className="space-y-2 md:ps-8">
+                  {step.approvers.map((approver, approverIndex) => (
+                    <div key={approver.key} className="grid items-end gap-3 md:grid-cols-[3rem_9rem_1fr_auto]">
+                      <span className="pb-2 text-xs text-muted-foreground">{approverIndex === 0 ? "تأییدکننده" : "یا"}</span>
+                      <div className="flex flex-col gap-2">
+                        <Label htmlFor={`approver-type-${approver.key}`} className="sr-only">نوع تأییدکننده</Label>
+                        <select
+                          id={`approver-type-${approver.key}`}
+                          className={selectClass}
+                          value={approver.approverType}
+                          onChange={(event) => updateApprover(step.key, approver.key, { approverType: event.target.value as ApproverType })}
+                        >
+                          <option value="ROLE">یک نقش</option>
+                          <option value="USER">یک کاربر مشخص</option>
+                        </select>
+                      </div>
+                      <div className="flex flex-col gap-2">
+                        <Label htmlFor={`approver-who-${approver.key}`} className="sr-only">{approver.approverType === "ROLE" ? "نقش" : "کاربر"}</Label>
+                        {approver.approverType === "ROLE" ? (
+                          <select id={`approver-who-${approver.key}`} className={selectClass} value={approver.roleId} onChange={(event) => updateApprover(step.key, approver.key, { roleId: event.target.value })}>
+                            <option value="">انتخاب نقش</option>
+                            {options.roles.map((role) => (
+                              <option key={role.id} value={role.id}>
+                                {roleName(role.name)}
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          <select id={`approver-who-${approver.key}`} className={selectClass} value={approver.userId} onChange={(event) => updateApprover(step.key, approver.key, { userId: event.target.value })}>
+                            <option value="">انتخاب کاربر</option>
+                            {options.users.map((person) => (
+                              <option key={person.id} value={person.id}>
+                                {userName(person)} ({person.username})
+                              </option>
+                            ))}
+                          </select>
+                        )}
+                      </div>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        aria-label="حذف تأییدکننده"
+                        disabled={step.approvers.length === 1}
+                        onClick={() => updateStep(step.key, { approvers: step.approvers.filter((item) => item.key !== approver.key) })}
+                      >
+                        <Trash2 className="size-4 text-destructive" aria-hidden="true" />
+                      </Button>
+                    </div>
+                  ))}
+                  <Button type="button" variant="link" size="sm" disabled={step.approvers.length >= MAX_APPROVERS} onClick={() => updateStep(step.key, { approvers: [...step.approvers, newApprover()] })}>
+                    <Plus className="size-4" aria-hidden="true" />
+                    افزودن تأییدکنندهٔ دیگر (یا)
                   </Button>
                 </div>
               </div>

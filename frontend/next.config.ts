@@ -1,6 +1,11 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  experimental: {
+    // `next dev` otherwise persists Turbopack's work in .next/dev/cache and it
+    // grows by gigabytes; production uses `next build` + `next start` anyway.
+    turbopackFileSystemCacheForDev: false,
+  },
   async rewrites() {
     return [
       {

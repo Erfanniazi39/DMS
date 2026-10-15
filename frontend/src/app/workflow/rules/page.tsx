@@ -65,14 +65,17 @@ export default function WorkflowRulesPage() {
 
   const grouped = useMemo(() => DOCUMENT_TYPES.map((type) => ({ type, rules: rules.filter((rule) => rule.documentType === type) })), [rules]);
 
-  function approverText(rule: WorkflowRule, step: WorkflowRule["steps"][number]) {
+  function approverText(step: WorkflowRule["steps"][number]) {
     if (step.label) return step.label;
-    if (step.approverType === "ROLE") {
-      const role = options?.roles.find((item) => item.id === step.roleId);
-      return role ? `نقش «${roleName(role.name)}»` : step.approverLabel;
-    }
-    const person = options?.users.find((item) => item.id === step.userId);
-    return person ? userName(person) : step.approverLabel;
+    const names = step.approvers.map((approver) => {
+      if (approver.approverType === "ROLE") {
+        const role = options?.roles.find((item) => item.id === approver.roleId);
+        return role ? `نقش «${roleName(role.name)}»` : approver.name;
+      }
+      const person = options?.users.find((item) => item.id === approver.userId);
+      return person ? userName(person) : approver.name;
+    });
+    return names.join(" یا ");
   }
 
   async function move(type: DocumentType, ruleId: number, direction: -1 | 1) {
@@ -184,7 +187,7 @@ export default function WorkflowRulesPage() {
                       <tbody className="divide-y divide-border">
                         {typeRules.map((rule, index) => {
                           const scope = scopeSummary(rule, options);
-                          const noAccess = rule.steps.filter((step) => !step.canViewDocument);
+                          const noAccess = rule.steps.flatMap((step) => step.approvers.filter((approver) => !approver.canViewDocument));
                           return (
                             <tr key={rule.id} className={rule.isActive ? "hover:bg-muted/30" : "text-muted-foreground hover:bg-muted/30"}>
                               <td className="px-3 py-3">
@@ -204,7 +207,7 @@ export default function WorkflowRulesPage() {
                                 {noAccess.length > 0 ? (
                                   <p className="mt-1 flex items-center gap-1 text-xs text-warning">
                                     <AlertTriangle className="size-3.5 shrink-0" aria-hidden="true" />
-                                    {noAccess.map((step) => approverText(rule, step)).join("، ")} دسترسی مشاهدهٔ این سند را ندارد و نمی‌تواند تأیید کند.
+                                    {noAccess.map((approver) => approver.name).join("، ")} دسترسی مشاهدهٔ این سند را ندارد و نمی‌تواند تأیید کند.
                                   </p>
                                 ) : null}
                               </td>
@@ -220,7 +223,7 @@ export default function WorkflowRulesPage() {
                                 <ol className="space-y-0.5 text-xs">
                                   {rule.steps.map((step) => (
                                     <li key={step.id}>
-                                      <span className="text-muted-foreground">{step.level.toLocaleString("fa-IR")}.</span> {approverText(rule, step)}
+                                      <span className="text-muted-foreground">{step.level.toLocaleString("fa-IR")}.</span> {approverText(step)}
                                     </li>
                                   ))}
                                 </ol>

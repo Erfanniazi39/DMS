@@ -13,7 +13,12 @@ type Db = Prisma.TransactionClient;
 const ruleWithSteps = {
   steps: {
     orderBy: { level: 'asc' as const },
-    include: { role: { select: { name: true } }, user: { select: { username: true, fullName: true } } },
+    include: {
+      approvers: {
+        orderBy: { id: 'asc' as const },
+        include: { role: { select: { name: true } }, user: { select: { username: true, fullName: true } } },
+      },
+    },
   },
 } satisfies Prisma.WorkflowRuleInclude;
 
@@ -31,6 +36,13 @@ export type ApprovalPreview =
 export type DecisionOutcome = 'ADVANCED' | 'APPROVED' | 'REJECTED';
 
 type Actor = { userId: number; ipAddress?: string };
+
+// Prisma `user` filter matching anyone who may decide a step: any listed user
+// or any holder of a listed role.
+function approverMatch(approvers: readonly { approverType: string; roleId: number | null; userId: number | null }[]): Prisma.UserWhereInput[] {
+  const conditions: Prisma.UserWhereInput[] = approvers.map((approver) => (approver.approverType === 'ROLE' ? { roleId: approver.roleId as number } : { id: approver.userId as number }));
+  return conditions.length ? conditions : [{ id: -1 }];
+}
 
 // The approval engine. Owning modules (Purchases, Sales, Purchase Requests)
 // call it with facts they computed themselves and change their OWN status
@@ -105,10 +117,8 @@ export class WorkflowService {
           steps: {
             create: rule.steps.map((step) => ({
               level: step.level,
-              approverType: step.approverType,
-              roleId: step.roleId,
-              userId: step.userId,
               approverLabel: stepLabel(step),
+              approvers: { create: step.approvers.map((approver) => ({ approverType: approver.approverType, roleId: approver.roleId, userId: approver.userId })) },
               status: step.level === 1 ? ('OPEN' as const) : ('WAITING' as const),
             })),
           },
@@ -148,14 +158,14 @@ export class WorkflowService {
 
     const request = await tx.approvalRequest.findFirst({
       where: { documentType: input.documentType, documentId: input.documentId, status: 'PENDING' },
-      include: { steps: { orderBy: { level: 'asc' } } },
+      include: { steps: { orderBy: { level: 'asc' }, include: { approvers: true } } },
     });
     if (!request) throw new ConflictException('درخواست تأیید فعالی برای این سند وجود ندارد');
     const step = request.steps.find((s) => s.level === request.currentLevel && s.status === 'OPEN');
     if (!step) throw new ConflictException('این مرحله دیگر در انتظار تصمیم نیست');
 
     const user = await tx.user.findUnique({ where: { id: input.actor.userId }, select: { id: true, roleId: true, status: true } });
-    if (!user || !isStepApprover(step, { id: user.id, roleId: user.roleId, active: user.status === 'ACTIVE' })) {
+    if (!user || !isStepApprover(step.approvers, { id: user.id, roleId: user.roleId, active: user.status === 'ACTIVE' })) {
       throw new ForbiddenException('شما تأییدکنندهٔ این مرحله نیستید');
     }
     if (user.id === request.requestedByUserId) throw new ForbiddenException('درخواست‌دهنده نمی‌تواند درخواست خود را تأیید یا رد کند');
@@ -244,7 +254,6 @@ export class WorkflowService {
       steps: request.steps.map((step) => ({
         id: step.id,
         level: step.level,
-        approverType: step.approverType,
         approverLabel: step.approverLabel,
         status: step.status,
         decidedBy: step.decidedByUser,
@@ -259,13 +268,13 @@ export class WorkflowService {
   async canDecide(documentType: WorkflowDocumentType, documentId: number, userId: number): Promise<boolean> {
     const request = await this.prisma.approvalRequest.findFirst({
       where: { documentType, documentId, status: 'PENDING' },
-      include: { steps: true },
+      include: { steps: { include: { approvers: true } } },
     });
     if (!request || request.requestedByUserId === userId) return false;
     const step = request.steps.find((s) => s.level === request.currentLevel && s.status === 'OPEN');
     if (!step || request.steps.some((s) => s.decidedByUserId === userId)) return false;
     const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { id: true, roleId: true, status: true } });
-    return !!user && isStepApprover(step, { id: user.id, roleId: user.roleId, active: user.status === 'ACTIVE' });
+    return !!user && isStepApprover(step.approvers, { id: user.id, roleId: user.roleId, active: user.status === 'ACTIVE' });
   }
 
   // The document's open request (who asked, for the owning module's
@@ -336,7 +345,7 @@ export class WorkflowService {
   async stuck() {
     const pending = await this.prisma.approvalRequest.findMany({
       where: { status: 'PENDING' },
-      include: { steps: { orderBy: { level: 'asc' } }, requestedByUser: { select: { id: true, username: true, fullName: true } } },
+      include: { steps: { orderBy: { level: 'asc' }, include: { approvers: true } }, requestedByUser: { select: { id: true, username: true, fullName: true } } },
       orderBy: { id: 'asc' },
     });
     const stuck = [];
@@ -348,7 +357,7 @@ export class WorkflowService {
         where: {
           status: 'ACTIVE',
           id: { notIn: [request.requestedByUserId, ...decidedBefore] },
-          ...(step.approverType === 'ROLE' ? { roleId: step.roleId as number } : { id: step.userId as number }),
+          OR: approverMatch(step.approvers),
         },
       });
       if (candidates === 0) {
@@ -377,7 +386,7 @@ export class WorkflowService {
       status: 'PENDING',
       requestedByUserId: { not: userId },
       steps: {
-        some: { status: 'OPEN', OR: [{ userId }, { roleId: user.roleId }] },
+        some: { status: 'OPEN', approvers: { some: { OR: [{ userId }, { roleId: user.roleId }] } } },
         none: { decidedByUserId: userId },
       },
     };
@@ -396,15 +405,12 @@ export class WorkflowService {
   // who already decided a level (they couldn't decide this one). The document
   // number in the text becomes a link for readers allowed to open it.
   private async notifyLevelOpened(tx: Db, requestId: number, level: number, actor: Actor): Promise<void> {
-    const request = await tx.approvalRequest.findUnique({ where: { id: requestId }, include: { steps: { orderBy: { level: 'asc' } } } });
+    const request = await tx.approvalRequest.findUnique({ where: { id: requestId }, include: { steps: { orderBy: { level: 'asc' }, include: { approvers: true } } } });
     if (!request?.notifyByLetter) return;
     const step = request.steps.find((s) => s.level === level);
     if (!step) return;
     const excluded = [request.requestedByUserId, ...request.steps.map((s) => s.decidedByUserId).filter((id): id is number => id !== null)];
-    const recipients =
-      step.approverType === 'USER'
-        ? [step.userId as number]
-        : (await tx.user.findMany({ where: { roleId: step.roleId as number, status: 'ACTIVE' }, select: { id: true } })).map((user) => user.id);
+    const recipients = [...new Set((await tx.user.findMany({ where: { status: 'ACTIVE', OR: approverMatch(step.approvers) }, select: { id: true } })).map((user) => user.id))];
     const typeLabel = WORKFLOW_DOCUMENT_TYPE_LABELS_FA[request.documentType] ?? request.documentType;
     const letter = await this.letters.sendSystemLetter(tx, {
       senderUserId: actor.userId,

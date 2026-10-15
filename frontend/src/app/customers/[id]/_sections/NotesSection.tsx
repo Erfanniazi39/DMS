@@ -20,6 +20,7 @@ import {
   type CustomerNoteType,
 } from "../../shared";
 import { DetailSection, type SectionToasts } from "./DetailSection";
+import { useAdminUser } from "@/app/admin/layout";
 
 type NoteForm = { noteType: CustomerNoteType; body: string; isPinned: boolean };
 const emptyNoteForm: NoteForm = { noteType: "GENERAL", body: "", isPinned: false };
@@ -38,6 +39,8 @@ export function NotesSection({
   onChanged: () => Promise<void>;
   toasts: SectionToasts;
 }) {
+  // Delete is admin-only: users.create is held by the ADMIN role alone (the backend route checks the same).
+  const canDelete = useAdminUser()?.permissions.includes("users.create") ?? false;
   const { pushError, pushErrors, pushSuccess } = toasts;
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -125,10 +128,12 @@ export function NotesSection({
                       <Pencil className="size-4" aria-hidden="true" />
                       ویرایش
                     </Button>
-                    <Button size="sm" variant="ghost" className="text-destructive hover:bg-destructive/10 hover:text-destructive" onClick={() => void remove(note)}>
-                      <Trash2 className="size-4" aria-hidden="true" />
-                      حذف
-                    </Button>
+                    {canDelete ? (
+                      <Button size="sm" variant="ghost" className="text-destructive hover:bg-destructive/10 hover:text-destructive" onClick={() => void remove(note)}>
+                        <Trash2 className="size-4" aria-hidden="true" />
+                        حذف
+                      </Button>
+                    ) : null}
                   </div>
                 ) : null}
               </li>
