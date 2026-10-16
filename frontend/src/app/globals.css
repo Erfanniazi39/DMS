@@ -160,6 +160,29 @@
   }
 }
 
+/* Data tables (every <table> inside the app's main area): thin light-blue lines
+   and zebra rows (white, light grey, white, ...). The stripe sits in the base
+   layer, so a row's own utility background (hover, highlight) still wins; the
+   line colour is unlayered on purpose so it also recolours the existing
+   `divide-border` / `border-border` classes. Printed documents
+   ([data-print-sheet]) keep their black paper lines and no stripes. */
+:root {
+  --table-border: #cfe0f2;
+  --table-stripe: #f3f5f8;
+}
+.dark {
+  --table-border: #2b4561;
+  --table-stripe: rgb(255 255 255 / 0.03);
+}
+@layer base {
+  :where(main table:not([data-print-sheet] table)) > tbody > tr:nth-child(even) {
+    background-color: var(--table-stripe);
+  }
+}
+:where(main table:not([data-print-sheet] table)) :where(thead, tbody, tfoot, tr, th, td) {
+  border-color: var(--table-border);
+}
+
 /* Browser-print documents (/<doc>/[id]/print — components/print/). A4
    portrait with modest margins; the app chrome is hidden via print:hidden
    in AppShell, and the sheet itself drops its screen border/padding. */

@@ -112,7 +112,7 @@ export function PrintCompanyBlock({ profile }: { profile: CompanyProfile | null 
 export function PrintSheet({ children, companyBlock = true, fullPage = false, pageName }: { children: ReactNode; companyBlock?: boolean; fullPage?: boolean; pageName?: string }) {
   const profile = useCompanyProfile();
   return (
-    <article className={`mx-auto max-w-[210mm] border border-border bg-card p-8 text-[13px] leading-relaxed text-foreground print:max-w-none print:border-0 print:bg-transparent ${pageName ? "print:p-[12mm]" : "print:p-0"} ${fullPage ? `flex min-h-[270mm] flex-col ${pageName ? "print:min-h-[290mm]" : "print:min-h-[273mm]"}` : ""}`}
+    <article data-print-sheet className={`mx-auto max-w-[210mm] border border-border bg-card p-8 text-[13px] leading-relaxed text-foreground print:max-w-none print:border-0 print:bg-transparent ${pageName ? "print:p-[12mm]" : "print:p-0"} ${fullPage ? `flex min-h-[270mm] flex-col ${pageName ? "print:min-h-[290mm]" : "print:min-h-[273mm]"}` : ""}`}
       style={pageName ? { page: pageName } : undefined}
     >
       {companyBlock ? <PrintCompanyBlock profile={profile} /> : null}

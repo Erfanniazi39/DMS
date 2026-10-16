@@ -13,6 +13,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { apiFetch, type ApiError } from "@/lib/api";
+import { APP_NAME, APP_TAGLINE } from "@/lib/app-info";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -44,9 +45,9 @@ export default function LoginPage() {
     <div className="flex flex-1 items-center justify-center bg-muted/40 p-4">
       <Card className="w-full max-w-sm">
         <CardHeader className="text-center">
-          <CardTitle className="text-xl">ورود به سامانه</CardTitle>
+          <CardTitle className="text-xl">{APP_NAME}</CardTitle>
           <CardDescription>
-            سامانه مدیریت کسب‌وکار — لطفاً اطلاعات کاربری خود را وارد کنید
+            {APP_TAGLINE} — لطفاً اطلاعات کاربری خود را وارد کنید
           </CardDescription>
         </CardHeader>
         <CardContent>

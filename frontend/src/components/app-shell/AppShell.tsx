@@ -6,29 +6,15 @@
 // live in ./nav-config.ts; the session context lives in lib/session.tsx.
 
 import { useEffect, useState, type ReactNode } from "react";
+import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Archive, BarChart3, DatabaseBackup, Bell, ChevronDown, ChevronLeft, LayoutDashboard, LogOut, ReceiptText, ShieldCheck, Users } from "lucide-react";
+import { Bell, BookOpenText, ChevronDown, ChevronLeft, LogOut, Menu, X } from "lucide-react";
+import { APP_NAME, APP_TAGLINE } from "@/lib/app-info";
 import { Button } from "@/components/ui/button";
 import { apiFetch } from "@/lib/api";
 import { SessionUserContext, type SessionUser } from "@/lib/session";
 import GlobalSearch from "./GlobalSearch";
-import { navGroups, requiredPermissionsFor, type NavChild } from "./nav-config";
-
-// Splits a flat children list into consecutive runs by `sectionLabel`, so
-// each run can be rendered as its own visually distinct box. Children with
-// no `sectionLabel` each get their own unlabelled, unboxed run.
-function groupChildren(children: NavChild[]) {
-  const groups: { sectionLabel?: string; items: NavChild[] }[] = [];
-  for (const child of children) {
-    const last = groups[groups.length - 1];
-    if (last && child.sectionLabel && last.sectionLabel === child.sectionLabel) {
-      last.items.push(child);
-    } else {
-      groups.push({ sectionLabel: child.sectionLabel, items: [child] });
-    }
-  }
-  return groups;
-}
+import { activeHref, requiredPermissionsFor, visibleNav, type NavBadge, type NavGroup, type NavItem } from "./nav-config";
 
 function UnreadBadge({ count, label = "نامهٔ خوانده‌نشده" }: { count: number; label?: string }) {
   return (
@@ -44,11 +30,16 @@ export default function AppShell({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<SessionUser | null>(null);
   const [loading, setLoading] = useState(true);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
-  const [systemMenuOpen, setSystemMenuOpen] = useState(false);
-  // Which collapsible nav items (those with `children`) are expanded —
-  // keyed by the item's href. A route match auto-expands its item even
-  // before the user has clicked it (see the "خرید" rendering below).
-  const [expandedNavItems, setExpandedNavItems] = useState<Record<string, boolean>>({});
+  // The one expanded sidebar item (accordion). null = follow the current page:
+  // the item holding it is open. Reset on every navigation.
+  const [openItem, setOpenItem] = useState<string | null>(null);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [navPath, setNavPath] = useState(pathname);
+  if (navPath !== pathname) {
+    setNavPath(pathname);
+    setOpenItem(null);
+    setMobileNavOpen(false);
+  }
 
   // Unread letters, for the sidebar badge. Polled lightly (no websockets in
   // v1): on every navigation, when the tab regains focus, and once a minute.
@@ -133,22 +124,12 @@ export default function AppShell({ children }: { children: ReactNode }) {
 
   if (!user) return null;
 
-  const visibleGroups = navGroups
-    .map((group) => ({
-      ...group,
-      items: group.items
-        .filter((item) => user.permissions.includes(item.permission) && (!item.feature || user.features?.[item.feature]))
-        .map((item) => ({
-          ...item,
-          children: item.children?.filter(
-            (child) => (!child.permission || user.permissions.includes(child.permission)) && (!child.feature || user.features?.[child.feature]),
-          ),
-        })),
-    }))
-    .filter((group) => group.items.length > 0);
-  const canManageUsers = user.permissions.includes("users.create");
-  const isSystemRoute = pathname.startsWith("/admin/users") || pathname.startsWith("/admin/add-users") || pathname.startsWith("/admin/user-activity") || pathname.startsWith("/admin/deleted-records") || pathname.startsWith("/admin/roles") || pathname.startsWith("/admin/backup");
-  const canViewSystemManagement = canManageUsers;
+  const groups = visibleNav(user);
+  const currentHref = activeHref(groups, pathname);
+  const itemHolds = (item: NavItem) => (item.links ? item.links.some((link) => link.href === currentHref) : item.href === currentHref);
+  const currentItem = groups.flatMap((group) => group.items).find(itemHolds)?.key ?? null;
+  const expandedItem = openItem ?? currentItem;
+  const badgeCount = (badge?: NavBadge) => (badge === "letters" ? unreadLetters : badge === "approvals" ? pendingApprovals : 0);
   const routeAllowed = requiredPermissionsFor(pathname).every((permission) => user.permissions.includes(permission));
 
   return (
@@ -156,12 +137,15 @@ export default function AppShell({ children }: { children: ReactNode }) {
       <div className="min-h-screen bg-background text-foreground">
         <header className="sticky top-0 z-20 flex h-16 print:hidden items-center justify-between border-b border-border bg-card px-4 shadow-sm sm:px-6">
           <div className="flex min-w-0 items-center gap-3">
+            <Button variant="ghost" size="icon" className="lg:hidden" aria-label="منو" aria-expanded={mobileNavOpen} onClick={() => setMobileNavOpen(true)}>
+              <Menu />
+            </Button>
             <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground" aria-hidden="true">
-              <BarChart3 className="size-5" />
+              <BookOpenText className="size-5" />
             </div>
             <div className="min-w-0">
-              <p className="truncate text-sm font-semibold">سامانه مدیریت کسب‌وکار</p>
-              <p className="hidden text-xs text-muted-foreground sm:block">پنل مدیریت داخلی</p>
+              <p className="truncate text-base font-bold">{APP_NAME}</p>
+              <p className="hidden text-xs text-muted-foreground sm:block">{APP_TAGLINE}</p>
             </div>
           </div>
 
@@ -191,98 +175,27 @@ export default function AppShell({ children }: { children: ReactNode }) {
         </header>
 
         <div className="mx-auto flex max-w-[1600px] flex-col lg:flex-row">
-          <aside className="border-b border-border bg-sidebar print:hidden text-sidebar-foreground lg:min-h-[calc(100vh-4rem)] lg:w-64 lg:shrink-0 lg:border-b-0 lg:border-e lg:border-sidebar-border">
-            <nav className="flex gap-1 overflow-x-auto p-3 lg:sticky lg:top-16 lg:block lg:max-h-[calc(100vh-4rem)] lg:space-y-5 lg:overflow-x-hidden lg:overflow-y-auto lg:overscroll-contain lg:p-4" aria-label="ناوبری اصلی">
-              <button className={`flex shrink-0 items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium lg:w-full ${pathname === "/main" ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"}`} onClick={() => router.push("/main")}>
-                <LayoutDashboard className="size-4" />
-                داشبورد
-              </button>
-              {visibleGroups.map((group) => (
-                <div className="shrink-0 lg:space-y-1" key={group.label}>
-                  <p className="hidden px-3 pb-1 text-xs font-medium text-sidebar-foreground/60 lg:block">{group.label}</p>
-                  <div className="flex gap-1 lg:block">
-                    {group.items.map((item) => {
-                      const ItemIcon = item.icon;
-                      // A child's own href isn't always nested under the parent's
-                      // path (e.g. "خرید" → /purchases and /purchase-requests
-                      // are siblings, not parent/child routes), so it's checked
-                      // separately rather than relying on the prefix match alone.
-                      const childActive = item.children?.some((child) => pathname === child.href || pathname.startsWith(`${child.href}/`));
-                      const active = pathname === item.href || pathname.startsWith(`${item.href}/`) || Boolean(childActive);
-
-                      if (item.children && item.children.length > 0) {
-                        const expanded = expandedNavItems[item.href] ?? active;
-                        return (
-                          <div className="shrink-0 lg:w-full" key={item.href}>
-                            <button
-                              className={`flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2.5 text-sm lg:w-full ${active ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"}`}
-                              onClick={() => setExpandedNavItems((current) => ({ ...current, [item.href]: !expanded }))}
-                              aria-expanded={expanded}
-                            >
-                              <span className="flex items-center gap-3">
-                                <ItemIcon className="size-4" />
-                                <span className="whitespace-nowrap">{item.label}</span>
-                                {item.href === "/letters" && unreadLetters > 0 ? <UnreadBadge count={unreadLetters} /> : null}
-                              </span>
-                              <ChevronLeft className={`size-4 transition-transform ${expanded ? "-rotate-90" : ""}`} />
-                            </button>
-                            {expanded ? (
-                              <div className="mt-1 space-y-1.5 pe-3">
-                                {groupChildren(item.children).map((childGroup, groupIndex) => (
-                                  <div
-                                    className={childGroup.sectionLabel ? "space-y-0.5 rounded-lg bg-sidebar-border/40 p-1.5" : "space-y-1"}
-                                    key={`${groupIndex}-${childGroup.items[0].href}`}
-                                  >
-                                    {childGroup.sectionLabel ? (
-                                      <p className="px-1.5 pb-0.5 text-[11px] font-medium text-sidebar-foreground/55">{childGroup.sectionLabel}</p>
-                                    ) : null}
-                                    {childGroup.items.map((child) => {
-                                      const childActive = pathname === child.href;
-                                      const ChildIcon = child.icon;
-                                      return (
-                                        <button
-                                          className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm ${childActive ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-sidebar-foreground/75 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"}`}
-                                          key={child.href}
-                                          onClick={() => router.push(child.href)}
-                                        >
-                                          {ChildIcon ? <ChildIcon className="size-4" /> : null}
-                                          {child.label}
-                                          {child.href === "/letters" && unreadLetters > 0 ? <UnreadBadge count={unreadLetters} /> : null}
-                                        </button>
-                                      );
-                                    })}
-                                  </div>
-                                ))}
-                              </div>
-                            ) : null}
-                          </div>
-                        );
-                      }
-
-                      return <button className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm lg:w-full ${active ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"}`} key={item.href} onClick={() => router.push(item.href)}><ItemIcon className="size-4" /><span className="whitespace-nowrap">{item.label}</span>{item.href === "/workflow/inbox" && pendingApprovals > 0 ? <UnreadBadge count={pendingApprovals} label="مورد در انتظار تأیید" /> : null}</button>;
-                    })}
-                  </div>
-                </div>
-              ))}
-              <div className="flex shrink-0 gap-1 lg:block lg:space-y-1">
-                {user.permissions.includes("reports.view") ? <button className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm lg:w-full ${pathname.startsWith("/admin/reports") ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"}`} onClick={() => router.push("/admin/reports")}><BarChart3 className="size-4" />گزارش‌ها</button> : null}
+          {mobileNavOpen ? <div className="fixed inset-0 z-30 bg-black/40 lg:hidden print:hidden" aria-hidden="true" onClick={() => setMobileNavOpen(false)} /> : null}
+          <aside
+            className={`fixed inset-y-0 right-0 z-40 flex w-72 flex-col border-s border-sidebar-border bg-sidebar text-sidebar-foreground transition-transform print:hidden lg:sticky lg:top-16 lg:z-auto lg:h-[calc(100vh-4rem)] lg:w-60 lg:shrink-0 lg:translate-x-0 lg:border-s-0 lg:border-e ${mobileNavOpen ? "visible translate-x-0" : "invisible translate-x-full lg:visible"}`}
+          >
+            <div className="flex h-14 items-center justify-between border-b border-sidebar-border px-4 lg:hidden">
+              <span className="text-sm font-semibold">منو</span>
+              <Button variant="ghost" size="icon" aria-label="بستن منو" onClick={() => setMobileNavOpen(false)}>
+                <X />
+              </Button>
+            </div>
+            <nav className="flex min-h-0 flex-1 flex-col" aria-label="ناوبری اصلی">
+              <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain p-3">
+                {groups.filter((group) => !group.pinned).map((group, index) => (
+                  <NavSection key={group.label ?? index} group={group} currentHref={currentHref} currentItem={currentItem} expandedItem={expandedItem} onToggle={setOpenItem} badgeCount={badgeCount} />
+                ))}
               </div>
-              {canViewSystemManagement ? (
-                <div className="mt-4 border-t border-sidebar-border pt-4">
-                  <button className={`flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2.5 text-sm font-medium ${isSystemRoute ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"}`} onClick={() => setSystemMenuOpen((open) => !open)} aria-expanded={systemMenuOpen || isSystemRoute}>
-                    <span className="flex items-center gap-3"><ShieldCheck className="size-4" />مدیریت سیستم</span>
-                    <ChevronLeft className={`size-4 transition-transform ${systemMenuOpen || isSystemRoute ? "-rotate-90" : ""}`} />
-                  </button>
-                  {systemMenuOpen || isSystemRoute ? (
-                    <div className="mt-1 space-y-1 pe-3">
-                      <button className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm ${pathname === "/admin/users" ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-sidebar-foreground/75 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"}`} onClick={() => router.push("/admin/users")}><Users className="size-4" />کاربران</button>
-                      <button className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm ${pathname === "/admin/add-users" ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-sidebar-foreground/75 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"}`} onClick={() => router.push("/admin/add-users")}><Users className="size-4" />افزودن کاربر</button>
-                      <button className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm ${pathname.startsWith("/admin/user-activity") ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-sidebar-foreground/75 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"}`} onClick={() => router.push("/admin/user-activity")}><ReceiptText className="size-4" />فعالیت کاربران</button>
-                      <button className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm ${pathname.startsWith("/admin/deleted-records") ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-sidebar-foreground/75 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"}`} onClick={() => router.push("/admin/deleted-records")}><Archive className="size-4" />سندهای حذف‌شده</button>
-                      <button className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm ${pathname.startsWith("/admin/roles") ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-sidebar-foreground/75 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"}`} onClick={() => router.push("/admin/roles")}><ShieldCheck className="size-4" />نقش‌ها و دسترسی‌ها</button>
-                      {user.permissions.includes("backup.manage") ? <button className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm ${pathname.startsWith("/admin/backup") ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-sidebar-foreground/75 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"}`} onClick={() => router.push("/admin/backup")}><DatabaseBackup className="size-4" />پشتیبان‌گیری</button> : null}
-                    </div>
-                  ) : null}
+              {groups.some((group) => group.pinned) ? (
+                <div className="space-y-1 border-t border-sidebar-border p-3">
+                  {groups.filter((group) => group.pinned).map((group, index) => (
+                    <NavSection key={index} group={group} currentHref={currentHref} currentItem={currentItem} expandedItem={expandedItem} onToggle={setOpenItem} badgeCount={badgeCount} />
+                  ))}
                 </div>
               ) : null}
             </nav>
@@ -297,5 +210,77 @@ export default function AppShell({ children }: { children: ReactNode }) {
         </div>
       </div>
     </SessionUserContext.Provider>
+  );
+}
+
+type NavSectionProps = {
+  group: NavGroup;
+  currentHref: string | null;
+  currentItem: string | null;
+  expandedItem: string | null;
+  onToggle: (key: string | null) => void;
+  badgeCount: (badge?: NavBadge) => number;
+};
+
+const rowBase = "flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors";
+const rowIdle = "text-sidebar-foreground/75 hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground";
+const rowCurrent = "bg-sidebar-accent font-medium text-sidebar-accent-foreground";
+
+// One sidebar group: an optional small heading, then its items. A leaf item is
+// a link; an expandable item is a header that opens its plain-text links
+// (accordion — opening one closes the others). Only the current page's row is
+// highlighted; its item's header is just bolder.
+function NavSection({ group, currentHref, currentItem, expandedItem, onToggle, badgeCount }: NavSectionProps) {
+  return (
+    <div className="space-y-0.5">
+      {group.label ? <p className="px-3 pb-1 text-[11px] font-semibold tracking-wide text-sidebar-foreground/45">{group.label}</p> : null}
+      {group.items.map((item) => {
+        const Icon = item.icon;
+        const count = badgeCount(item.badge);
+        if (!item.links) {
+          const current = item.href === currentHref;
+          return (
+            <Link key={item.key} href={item.href ?? "/"} className={`${rowBase} ${current ? rowCurrent : rowIdle}`} aria-current={current ? "page" : undefined}>
+              <Icon className="size-4 shrink-0" />
+              <span className="flex-1 truncate">{item.label}</span>
+              {count > 0 ? <UnreadBadge count={count} label={item.badge === "approvals" ? "مورد در انتظار تأیید" : undefined} /> : null}
+            </Link>
+          );
+        }
+        const expanded = expandedItem === item.key;
+        const holdsCurrent = currentItem === item.key;
+        return (
+          <div key={item.key}>
+            <button
+              type="button"
+              className={`${rowBase} ${holdsCurrent ? "font-semibold text-sidebar-accent-foreground hover:bg-sidebar-accent/60" : rowIdle}`}
+              aria-expanded={expanded}
+              onClick={() => onToggle(expanded ? "" : item.key)}
+            >
+              <Icon className="size-4 shrink-0" />
+              <span className="flex-1 truncate text-start">{item.label}</span>
+              {count > 0 ? <UnreadBadge count={count} /> : null}
+              <ChevronLeft className={`size-3.5 shrink-0 opacity-60 transition-transform ${expanded ? "-rotate-90" : ""}`} />
+            </button>
+            {expanded ? (
+              <div className="my-1 ms-5 space-y-0.5 border-s border-sidebar-border ps-2">
+                {item.links.map((link) => {
+                  const current = link.href === currentHref;
+                  return (
+                    <div key={link.href}>
+                      {link.section ? <p className="px-3 pb-0.5 pt-2 text-[11px] text-sidebar-foreground/45">{link.section}</p> : null}
+                      <Link href={link.href} className={`flex items-center gap-2 rounded-md px-3 py-1.5 text-[13px] transition-colors ${current ? rowCurrent : rowIdle}`} aria-current={current ? "page" : undefined}>
+                        <span className="flex-1 truncate">{link.label}</span>
+                        {item.badge === "letters" && link.href === "/letters" && count > 0 ? <UnreadBadge count={count} /> : null}
+                      </Link>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : null}
+          </div>
+        );
+      })}
+    </div>
   );
 }
