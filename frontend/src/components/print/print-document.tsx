@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import Link from "next/link";
 import { ArrowRight, Printer } from "lucide-react";
 import { Button, buttonVariants } from "@/components/ui/button";
+import { useCompanyProfile, type CompanyProfile } from "@/lib/company";
 
 // Building blocks for browser-print document pages (/<doc>/[id]/print) —
 // first used by delivery notes (Sales batch 3), meant to be reused by
@@ -28,11 +29,95 @@ export function PrintToolbar({ backHref, backLabel }: { backHref: string; backLa
   );
 }
 
-/** The paper: A4 width on screen with a border; edge-to-edge when printed. */
-export function PrintSheet({ children }: { children: ReactNode }) {
+/**
+ * The company's own block (logo, name, codes, address, phones) from
+ * GET /company — printed at the top of every document. Read live: a change in
+ * مشخصات شرکت changes how documents print from now on. Until the profile has
+ * a name, a screen-only notice reminds the user to fill it in.
+ */
+export function PrintCompanyBlock({ profile }: { profile: CompanyProfile | null }) {
+  if (!profile) return null;
+  if (!profile.legalName.trim()) {
+    return (
+      <p className="mb-3 border border-dashed border-destructive px-3 py-2 text-xs text-destructive print:hidden">
+        مشخصات شرکت هنوز ثبت نشده است؛ این اطلاعات روی اسناد چاپی درج می‌شود. (تنظیمات › مشخصات شرکت)
+      </p>
+    );
+  }
+  const place = [profile.province, profile.city].filter(Boolean).join("، ");
+  const codes: [string, string | null][] = [
+    ["شناسه ملی", profile.nationalId],
+    ["کد اقتصادی", profile.economicCode],
+    ["شماره ثبت", profile.registrationNumber],
+  ];
+  const contacts: [string, string | null][] = [
+    ["تلفن", [profile.phone1, profile.phone2].filter(Boolean).join(" ، ") || null],
+    ["فکس", profile.fax],
+    ["ایمیل", profile.email],
+    ["وب‌سایت", profile.website],
+  ];
+  const shown = (rows: [string, string | null][]) => rows.filter(([, value]) => value);
   return (
-    <article className="mx-auto max-w-[210mm] border border-border bg-card p-8 text-[13px] leading-relaxed text-foreground print:max-w-none print:border-0 print:bg-transparent print:p-0">
+    <section className="mb-3 flex items-center gap-4 border-b border-border pb-3">
+      {profile.logoUrl ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={`/api${profile.logoUrl}`} alt="" className="max-h-16 max-w-28 shrink-0 object-contain" />
+      ) : null}
+      <div className="min-w-0 flex-1 space-y-0.5 text-xs">
+        <p className="text-sm font-bold">
+          {profile.legalName}
+          {profile.companyType ? <span className="mr-1 font-normal text-muted-foreground">({profile.companyType})</span> : null}
+        </p>
+        {shown(codes).length > 0 ? (
+          <p>
+            {shown(codes).map(([label, value], index) => (
+              <span key={label}>
+                {index > 0 ? " — " : ""}
+                <span className="text-muted-foreground">{label}: </span>
+                <bdi className="tabular-nums">{value}</bdi>
+              </span>
+            ))}
+          </p>
+        ) : null}
+        {place || profile.address || profile.postalCode ? (
+          <p>
+            <span className="text-muted-foreground">نشانی: </span>
+            {[place, profile.address].filter(Boolean).join("، ")}
+            {profile.postalCode ? (
+              <>
+                {" — "}
+                <span className="text-muted-foreground">کد پستی: </span>
+                <bdi className="tabular-nums">{profile.postalCode}</bdi>
+              </>
+            ) : null}
+          </p>
+        ) : null}
+        {shown(contacts).length > 0 ? (
+          <p>
+            {shown(contacts).map(([label, value], index) => (
+              <span key={label}>
+                {index > 0 ? " — " : ""}
+                <span className="text-muted-foreground">{label}: </span>
+                <bdi className="tabular-nums">{value}</bdi>
+              </span>
+            ))}
+          </p>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+/** The paper: A4 width on screen with a border; edge-to-edge when printed. */
+export function PrintSheet({ children, companyBlock = true, fullPage = false, pageName }: { children: ReactNode; companyBlock?: boolean; fullPage?: boolean; pageName?: string }) {
+  const profile = useCompanyProfile();
+  return (
+    <article className={`mx-auto max-w-[210mm] border border-border bg-card p-8 text-[13px] leading-relaxed text-foreground print:max-w-none print:border-0 print:bg-transparent ${pageName ? "print:p-[12mm]" : "print:p-0"} ${fullPage ? `flex min-h-[270mm] flex-col ${pageName ? "print:min-h-[290mm]" : "print:min-h-[273mm]"}` : ""}`}
+      style={pageName ? { page: pageName } : undefined}
+    >
+      {companyBlock ? <PrintCompanyBlock profile={profile} /> : null}
       {children}
+      {profile?.documentFooter ? <p className="mt-4 whitespace-pre-wrap border-t border-border pt-2 text-center text-xs text-muted-foreground">{profile.documentFooter}</p> : null}
     </article>
   );
 }

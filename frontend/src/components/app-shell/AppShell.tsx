@@ -7,7 +7,7 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import { Archive, BarChart3, Bell, ChevronDown, ChevronLeft, LayoutDashboard, LogOut, ReceiptText, ShieldCheck, Users } from "lucide-react";
+import { Archive, BarChart3, DatabaseBackup, Bell, ChevronDown, ChevronLeft, LayoutDashboard, LogOut, ReceiptText, ShieldCheck, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { apiFetch } from "@/lib/api";
 import { SessionUserContext, type SessionUser } from "@/lib/session";
@@ -147,7 +147,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
     }))
     .filter((group) => group.items.length > 0);
   const canManageUsers = user.permissions.includes("users.create");
-  const isSystemRoute = pathname.startsWith("/admin/users") || pathname.startsWith("/admin/add-users") || pathname.startsWith("/admin/user-activity") || pathname.startsWith("/admin/deleted-records") || pathname.startsWith("/admin/roles");
+  const isSystemRoute = pathname.startsWith("/admin/users") || pathname.startsWith("/admin/add-users") || pathname.startsWith("/admin/user-activity") || pathname.startsWith("/admin/deleted-records") || pathname.startsWith("/admin/roles") || pathname.startsWith("/admin/backup");
   const canViewSystemManagement = canManageUsers;
   const routeAllowed = requiredPermissionsFor(pathname).every((permission) => user.permissions.includes(permission));
 
@@ -280,6 +280,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
                       <button className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm ${pathname.startsWith("/admin/user-activity") ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-sidebar-foreground/75 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"}`} onClick={() => router.push("/admin/user-activity")}><ReceiptText className="size-4" />فعالیت کاربران</button>
                       <button className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm ${pathname.startsWith("/admin/deleted-records") ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-sidebar-foreground/75 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"}`} onClick={() => router.push("/admin/deleted-records")}><Archive className="size-4" />سندهای حذف‌شده</button>
                       <button className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm ${pathname.startsWith("/admin/roles") ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-sidebar-foreground/75 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"}`} onClick={() => router.push("/admin/roles")}><ShieldCheck className="size-4" />نقش‌ها و دسترسی‌ها</button>
+                      {user.permissions.includes("backup.manage") ? <button className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm ${pathname.startsWith("/admin/backup") ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-sidebar-foreground/75 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"}`} onClick={() => router.push("/admin/backup")}><DatabaseBackup className="size-4" />پشتیبان‌گیری</button> : null}
                     </div>
                   ) : null}
                 </div>

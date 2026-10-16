@@ -14,6 +14,7 @@ import {
   ClipboardPen,
   Archive,
   Eye,
+  Hash,
   Inbox,
   Mail,
   PencilLine,
@@ -241,6 +242,14 @@ export const navGroups: NavGroup[] = [
       { label: "واحدها", href: "/units", icon: Boxes, permission: "purchases.manage" },
     ],
   },
+  {
+    // Company-wide settings that are not admin-only: shown to whoever holds company.manage.
+    label: "تنظیمات",
+    items: [
+      { label: "مشخصات شرکت", href: "/settings/company", icon: Building, permission: "company.manage" },
+      { label: "قالب شماره‌گذاری", href: "/settings/numbering", icon: Hash, permission: "numbering.manage" },
+    ],
+  },
 ];
 
 const underPath = (pathname: string, href: string) => pathname === href || pathname.startsWith(`${href}/`);
@@ -251,6 +260,7 @@ const ADMIN_ROUTE_PERMISSIONS: [string, string][] = [
   ["/admin/add-users", "users.create"],
   ["/admin/user-activity", "users.create"],
   ["/admin/deleted-records", "users.create"],
+  ["/admin/backup", "backup.manage"],
   ["/admin/roles", "users.create"],
   ["/admin/permissions", "users.create"],
   ["/admin/user-permissions", "users.create"],

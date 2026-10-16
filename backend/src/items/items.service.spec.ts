@@ -254,6 +254,60 @@ describe('ItemsService', () => {
       expect((prisma as any).item.update).toHaveBeenCalled();
     });
 
+    describe('secondary unit (واحد فرعی)', () => {
+      const withSecondary = { ...baseDto, secondaryUnitId: 5, secondaryUnitFactor: 12 };
+      const build = () => {
+        const prisma = createPrismaMock();
+        const service = new ItemsService(prisma as never, new AuditService(prisma as never));
+        (prisma as any).item.findFirst.mockResolvedValue(null);
+        return { prisma: prisma as any, service };
+      };
+
+      it('saves the secondary unit and factor on create and clears them when omitted', async () => {
+        const { prisma, service } = build();
+        prisma.item.create.mockResolvedValue({ id: 1, code: 'ITM1' });
+        await service.create(withSecondary);
+        expect(prisma.item.create.mock.calls[0][0].data).toMatchObject({ secondaryUnitId: 5, secondaryUnitFactor: 12 });
+        await service.create(baseDto);
+        expect(prisma.item.create.mock.calls[1][0].data).toMatchObject({ secondaryUnitId: null, secondaryUnitFactor: null });
+      });
+
+      it('refuses an unknown or inactive secondary unit on create', async () => {
+        const { prisma, service } = build();
+        prisma.unit.findUnique.mockImplementation(({ where }: { where: { id: number } }) => Promise.resolve(where.id === 5 ? { isActive: false } : { isActive: true }));
+        await expect(service.create(withSecondary)).rejects.toBeInstanceOf(BadRequestException);
+        expect(prisma.item.create).not.toHaveBeenCalled();
+      });
+
+      it('lets an item keep a secondary unit that was deactivated since', async () => {
+        const { prisma, service } = build();
+        prisma.item.findUnique.mockResolvedValue({ id: 4, categoryId: 1, unitId: 2, secondaryUnitId: 5, secondaryUnitFactor: 12 });
+        prisma.unit.findUnique.mockImplementation(({ where }: { where: { id: number } }) => Promise.resolve(where.id === 5 ? { isActive: false } : { isActive: true }));
+        prisma.item.update.mockResolvedValue({ id: 4, code: 'ITM1' });
+        await expect(service.update(4, withSecondary)).resolves.toBeDefined();
+      });
+
+      it('rejects changing the secondary unit or factor once the item has stock history, but not re-saving it unchanged', async () => {
+        const { prisma, service } = build();
+        prisma.item.findUnique.mockResolvedValue({ id: 4, categoryId: 1, unitId: 2, secondaryUnitId: 5, secondaryUnitFactor: new Prisma.Decimal('12.000000') });
+        prisma.stockMovement.findFirst.mockResolvedValue({ id: 99 });
+        prisma.item.update.mockResolvedValue({ id: 4, code: 'ITM1' });
+
+        await expect(service.update(4, { ...withSecondary, secondaryUnitFactor: 10 })).rejects.toBeInstanceOf(BadRequestException);
+        await expect(service.update(4, baseDto)).rejects.toBeInstanceOf(BadRequestException);
+        expect(prisma.item.update).not.toHaveBeenCalled();
+        await expect(service.update(4, withSecondary)).resolves.toBeDefined();
+      });
+
+      it('allows adding or changing it while the item has no stock history', async () => {
+        const { prisma, service } = build();
+        prisma.item.findUnique.mockResolvedValue({ id: 4, categoryId: 1, unitId: 2, secondaryUnitId: null, secondaryUnitFactor: null });
+        prisma.item.update.mockResolvedValue({ id: 4, code: 'ITM1' });
+        await service.update(4, withSecondary);
+        expect(prisma.item.update.mock.calls[0][0].data).toMatchObject({ secondaryUnitId: 5, secondaryUnitFactor: 12 });
+      });
+    });
+
     it('rejects switching to a different, inactive category', async () => {
       const prisma = createPrismaMock();
       const service = new ItemsService(prisma as never, new AuditService(prisma as never));
@@ -325,6 +379,22 @@ describe('ItemsService', () => {
     it('defaults status and itemKind on create and treats blank optional text as omitted', () => {
       const parsed = createItemSchema.parse({ code: ' ITM1 ', name: 'شیر', categoryId: 1, unitId: 2, description: '  ', note: '' });
       expect(parsed).toEqual({ code: 'ITM1', name: 'شیر', categoryId: 1, unitId: 2, status: 'active', itemKind: 'FINISHED_GOOD' });
+    });
+
+    it('secondary unit: both or neither, factor positive with at most 6 decimals, different from the main unit', () => {
+      const base = { code: 'ITM1', name: 'شیر', categoryId: 1, unitId: 2 };
+      const ok = createItemSchema.parse({ ...base, secondaryUnitId: '5', secondaryUnitFactor: '12' });
+      expect(ok).toMatchObject({ secondaryUnitId: 5, secondaryUnitFactor: 12 });
+      expect(createItemSchema.parse({ ...base, secondaryUnitId: '', secondaryUnitFactor: '' }).secondaryUnitId).toBeUndefined();
+      expect(createItemSchema.safeParse({ ...base, secondaryUnitId: 5 }).success).toBe(false);
+      expect(createItemSchema.safeParse({ ...base, secondaryUnitFactor: 12 }).success).toBe(false);
+      expect(createItemSchema.safeParse({ ...base, secondaryUnitId: 2, secondaryUnitFactor: 12 }).success).toBe(false);
+      for (const bad of [0, -3, 'abc', 0.0000001, 1e12]) {
+        expect(createItemSchema.safeParse({ ...base, secondaryUnitId: 5, secondaryUnitFactor: bad }).success).toBe(false);
+      }
+      expect(createItemSchema.safeParse({ ...base, secondaryUnitId: 2147483648, secondaryUnitFactor: 2 }).success).toBe(false);
+      expect(createItemSchema.safeParse({ ...base, secondaryUnitId: 5, secondaryUnitFactor: 0.083333 }).success).toBe(true);
+      expect(updateItemSchema.safeParse({ ...base, status: 'active', itemKind: 'FINISHED_GOOD', secondaryUnitId: 5 }).success).toBe(false);
     });
 
     it('requires category and unit as positive integers', () => {

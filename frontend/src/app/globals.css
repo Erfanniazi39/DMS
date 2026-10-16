@@ -169,3 +169,13 @@
     margin: 12mm;
   }
 }
+
+/* Pages with a zero margin print without the browser's own header/footer (page
+   title, date, URL) — those are drawn in the page margin. The sheet adds the
+   12mm itself (see PrintSheet pageName). Used by the invoice. */
+@media print {
+  @page invoice {
+    size: A4 portrait;
+    margin: 0;
+  }
+}

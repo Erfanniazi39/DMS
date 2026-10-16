@@ -25,11 +25,11 @@ describe('formatDocumentNumber', () => {
 
 describe('nextDocumentNumber', () => {
   it('increments the (docType, Jalali year) counter with one atomic upsert … RETURNING on the caller’s transaction client', async () => {
-    const tx = { $queryRaw: jest.fn().mockResolvedValue([{ last_value: 42 }]) };
+    const tx = { $queryRaw: jest.fn().mockResolvedValueOnce([]).mockResolvedValue([{ last_value: 42 }]) };
 
     await expect(nextDocumentNumber(tx as never, 'ADJ', new Date('2026-10-06T00:00:00Z'))).resolves.toBe('ADJ-1405-000042');
 
-    const [strings, ...values] = tx.$queryRaw.mock.calls[0];
+    const [strings, ...values] = tx.$queryRaw.mock.calls[1];
     const sql = (strings as string[]).join('?');
     expect(sql).toContain('INSERT INTO document_sequences');
     expect(sql).toContain('ON CONFLICT (doc_type, fiscal_year)');
@@ -39,9 +39,9 @@ describe('nextDocumentNumber', () => {
   });
 
   it('uses the document date’s Jalali year, so a new year restarts at 000001', async () => {
-    const tx = { $queryRaw: jest.fn().mockResolvedValue([{ last_value: 1 }]) };
+    const tx = { $queryRaw: jest.fn().mockResolvedValueOnce([]).mockResolvedValue([{ last_value: 1 }]) };
     await expect(nextDocumentNumber(tx as never, 'ADJ', new Date('2027-03-21T00:00:00Z'))).resolves.toBe('ADJ-1406-000001');
-    expect(tx.$queryRaw.mock.calls[0].slice(1)).toEqual(['ADJ', 1406]);
+    expect(tx.$queryRaw.mock.calls[1].slice(1)).toEqual(['ADJ', 1406]);
   });
 
   it('rejects a malformed docType (programming error) without touching the database', async () => {
@@ -53,5 +53,26 @@ describe('nextDocumentNumber', () => {
   it('fails loudly if the counter returns nothing', async () => {
     const tx = { $queryRaw: jest.fn().mockResolvedValue([]) };
     await expect(nextDocumentNumber(tx as never, 'ADJ', new Date('2026-10-06T00:00:00Z'))).rejects.toThrow();
+  });
+});
+
+describe('nextDocumentNumber with a company format', () => {
+  const formatRow = (over: Record<string, unknown>) => ({ prefix: 'SO', middle_mode: 'year', middle_text: null, separator: '-', digits: 6, ...over });
+
+  it('uses a fixed middle part and one continuing counter (key 0)', async () => {
+    const tx = { $queryRaw: jest.fn().mockResolvedValueOnce([formatRow({ middle_mode: 'fixed', middle_text: '7050' })]).mockResolvedValue([{ last_value: 5 }]) };
+    await expect(nextDocumentNumber(tx as never, 'SO', new Date('2026-10-06T00:00:00Z'))).resolves.toBe('SO-7050-000005');
+    expect(tx.$queryRaw.mock.calls[1].slice(1)).toEqual(['SO', 0]);
+  });
+
+  it('supports no middle part, custom digits, prefix and separator', async () => {
+    const tx = { $queryRaw: jest.fn().mockResolvedValueOnce([formatRow({ prefix: 'فا', middle_mode: 'none', separator: '/', digits: 4 })]).mockResolvedValue([{ last_value: 12 }]) };
+    await expect(nextDocumentNumber(tx as never, 'SO', new Date('2026-10-06T00:00:00Z'))).resolves.toBe('فا/0012');
+  });
+
+  it('keeps the yearly counter for a year format with another prefix', async () => {
+    const tx = { $queryRaw: jest.fn().mockResolvedValueOnce([formatRow({ prefix: 'ORD', digits: 5 })]).mockResolvedValue([{ last_value: 3 }]) };
+    await expect(nextDocumentNumber(tx as never, 'SO', new Date('2026-10-06T00:00:00Z'))).resolves.toBe('ORD-1405-00003');
+    expect(tx.$queryRaw.mock.calls[1].slice(1)).toEqual(['SO', 1405]);
   });
 });

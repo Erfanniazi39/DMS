@@ -703,10 +703,39 @@ model Unit {
   sortOrder            Int                   @default(1) @map("sort_order")
   purchaseItems        PurchaseItem[]
   purchaseRequestItems PurchaseRequestItem[]
-  items                Item[]
+  items                Item[]               @relation("ItemUnit")
+  secondaryItems       Item[]               @relation("ItemSecondaryUnit")
   salesOrderItems      SalesOrderItem[]
 
   @@map("units")
+}
+
+// The company's own details (نام، کدها، نشانی، تلفن) printed on invoices and
+// other documents. Exactly one row (id = 1, enforced by a CHECK in the
+// migration); owned by the Company module. Printed live — documents do not
+// copy it. No relation to User or Employee (hard rule 1).
+model CompanyProfile {
+  id                 Int      @id @default(1)
+  legalName          String   @default("") @map("legal_name")
+  brandName          String?  @map("brand_name")
+  companyType        String?  @map("company_type")
+  nationalId         String?  @map("national_id")
+  economicCode       String?  @map("economic_code")
+  registrationNumber String?  @map("registration_number")
+  province           String?
+  city               String?
+  postalCode         String?  @map("postal_code")
+  address            String?
+  phone1             String?  @map("phone_1")
+  phone2             String?  @map("phone_2")
+  fax                String?
+  email              String?
+  website            String?
+  documentFooter     String?  @map("document_footer")
+  logoPath           String?  @map("logo_path")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  @@map("company_profile")
 }
 
 // Master data — Item Category (دسته‌بندی کالا). Same shape as Unit /
@@ -734,7 +763,15 @@ model Item {
   categoryId            Int                    @map("category_id")
   category              ItemCategory           @relation(fields: [categoryId], references: [id], onDelete: Restrict)
   unitId                Int                    @map("unit_id")
-  unit                  Unit                   @relation(fields: [unitId], references: [id], onDelete: Restrict)
+  unit                  Unit                   @relation("ItemUnit", fields: [unitId], references: [id], onDelete: Restrict)
+  // Secondary unit (واحد فرعی), optional: a second way to enter/show quantities
+  // (e.g. «کارتن»). `unit` stays the ONE stock unit every quantity and the
+  // stock card are held in; secondaryUnitFactor = how many of `unit` make ONE
+  // secondary unit (carton = 12 pieces → 12). Both set or both null. Master
+  // data only for now — no document or stock row converts with it yet.
+  secondaryUnitId       Int?                   @map("secondary_unit_id")
+  secondaryUnit         Unit?                  @relation("ItemSecondaryUnit", fields: [secondaryUnitId], references: [id], onDelete: Restrict)
+  secondaryUnitFactor   Decimal?               @map("secondary_unit_factor") @db.Decimal(14, 6)
   description           String?
   status                ItemStatus             @default(active)
   // Inventory build plan I1, B2: which stock role this item plays. Sales
@@ -2858,4 +2895,70 @@ model ApprovalStepApprover {
   @@index([roleId])
   @@index([userId])
   @@map("approval_step_approvers")
+}
+
+// Backup / restore (migration 20261015210000_backup_and_change_log). These tables are written by
+// the backup module and the capture triggers; they are never part of a backup themselves.
+model BackupState {
+  id                   Int       @id @default(1)
+  databaseId           String    @default(dbgenerated("gen_random_uuid()")) @map("database_id") @db.Uuid
+  generationId         String?   @map("generation_id") @db.Uuid
+  backupCounter        Int       @default(0) @map("backup_counter")
+  prunedThroughOrdinal Int       @default(0) @map("pruned_through_ordinal")
+  lastBackupId         String?   @map("last_backup_id") @db.Uuid
+  lastBackupOrdinal    Int?      @map("last_backup_ordinal")
+  lastBackupSnapshot   String?   @map("last_backup_snapshot")
+  lastBackupAt         DateTime? @map("last_backup_at") @db.Timestamptz(6)
+  lastPath             String?   @map("last_path")
+  updatedAt            DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@map("backup_state")
+}
+
+model BackupChangeLog {
+  seq       BigInt                  @id @default(autoincrement())
+  txid      Unsupported("xid8")     @default(dbgenerated("pg_current_xact_id()"))
+  tableName String                  @map("table_name")
+  op        String                  @db.Char(1)
+  pk        Json
+  rowData   Json?                   @map("row_data")
+  changedAt DateTime                @default(now()) @map("changed_at") @db.Timestamptz(6)
+
+  @@map("backup_change_log")
+}
+
+model BackupRun {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  kind            String
+  status          String
+  startedAt       DateTime  @default(now()) @map("started_at") @db.Timestamptz(6)
+  finishedAt      DateTime? @map("finished_at") @db.Timestamptz(6)
+  startedByUserId Int?      @map("started_by_user_id")
+  targetPath      String?   @map("target_path")
+  backupId        String?   @map("backup_id") @db.Uuid
+  ordinal         Int?
+  generationId    String?   @map("generation_id") @db.Uuid
+  snapshot        String?
+  rowCount        BigInt?   @map("row_count")
+  fileCount       Int?      @map("file_count")
+  bytes           BigInt?
+  error           String?
+  progress        Json?
+
+  @@map("backup_runs")
+}
+
+// How each document type's number looks (settings › قالب شماره‌گذاری). One row per
+// doc type that was customised; no row = the default PREFIX-<year>-000001.
+// Counters live in DocumentSequence. Owned by the Numbering module.
+model NumberingFormat {
+  docType    String   @id @map("doc_type")
+  prefix     String
+  middleMode String   @map("middle_mode") // year | fixed | none
+  middleText String?  @map("middle_text")
+  separator  String   @default("-")
+  digits     Int      @default(6)
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  @@map("numbering_formats")
 }

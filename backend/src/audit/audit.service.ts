@@ -18,6 +18,10 @@ export const AUDIT_ENTITY = {
   ITEM: 'Item',
   ITEM_CATEGORY: 'ItemCategory',
   UNIT: 'Unit',
+  // The company's own details (one row) — logged under id 1.
+  COMPANY_PROFILE: 'CompanyProfile',
+  // Document-number formats (settings › قالب شماره‌گذاری).
+  NUMBERING_FORMAT: 'NumberingFormat',
   // Reference data that used to be edited without leaving an audit trail.
   DEPARTMENT: 'Department',
   PURCHASE_TYPE: 'PurchaseType',

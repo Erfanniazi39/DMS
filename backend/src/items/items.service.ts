@@ -28,6 +28,7 @@ const ITEM_SORT_COLUMNS: Record<string, (dir: 'asc' | 'desc') => Prisma.ItemOrde
 const itemInclude = {
   category: { select: { id: true, code: true, nameFa: true, isActive: true } },
   unit: { select: { id: true, code: true, nameFa: true, isActive: true } },
+  secondaryUnit: { select: { id: true, code: true, nameFa: true, isActive: true } },
 } satisfies Prisma.ItemInclude;
 
 @Injectable()
@@ -86,13 +87,15 @@ export class ItemsService {
 
   async create(dto: CreateItemDto, userId: number | null = null, ipAddress?: string) {
     await this.ensureUnique(dto.code, dto.name);
-    await this.ensureReferences(dto.categoryId, dto.unitId);
+    await this.ensureReferences(dto.categoryId, dto.unitId, dto.secondaryUnitId);
     const created = await this.prisma.item.create({
       data: {
         code: dto.code,
         name: dto.name,
         categoryId: dto.categoryId,
         unitId: dto.unitId,
+        secondaryUnitId: dto.secondaryUnitId ?? null,
+        secondaryUnitFactor: dto.secondaryUnitFactor ?? null,
         description: dto.description,
         note: dto.note,
         sellingPrice: dto.sellingPrice,
@@ -108,12 +111,20 @@ export class ItemsService {
   async update(id: number, dto: UpdateItemDto, userId: number | null = null, ipAddress?: string) {
     const existing = await this.get(id);
     await this.ensureUnique(dto.code, dto.name, id);
-    await this.ensureReferences(dto.categoryId, dto.unitId, existing);
+    await this.ensureReferences(dto.categoryId, dto.unitId, dto.secondaryUnitId, existing);
     // Inventory build plan I1, finding §2.3-1: changing the unit after the
     // item has stock history would silently change the meaning of every
     // past quantity. An item with no movements yet is unaffected.
     if (dto.unitId !== existing.unitId && (await hasStockHistory(this.prisma, id))) {
       throw new BadRequestException('این کالا دارای سابقهٔ موجودی است؛ واحد آن پس از ثبت اولین رویداد انباری قابل تغییر نیست.');
+    }
+    // Same reasoning for the secondary unit: changing it or its factor after stock
+    // exists would change how every past quantity reads in that unit.
+    const secondaryChanged =
+      (dto.secondaryUnitId ?? null) !== (existing.secondaryUnitId ?? null) ||
+      (dto.secondaryUnitFactor ?? null) !== (existing.secondaryUnitFactor == null ? null : Number(existing.secondaryUnitFactor));
+    if (secondaryChanged && (await hasStockHistory(this.prisma, id))) {
+      throw new BadRequestException('این کالا دارای سابقهٔ موجودی است؛ واحد فرعی و ضریب تبدیل آن پس از ثبت اولین رویداد انباری قابل تغییر نیست.');
     }
     const updated = await this.prisma.item.update({
       where: { id },
@@ -122,6 +133,8 @@ export class ItemsService {
         name: dto.name,
         categoryId: dto.categoryId,
         unitId: dto.unitId,
+        secondaryUnitId: dto.secondaryUnitId ?? null,
+        secondaryUnitFactor: dto.secondaryUnitFactor ?? null,
         description: dto.description ?? null,
         note: dto.note ?? null,
         // Full-record form: omitted/blank clears the default price.
@@ -140,7 +153,7 @@ export class ItemsService {
       entityType: AUDIT_ENTITY.ITEM,
       entityId: id,
       details: updated.code,
-      changes: diffChanges(existing, updated, ['sellingPrice']),
+      changes: diffChanges(existing, updated, ['sellingPrice', 'secondaryUnitId', 'secondaryUnitFactor']),
     });
     return updated;
   }
@@ -184,16 +197,20 @@ export class ItemsService {
 
   // Category and unit must exist and be active — except that an item being
   // edited may keep the (since-deactivated) category/unit it already has.
-  private async ensureReferences(categoryId: number, unitId: number, existing?: { categoryId: number; unitId: number }) {
-    const [category, unit] = await Promise.all([
+  private async ensureReferences(categoryId: number, unitId: number, secondaryUnitId?: number, existing?: { categoryId: number; unitId: number; secondaryUnitId: number | null }) {
+    const [category, unit, secondaryUnit] = await Promise.all([
       this.prisma.itemCategory.findUnique({ where: { id: categoryId }, select: { isActive: true } }),
       this.prisma.unit.findUnique({ where: { id: unitId }, select: { isActive: true } }),
+      secondaryUnitId === undefined ? Promise.resolve(null) : this.prisma.unit.findUnique({ where: { id: secondaryUnitId }, select: { isActive: true } }),
     ]);
     if (!category || (!category.isActive && existing?.categoryId !== categoryId)) {
       throw new BadRequestException('دسته‌بندی کالا یافت نشد یا غیرفعال است');
     }
     if (!unit || (!unit.isActive && existing?.unitId !== unitId)) {
       throw new BadRequestException('واحد کالا یافت نشد یا غیرفعال است');
+    }
+    if (secondaryUnitId !== undefined && (!secondaryUnit || (!secondaryUnit.isActive && existing?.secondaryUnitId !== secondaryUnitId))) {
+      throw new BadRequestException('واحد فرعی یافت نشد یا غیرفعال است');
     }
   }
 

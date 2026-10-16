@@ -117,6 +117,8 @@ export type SalesInvoiceLine = {
   salesOrderItem: { id: number; lineNo: number } | null;
 };
 
+type InvoiceUserRef = { id: number; username: string; fullName: string | null } | null;
+
 // GET /sales-invoices/:id (and the body of every write response).
 export type SalesInvoiceDetail = InvoiceMoney & {
   id: number;
@@ -160,8 +162,8 @@ export type SalesInvoiceDetail = InvoiceMoney & {
     customerReference: string | null;
     customerNote: string | null;
   } | null;
-  createdByUser: UserRef;
-  postedByUser: UserRef;
+  createdByUser: InvoiceUserRef;
+  postedByUser: InvoiceUserRef;
   items: SalesInvoiceLine[];
 };
 

@@ -67,7 +67,7 @@ const PERMISSIONS = [
   'users.create',
   'users.disable',
   // Delete permissions, restore, and sensitive-data viewing (2026-10-15). Keep in sync with PERMISSION_CATALOG.
-  'purchases.delete', 'sales.delete', 'customers.delete', 'suppliers.delete', 'items.delete', 'itemCategories.delete', 'units.delete', 'inventory.delete', 'employees.delete', 'records.restore',
+  'purchases.delete', 'sales.delete', 'customers.delete', 'suppliers.delete', 'items.delete', 'itemCategories.delete', 'units.delete', 'inventory.delete', 'employees.delete', 'records.restore', 'backup.manage', 'backup.restore', 'company.manage', 'numbering.manage',
   'customers.viewSensitive', 'suppliers.viewSensitive',
   'suppliers.view',
   'suppliers.manage',

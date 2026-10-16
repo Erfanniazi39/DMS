@@ -10,6 +10,13 @@ export const PERMISSION_CATALOG = [
   { code: 'users.disable', label: 'غیرفعال کردن کاربر', module: 'کاربران' },
   // Restoring a deleted record from the delete archive (admin panel).
   { code: 'records.restore', label: 'بازیابی سوابق حذف‌شده', module: 'کاربران' },
+  // Backup of the whole system to a folder / flash drive, and restoring it (admin panel).
+  // Company details printed on documents (settings page); ADMIN by default, grantable to any role.
+  { code: 'company.manage', label: 'مدیریت مشخصات شرکت', module: 'کاربران' },
+  // Document-number formats (prefix, year/fixed part, digits, next number); ADMIN by default.
+  { code: 'numbering.manage', label: 'مدیریت قالب شماره‌گذاری اسناد', module: 'کاربران' },
+  { code: 'backup.manage', label: 'پشتیبان‌گیری از سیستم', module: 'کاربران' },
+  { code: 'backup.restore', label: 'بازیابی سیستم از پشتیبان', module: 'کاربران' },
   { code: 'suppliers.view', label: 'مشاهده تأمین‌کنندگان', module: 'تأمین‌کنندگان' },
   { code: 'suppliers.manage', label: 'مدیریت تأمین‌کنندگان', module: 'تأمین‌کنندگان' },
   { code: 'suppliers.delete', label: 'حذف تأمین‌کنندگان', module: 'تأمین‌کنندگان' },

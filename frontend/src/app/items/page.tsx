@@ -37,6 +37,11 @@ type Item = {
   unitId: number;
   category: RefOption;
   unit: RefOption;
+  // Secondary unit (واحد فرعی): optional. `unit` is the stock unit; the factor says how many
+  // of it make ONE secondary unit (Decimal → JSON string).
+  secondaryUnitId: number | null;
+  secondaryUnit: RefOption | null;
+  secondaryUnitFactor: string | null;
   description: string | null;
   status: ItemStatus;
   itemKind: ItemKind;
@@ -50,6 +55,8 @@ type FormState = {
   name: string;
   categoryId: string;
   unitId: string;
+  secondaryUnitId: string;
+  secondaryUnitFactor: string;
   description: string;
   status: ItemStatus;
   itemKind: ItemKind;
@@ -63,6 +70,8 @@ const emptyForm: FormState = {
   name: "",
   categoryId: "",
   unitId: "",
+  secondaryUnitId: "",
+  secondaryUnitFactor: "",
   description: "",
   status: "active",
   itemKind: "FINISHED_GOOD",
@@ -75,6 +84,15 @@ const itemKindLabels: Record<ItemKind, string> = {
   RAW_MATERIAL: "مواد اولیه",
   PACKAGING: "بسته‌بندی",
 };
+// «۱ کارتن = ۱۲ عدد»; the factor arrives as «12.000000» — trim the trailing zeros.
+function formatFactor(value: string | null): string {
+  if (value === null) return "";
+  return String(Number(value));
+}
+function secondaryUnitSummary(item: Item): string | null {
+  if (!item.secondaryUnit || item.secondaryUnitFactor === null) return null;
+  return `۱ ${item.secondaryUnit.nameFa} = ${Number(item.secondaryUnitFactor).toLocaleString("fa-IR")} ${item.unit.nameFa}`;
+}
 const textareaClass = "min-h-16 rounded-md border border-input bg-transparent px-3 py-2 text-sm outline-none placeholder:text-muted-foreground";
 const selectClass = "h-9 rounded-md border border-input bg-transparent px-3 text-sm";
 
@@ -186,6 +204,7 @@ function ItemsPageContent() {
   const hasActiveFilters = query.trim() !== "" || statusFilter !== "all" || categoryFilter !== "all";
   const categoryOptions = withCurrent(categories, editingItem?.category);
   const unitOptions = withCurrent(units, editingItem?.unit);
+  const secondaryUnitOptions = withCurrent(units, editingItem?.secondaryUnit ?? undefined).filter((unit) => String(unit.id) !== form.unitId);
 
   function update<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((current) => ({ ...current, [key]: value }));
@@ -206,6 +225,8 @@ function ItemsPageContent() {
       name: item.name,
       categoryId: String(item.categoryId),
       unitId: String(item.unitId),
+      secondaryUnitId: item.secondaryUnitId === null ? "" : String(item.secondaryUnitId),
+      secondaryUnitFactor: formatFactor(item.secondaryUnitFactor),
       description: item.description ?? "",
       status: item.status,
       itemKind: item.itemKind,
@@ -230,6 +251,11 @@ function ItemsPageContent() {
     if (!form.name.trim()) missing.push("نام کالا الزامی است.");
     if (!form.categoryId) missing.push("انتخاب دسته‌بندی الزامی است.");
     if (!form.unitId) missing.push("انتخاب واحد الزامی است.");
+    // Secondary unit: both or neither (the backend re-validates).
+    const secondaryUnitFactor = normalizeDigits(form.secondaryUnitFactor).trim();
+    if (form.secondaryUnitId && secondaryUnitFactor === "") missing.push("برای واحد فرعی، ضریب تبدیل را وارد کنید.");
+    if (!form.secondaryUnitId && secondaryUnitFactor !== "") missing.push("برای ضریب تبدیل، واحد فرعی را انتخاب کنید.");
+    if (secondaryUnitFactor !== "" && !(Number(secondaryUnitFactor) > 0)) missing.push("ضریب تبدیل باید عددی بزرگ‌تر از صفر باشد.");
     // Optional; when given, a whole Rial amount (the backend re-validates).
     const sellingPrice = normalizeDigits(form.sellingPrice).trim();
     if (sellingPrice !== "" && !/^\d+$/.test(sellingPrice)) missing.push("قیمت فروش باید عدد صحیح (ریال، بدون اعشار) باشد.");
@@ -244,6 +270,9 @@ function ItemsPageContent() {
         name: form.name.trim(),
         categoryId: Number(form.categoryId),
         unitId: Number(form.unitId),
+        // Blank = no secondary unit (also clears it on edit).
+        secondaryUnitId: form.secondaryUnitId ? Number(form.secondaryUnitId) : null,
+        secondaryUnitFactor: form.secondaryUnitId ? Number(secondaryUnitFactor) : null,
         description: form.description.trim(),
         status: form.status,
         itemKind: form.itemKind,
@@ -403,7 +432,10 @@ function ItemsPageContent() {
                           <p className="font-mono text-xs text-muted-foreground">{item.code}</p>
                         </td>
                         <td className="px-4 py-3 text-muted-foreground">{item.category.nameFa}</td>
-                        <td className="px-4 py-3 text-muted-foreground">{item.unit.nameFa}</td>
+                        <td className="px-4 py-3 text-muted-foreground">
+                          {item.unit.nameFa}
+                          {secondaryUnitSummary(item) ? <span className="block text-xs">{secondaryUnitSummary(item)}</span> : null}
+                        </td>
                         <td className="px-4 py-3 text-muted-foreground">{itemKindLabels[item.itemKind]}</td>
                         <td className="px-4 py-3 tabular-nums text-muted-foreground">{formatMoney(item.sellingPrice)}</td>
                         <td className="px-4 py-3">
@@ -494,6 +526,41 @@ function ItemsPageContent() {
                 </select>
               </div>
               <div className="flex flex-col gap-2">
+                <Label htmlFor="item-secondary-unit">واحد فرعی (اختیاری)</Label>
+                <select
+                  id="item-secondary-unit"
+                  className={selectClass}
+                  value={form.secondaryUnitId}
+                  onChange={(event) => update("secondaryUnitId", event.target.value)}
+                >
+                  <option value="">ندارد</option>
+                  {secondaryUnitOptions.map((unit) => (
+                    <option key={unit.id} value={String(unit.id)}>
+                      {unit.nameFa}
+                      {unit.isActive === false ? " (غیرفعال)" : ""}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {form.secondaryUnitId ? (
+                <div className="flex flex-col gap-2">
+                  <Label htmlFor="item-secondary-factor">
+                    ضریب تبدیل: هر ۱ واحد فرعی چند «{unitOptions.find((unit) => String(unit.id) === form.unitId)?.nameFa ?? "واحد اصلی"}» است؟
+                  </Label>
+                  <Input
+                    id="item-secondary-factor"
+                    inputMode="decimal"
+                    dir="ltr"
+                    value={form.secondaryUnitFactor}
+                    onChange={(event) => update("secondaryUnitFactor", event.target.value)}
+                    placeholder="12"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    موجودی و کاردکس همیشه با «واحد» اصلی نگهداری می‌شود؛ واحد فرعی فعلاً فقط تعریف می‌شود. پس از ثبت اولین رویداد انباری، واحد فرعی و ضریب قابل تغییر نیست.
+                  </p>
+                </div>
+              ) : null}
+              <div className="flex flex-col gap-2">
                 <Label htmlFor="item-status">وضعیت</Label>
                 <select
                   id="item-status"
@@ -579,6 +646,12 @@ function ItemsPageContent() {
                     <dt className="text-xs text-muted-foreground">واحد</dt>
                     <dd className="mt-1">{detailItem.unit.nameFa}</dd>
                   </div>
+                  {secondaryUnitSummary(detailItem) ? (
+                    <div>
+                      <dt className="text-xs text-muted-foreground">واحد فرعی</dt>
+                      <dd className="mt-1">{secondaryUnitSummary(detailItem)}</dd>
+                    </div>
+                  ) : null}
                   <div>
                     <dt className="text-xs text-muted-foreground">وضعیت</dt>
                     <dd className="mt-1">{statusLabels[detailItem.status]}</dd>

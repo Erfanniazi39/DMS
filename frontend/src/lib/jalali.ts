@@ -160,6 +160,17 @@ export function safeToJalali(date: Date): JalaliDate | null {
  * null/undefined/invalid. A date outside the convertible Jalali range is
  * shown as its raw Gregorian ISO date (e.g. "9999-12-31") instead of throwing.
  */
+/** «۱۴۰۵/۰۷/۲۳» — numeric form used on printed documents. */
+export function formatJalaliNumeric(date: Date | string | null | undefined): string {
+  if (!date) return "";
+  const d = typeof date === "string" ? new Date(date) : date;
+  if (Number.isNaN(d.getTime())) return "";
+  const jalali = safeToJalali(d);
+  if (!jalali) return d.toISOString().slice(0, 10);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return toPersianDigits(`${jalali.jy}/${pad(jalali.jm)}/${pad(jalali.jd)}`);
+}
+
 export function formatJalali(date: Date | string | null | undefined): string {
   if (!date) return "";
   const d = typeof date === "string" ? new Date(date) : date;

@@ -14,6 +14,8 @@ import { CustomerGroupsModule } from './customer-groups/customer-groups.module';
 import { TerritoriesModule } from './territories/territories.module';
 import { PaymentTermsModule } from './payment-terms/payment-terms.module';
 import { UnitsModule } from './units/units.module';
+import { CompanyModule } from './company/company.module';
+import { NumberingModule } from './numbering/numbering.module';
 import { ItemCategoriesModule } from './item-categories/item-categories.module';
 import { ItemsModule } from './items/items.module';
 import { PurchaseTypesModule } from './purchase-types/purchase-types.module';
@@ -24,6 +26,7 @@ import { InventoryModule } from './inventory/inventory.module';
 import { SalesModule } from './sales/sales.module';
 import { ReceivablesModule } from './receivables/receivables.module';
 import { LettersModule } from './letters/letters.module';
+import { BackupModule } from './backup/backup.module';
 import { WorkflowModule } from './workflow/workflow.module';
 import { SearchModule } from './search/search.module';
 
@@ -42,6 +45,8 @@ import { SearchModule } from './search/search.module';
     TerritoriesModule,
     PaymentTermsModule,
     UnitsModule,
+    CompanyModule,
+    NumberingModule,
     ItemCategoriesModule,
     ItemsModule,
     PurchaseTypesModule,
@@ -52,6 +57,7 @@ import { SearchModule } from './search/search.module';
     SalesModule,
     ReceivablesModule,
     LettersModule,
+    BackupModule,
     WorkflowModule,
     SearchModule,
   ],

@@ -61,7 +61,8 @@ export type OpenSalesInvoice = {
   openAmount: Prisma.Decimal;
 };
 
-const userSelect = { select: { id: true, username: true } } as const;
+// fullName: the printed invoice shows who issued it by name, not by login.
+const userSelect = { select: { id: true, username: true, fullName: true } } as const;
 
 const salesInvoiceDetailInclude = {
   customer: { select: { id: true, customerNumber: true, name: true } },

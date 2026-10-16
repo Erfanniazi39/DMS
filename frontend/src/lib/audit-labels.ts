@@ -4,6 +4,9 @@
 
 export const ENTITY_LABELS: Record<string, string> = {
   User: "کاربر",
+  Backup: "پشتیبان",
+  CompanyProfile: "مشخصات شرکت",
+  NumberingFormat: "قالب شماره‌گذاری",
   Role: "نقش",
   Purchase: "خرید",
   PurchaseRequest: "درخواست خرید",
@@ -39,6 +42,11 @@ export const ENTITY_LABELS: Record<string, string> = {
 
 const ACTION_LABELS: Record<string, string> = {
   LOGIN: "ورود به سامانه",
+  COMPANY_PROFILE_UPDATED: "ویرایش مشخصات شرکت",
+  COMPANY_LOGO_UPDATED: "تغییر لوگوی شرکت",
+  COMPANY_LOGO_REMOVED: "حذف لوگوی شرکت",
+  NUMBERING_FORMAT_UPDATED: "ویرایش قالب شماره‌گذاری",
+  NUMBERING_FORMAT_RESET: "بازگشت قالب شماره‌گذاری به پیش‌فرض",
   LOGOUT: "خروج از سامانه",
   LOGIN_FAILED: "تلاش ناموفق برای ورود",
   USER_CREATED: "ایجاد کاربر",
@@ -48,6 +56,10 @@ const ACTION_LABELS: Record<string, string> = {
   ROLE_PERMISSIONS_UPDATED: "تغییر دسترسی‌های نقش",
   ROLE_DELETED: "حذف نقش",
   LETTER_SENT: "ارسال نامه",
+  BACKUP_CREATED: "پشتیبان‌گیری از سیستم",
+  BACKUP_FAILED: "پشتیبان‌گیری ناموفق",
+  BACKUP_RESTORED: "بازیابی سیستم از پشتیبان",
+  BACKUP_RESTORE_FAILED: "بازیابی از پشتیبان ناموفق",
   LETTER_VIEWED_BY_MANAGEMENT: "مشاهدهٔ مدیریتی نامه",
 };
 
@@ -164,7 +176,7 @@ export const FIELD_LABELS: Record<string, string> = {
   sortOrder: "ترتیب نمایش", note: "توضیحات", isDefault: "پیش‌فرض", dueDays: "مهلت پرداخت (روز)",
   username: "نام کاربری", fullName: "نام کامل", email: "ایمیل", phone: "تلفن", role: "نقش", password: "رمز عبور",
   customerKind: "نوع شخص", legalName: "نام ثبتی", nationalId: "شناسه/کد ملی", economicCode: "کد اقتصادی",
-  creditHold: "توقف اعتباری", statusReason: "دلیل وضعیت", price: "قیمت", sellingPrice: "قیمت فروش",
+  creditHold: "توقف اعتباری", statusReason: "دلیل وضعیت", price: "قیمت", sellingPrice: "قیمت فروش", secondaryUnitId: "واحد فرعی", secondaryUnitFactor: "ضریب واحد فرعی",
 };
 
 export const VALUE_LABELS: Record<string, string> = {

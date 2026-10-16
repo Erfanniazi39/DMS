@@ -131,6 +131,8 @@ export function createInventoryDb() {
         const balance = state.balances.find((row) => row.itemId === itemId && row.locationId === locationId);
         return balance ? [{ id: balance.id, on_hand: balance.onHand, reserved: balance.reserved, qc: balance.qc, damaged: balance.damaged }] : [];
       }
+      // No company format configured → the generator falls back to PREFIX-<year>-000001.
+      if (sql.includes('FROM numbering_formats')) return [];
       if (sql.includes('document_sequences')) {
         const [docType, fiscalYear] = values as [string, number];
         const key = `${docType}:${fiscalYear}`;

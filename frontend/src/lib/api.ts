@@ -24,7 +24,8 @@ async function parseApiError(res: Response, fallbackMessage: string): Promise<Ap
   try {
     const data = await res.json();
     if (typeof data?.code === "string") code = data.code;
-    details = data?.details;
+    // A restore in progress answers 503 with its progress instead of `details`.
+    details = data?.details ?? data?.progress;
     if (typeof data?.message === "string") {
       message = data.message;
     } else if (Array.isArray(data?.message)) {
@@ -87,5 +88,22 @@ export async function apiUpload<T>(path: string, file: File, fieldName = "file",
     return undefined as T;
   }
 
+  return res.json() as Promise<T>;
+}
+
+// Backup / restore only (admin → پشتیبان‌گیری). A drive plugged into the admin's own computer is read and written
+// by the browser, so these two helpers move raw bytes through the same /api proxy and error handling.
+
+// Streams a response body (a file the server is lending) — the caller pipes it to disk.
+export async function apiDownload(path: string): Promise<Response> {
+  const res = await fetch(`/api${path}`, { credentials: "include" });
+  if (!res.ok) throw await parseApiError(res, "دریافت فایل ناموفق بود.");
+  return res;
+}
+
+// Sends one piece of a file as raw bytes (not JSON, not multipart).
+export async function apiSendBytes<T>(path: string, bytes: Blob): Promise<T> {
+  const res = await fetch(`/api${path}`, { method: "PUT", body: bytes, headers: { "Content-Type": "application/octet-stream" }, credentials: "include" });
+  if (!res.ok) throw await parseApiError(res, "ارسال فایل ناموفق بود.");
   return res.json() as Promise<T>;
 }
